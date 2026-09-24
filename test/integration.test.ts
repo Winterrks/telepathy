@@ -207,18 +207,56 @@ describe('telepathy plugin', () => {
   });
 
   describe('Claude Code hooks', () => {
-    test('ListAgents gets the Codex sessions appended as context', () => {
+    test('ListAgents gets the Codex sessions added to its listing, as rows in its own shape', () => {
       const claudeAgent = spawnAgent();
       const codexAgent = spawnAgent();
-      assert.equal(runHook(sb, 'claude', claudeAgent.pid, 'list-agents', { tool_name: 'ListAgents' }).stdout, '');
+      const listing =
+        'This session is me-12 [0a1b2c] — the name other sessions use to message it.\n\n' +
+        'Peer sessions (1):\n  api-worker [3fa9c1]  ·  interactive  ·  idle  ·  started 2h ago';
+      const input = { tool_name: 'ListAgents', tool_input: {}, tool_response: { listing } };
+      assert.equal(runHook(sb, 'claude', claudeAgent.pid, 'list-agents', input).stdout, '');
 
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/me' });
       runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't', cwd: '/w/auth' });
-      const res = runHook(sb, 'claude', claudeAgent.pid, 'list-agents', { tool_name: 'ListAgents' });
-      const out = JSON.parse(res.stdout);
-      assert.equal(out.hookSpecificOutput.hookEventName, 'PostToolUse');
-      assert.match(out.hookSpecificOutput.additionalContext, new RegExp(`codex:auth \\[codex-${codexAgent.pid}\\]`));
-      assert.doesNotMatch(out.hookSpecificOutput.additionalContext, /claude:me/);
+      const out = JSON.parse(runHook(sb, 'claude', claudeAgent.pid, 'list-agents', input).stdout).hookSpecificOutput;
+      assert.equal(out.hookEventName, 'PostToolUse');
+      assert.equal(out.additionalContext, undefined);
+      const rewritten: string = out.updatedToolOutput.listing;
+      assert.ok(rewritten.startsWith(`${listing}\n\nCodex sessions (1), reachable through the telepathy plugin.`));
+      const added = rewritten.slice(listing.length);
+      assert.match(added, /mcp__plugin_telepathy_bridge__send_message/);
+      // No rollout log for thread "t" in this sandbox, so the status column is left out.
+      assert.match(added, new RegExp(`\\n  codex:auth \\[codex-${codexAgent.pid}\\]  ·  interactive  ·  started \\d+s ago$`));
+      assert.doesNotMatch(added, /claude:me/);
+    });
+
+    test('ListAgents rows show whether Codex is busy or idle, from its rollout log', () => {
+      const claudeAgent = spawnAgent();
+      const codexAgent = spawnAgent();
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-9', cwd: '/w/auth' });
+      const day = path.join(sb.codexHome, 'sessions', '2026', '09', '24');
+      fs.mkdirSync(day, { recursive: true });
+      const rollout = path.join(day, 'rollout-2026-09-24T08-03-04-thread-9.jsonl');
+      const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
+      const row = () => {
+        const input = { tool_name: 'ListAgents', tool_response: { listing: 'Peer sessions (0):' } };
+        const out = JSON.parse(runHook(sb, 'claude', claudeAgent.pid, 'list-agents', input).stdout).hookSpecificOutput;
+        return out.updatedToolOutput.listing.split('\n').at(-1);
+      };
+      fs.writeFileSync(rollout, event('task_started') + JSON.stringify({ type: 'response_item', payload: {} }) + '\n');
+      assert.match(row(), /  ·  interactive  ·  busy  ·  started /);
+      fs.appendFileSync(rollout, event('task_complete') + event('token_count'));
+      assert.match(row(), /  ·  interactive  ·  idle  ·  started /);
+    });
+
+    test('ListAgents output of an unknown shape gets the Codex sessions as a note instead', () => {
+      const claudeAgent = spawnAgent();
+      const codexAgent = spawnAgent();
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't', cwd: '/w/auth' });
+      const res = runHook(sb, 'claude', claudeAgent.pid, 'list-agents', { tool_name: 'ListAgents', tool_response: 'text' });
+      const out = JSON.parse(res.stdout).hookSpecificOutput;
+      assert.equal(out.updatedToolOutput, undefined);
+      assert.match(out.additionalContext, new RegExp(`codex:auth \\[codex-${codexAgent.pid}\\]`));
     });
 
     test('SendMessage to a Codex address is delivered by the hook and the call is stopped', () => {
@@ -233,7 +271,10 @@ describe('telepathy plugin', () => {
       });
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.permissionDecision, 'deny');
-      assert.match(out.permissionDecisionReason, /^Delivered by the telepathy plugin\. Queued/);
+      assert.match(
+        out.permissionDecisionReason,
+        new RegExp(`^Sent via telepathy, not a failure: queued m-\\S+ for codex:auth \\[codex-${codexAgent.pid}\\]`),
+      );
       assert.match(out.permissionDecisionReason, /Do not resend it/);
       const [queued] = codexCalls(sb);
       assert.equal(queued.argv[1], '--thread=thread-x');
@@ -269,7 +310,7 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', {
         tool_input: { to: `codex-${codexAgent.pid}`, message: 'by ref' },
       });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Delivered/);
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Sent via telepathy, not a failure: queued/);
       assert.equal(codexCalls(sb)[0].argv[1], '--thread=thread-r');
     });
 

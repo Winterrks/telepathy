@@ -396,15 +396,84 @@ async function sendMessage(self, to, body) {
   return { ok: true, message, recipient, status };
 }
 
-// src/core/listing.ts
-function describePeer(peer) {
-  const notes = [agentLabel(peer.agent)];
-  if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
-  if (peer.agent === "codex" && !peer.sessionId) {
-    notes.push("not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)");
+// src/core/codex-activity.ts
+import fs5 from "node:fs";
+import path7 from "node:path";
+var TAIL_BYTES = 1024 * 1024;
+var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "idle" };
+function findRollout(codexHome, threadId) {
+  const suffix = `-${threadId}.jsonl`;
+  const sorted = (dir) => {
+    try {
+      return fs5.readdirSync(dir).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const root = path7.join(codexHome, "sessions");
+  for (const year of sorted(root)) {
+    for (const month of sorted(path7.join(root, year))) {
+      for (const day of sorted(path7.join(root, year, month))) {
+        const dir = path7.join(root, year, month, day);
+        const file = sorted(dir).find((f) => f.startsWith("rollout-") && f.endsWith(suffix));
+        if (file) return path7.join(dir, file);
+      }
+    }
   }
-  if (peer.agent === "claude" && !peer.hasListener) notes.push("no listener: it reads messages only via read_messages");
-  return `- ${peerRef(peer)} \xB7 ${notes.join(" \xB7 ")}`;
+  return void 0;
+}
+function readTail(file) {
+  const fd = fs5.openSync(file, "r");
+  try {
+    const { size } = fs5.fstatSync(fd);
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    fs5.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    return start > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+  } finally {
+    fs5.closeSync(fd);
+  }
+}
+function codexActivity(codexHome, threadId) {
+  try {
+    const file = findRollout(codexHome, threadId);
+    if (!file) return void 0;
+    const lines = readTail(file).split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"event_msg"')) continue;
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
+      if (state) return state;
+    }
+  } catch {
+  }
+  return void 0;
+}
+
+// src/core/listing.ts
+function formatAgo(ms) {
+  const s = Math.max(0, Math.floor(ms / 1e3));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+function listAgentsRow(peer, now = Date.now()) {
+  const columns = [peerRef(peer), "interactive"];
+  if (!peer.sessionId) columns.push("not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)");
+  else {
+    const status = peer.codexHome ? codexActivity(peer.codexHome, peer.sessionId) : void 0;
+    if (status) columns.push(status);
+  }
+  const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
+  if (!Number.isNaN(started)) columns.push(`started ${formatAgo(now - started)}`);
+  return `  ${columns.join("  \xB7  ")}`;
 }
 
 // src/hook.ts
@@ -423,20 +492,22 @@ function sessionStart(agent, agentPid, input) {
     codexHome: agent === "codex" ? defaultCodexHome() : void 0
   });
 }
-function listAgents(agentPid) {
+var SEND_TOOL = "mcp__plugin_telepathy_bridge__send_message";
+function listAgents(agentPid, input) {
   const selfId = peerId("claude", agentPid);
   const codexPeers = listPeers().filter((p) => p.id !== selfId && p.agent === "codex");
   if (!codexPeers.length) return;
-  print({
-    hookSpecificOutput: {
-      hookEventName: "PostToolUse",
-      additionalContext: [
-        "Codex sessions on this machine are also reachable, through the telepathy plugin (they are not in the listing above).",
-        'To message one, call SendMessage with its address (such as "codex:name") as `to`, or use the telepathy send_message tool:',
-        ...codexPeers.map(describePeer)
-      ].join("\n")
-    }
-  });
+  const heading = `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin. Message them with its send_message tool (${SEND_TOOL}); SendMessage to them is delivered too, but its result shows as a blocked call:`;
+  const block = [heading, ...codexPeers.map((p) => listAgentsRow(p))].join("\n");
+  const response = input.tool_response;
+  if (typeof response?.listing === "string") {
+    const listing = `${response.listing.trimEnd()}
+
+${block}`;
+    print({ hookSpecificOutput: { hookEventName: "PostToolUse", updatedToolOutput: { ...response, listing } } });
+    return;
+  }
+  print({ hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: block } });
 }
 function addressedToCodex(to) {
   if (/^\s*["'`]?codex:/i.test(to) || /\[\s*codex-\d+\s*\]\s*$/i.test(to)) return true;
@@ -455,7 +526,7 @@ async function interceptSendMessage(agentPid, input) {
   const result = await sendMessage(selfPeer("claude", agentPid), to, message);
   debugLog("hook", result.ok ? `SendMessage \u2192 ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
-    result.ok ? `Delivered by the telepathy plugin. ${result.status} (SendMessage itself can't reach Codex sessions, so the plugin delivered the message and stopped this SendMessage call. Do not resend it.)` : `Not delivered: ${result.error}`
+    result.ok ? `Sent via telepathy, not a failure: queued ${result.message.id} for ${peerRef(result.recipient)}, which picks it up within about 10 seconds, or after its current turn. SendMessage can't reach Codex, so telepathy delivered the message and cancelled this call. Do not resend it; a reply arrives as a new message.` : `Not delivered: ${result.error}`
   );
 }
 async function main() {
@@ -466,7 +537,7 @@ async function main() {
   const agentPid = findAgentPid(agent);
   debugLog("hook", `${agent} ${event} (agent pid ${agentPid})`);
   if (event === "session-start") sessionStart(agent, agentPid, input);
-  else if (event === "list-agents" && agent === "claude") listAgents(agentPid);
+  else if (event === "list-agents" && agent === "claude") listAgents(agentPid, input);
   else if (event === "send-message" && agent === "claude") await interceptSendMessage(agentPid, input);
   else throw new Error(`unknown hook event ${JSON.stringify(event)} for ${agent}`);
 }

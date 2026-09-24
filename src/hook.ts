@@ -1,7 +1,7 @@
 import { debugLog } from './core/debug.ts';
 import { sendMessage } from './core/deliver.ts';
-import { describePeer } from './core/listing.ts';
-import { defaultCodexHome, listPeers, peerId, registerSession, selfPeer } from './core/peers.ts';
+import { listAgentsRow } from './core/listing.ts';
+import { defaultCodexHome, listPeers, peerId, peerRef, registerSession, selfPeer } from './core/peers.ts';
 import { type Agent, findAgentPid, parseAgent } from './core/proc.ts';
 
 /**
@@ -14,6 +14,7 @@ interface HookInput {
   session_id?: string;
   cwd?: string;
   tool_input?: { to?: unknown; message?: unknown };
+  tool_response?: unknown;
 }
 
 async function readStdin(): Promise<HookInput> {
@@ -35,21 +36,29 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   });
 }
 
-/** Claude PostToolUse on ListAgents: the built-in listing can't show Codex sessions, so add them. */
-function listAgents(agentPid: number): void {
+/** The MCP tool that reaches Codex without SendMessage's blocked-call result. */
+const SEND_TOOL = 'mcp__plugin_telepathy_bridge__send_message';
+
+/**
+ * Claude PostToolUse on ListAgents: the built-in listing can't show Codex sessions, so add them to it, as
+ * rows in ListAgents' own shape. ListAgents returns `{ listing: string }`; if that ever changes, a rewrite
+ * would be ignored, so fall back to a note next to the result.
+ */
+function listAgents(agentPid: number, input: HookInput): void {
   const selfId = peerId('claude', agentPid);
   const codexPeers = listPeers().filter((p) => p.id !== selfId && p.agent === 'codex');
   if (!codexPeers.length) return;
-  print({
-    hookSpecificOutput: {
-      hookEventName: 'PostToolUse',
-      additionalContext: [
-        'Codex sessions on this machine are also reachable, through the telepathy plugin (they are not in the listing above).',
-        'To message one, call SendMessage with its address (such as "codex:name") as `to`, or use the telepathy send_message tool:',
-        ...codexPeers.map(describePeer),
-      ].join('\n'),
-    },
-  });
+  const heading =
+    `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin. Message them with its ` +
+    `send_message tool (${SEND_TOOL}); SendMessage to them is delivered too, but its result shows as a blocked call:`;
+  const block = [heading, ...codexPeers.map((p) => listAgentsRow(p))].join('\n');
+  const response = input.tool_response as { listing?: unknown } | undefined;
+  if (typeof response?.listing === 'string') {
+    const listing = `${response.listing.trimEnd()}\n\n${block}`;
+    print({ hookSpecificOutput: { hookEventName: 'PostToolUse', updatedToolOutput: { ...response, listing } } });
+    return;
+  }
+  print({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } });
 }
 
 /**
@@ -82,8 +91,9 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
   debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
     result.ok
-      ? `Delivered by the telepathy plugin. ${result.status} (SendMessage itself can't reach Codex sessions, ` +
-          'so the plugin delivered the message and stopped this SendMessage call. Do not resend it.)'
+      ? `Sent via telepathy, not a failure: queued ${result.message.id} for ${peerRef(result.recipient)}, which ` +
+          "picks it up within about 10 seconds, or after its current turn. SendMessage can't reach Codex, so " +
+          'telepathy delivered the message and cancelled this call. Do not resend it; a reply arrives as a new message.'
       : `Not delivered: ${result.error}`,
   );
 }
@@ -97,7 +107,7 @@ async function main(): Promise<void> {
   debugLog('hook', `${agent} ${event} (agent pid ${agentPid})`);
 
   if (event === 'session-start') sessionStart(agent, agentPid, input);
-  else if (event === 'list-agents' && agent === 'claude') listAgents(agentPid);
+  else if (event === 'list-agents' && agent === 'claude') listAgents(agentPid, input);
   else if (event === 'send-message' && agent === 'claude') await interceptSendMessage(agentPid, input);
   else throw new Error(`unknown hook event ${JSON.stringify(event)} for ${agent}`);
 }

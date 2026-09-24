@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { after, before, describe, test } from 'node:test';
+import { codexActivity } from '../src/core/codex-activity.ts';
+import { formatAgo } from '../src/core/listing.ts';
 import { formatForCodex, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
 import { peerDir } from '../src/core/paths.ts';
 import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
@@ -159,5 +162,46 @@ describe('registry', () => {
     const r = resolvePeer('codex:repo', peers);
     assert.ok('peer' in r && r.peer.id === `codex-${agent.pid}`);
     await killAndWait(agent);
+  });
+});
+
+describe('ListAgents rows', () => {
+  test('relative start times read like ListAgents', () => {
+    assert.equal(formatAgo(-5), '0s ago');
+    assert.equal(formatAgo(45_000), '45s ago');
+    assert.equal(formatAgo(14 * 60_000 + 59_000), '14m ago');
+    assert.equal(formatAgo(10 * 3_600_000), '10h ago');
+    assert.equal(formatAgo(36 * 3_600_000), '1d ago');
+  });
+
+  test('Codex busy/idle comes from the last turn event in the thread\'s rollout log', () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'um-rollout-'));
+    try {
+      assert.equal(codexActivity(codexHome, 'abc'), undefined);
+      const older = path.join(codexHome, 'sessions', '2026', '08', '30');
+      const newer = path.join(codexHome, 'sessions', '2026', '09', '02');
+      fs.mkdirSync(older, { recursive: true });
+      fs.mkdirSync(newer, { recursive: true });
+      const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
+      // A resumed thread keeps its file in the folder of the day it began.
+      const file = path.join(older, 'rollout-2026-08-30T10-00-00-abc.jsonl');
+      fs.writeFileSync(path.join(newer, 'rollout-2026-09-02T09-00-00-other.jsonl'), event('task_started'));
+      fs.writeFileSync(file, event('task_started') + event('turn_aborted'));
+      assert.equal(codexActivity(codexHome, 'abc'), 'idle');
+      // Only the last megabyte is read; a huge item after the turn started must not hide that it's running.
+      fs.appendFileSync(file, event('task_started') + JSON.stringify({ type: 'response_item', payload: { output: 'x'.repeat(2_000_000) } }) + '\n');
+      assert.equal(codexActivity(codexHome, 'abc'), undefined);
+      fs.appendFileSync(file, event('token_count'));
+      assert.equal(codexActivity(codexHome, 'abc'), undefined);
+      fs.appendFileSync(file, event('task_started') + event('item_completed'));
+      assert.equal(codexActivity(codexHome, 'abc'), 'busy');
+      fs.appendFileSync(file, 'not json\n' + event('task_complete'));
+      assert.equal(codexActivity(codexHome, 'abc'), 'idle');
+      fs.appendFileSync(file, '{"type":"event_msg","payload":{"type":"task_sta');
+      assert.equal(codexActivity(codexHome, 'abc'), 'idle', 'a half-written last line is skipped');
+      assert.equal(codexActivity(codexHome, 'other'), 'busy');
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
   });
 });

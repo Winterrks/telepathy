@@ -6,15 +6,23 @@ each other, and a message wakes the receiving agent up on its own.
 ```
 you (in Claude Code) › ask the codex session working on the API whether the auth tests pass now
 
-  ⏺ SendMessage → codex:api
-    Delivered by the telepathy plugin. Codex starts a new turn with it within about 10 seconds…
+  ⏺ ListAgents
+    Peer sessions (1):
+      web-7 [3fa9c1]  ·  interactive  ·  idle  ·  started 2h ago
+
+    Codex sessions (1), reachable through the telepathy plugin. …
+      codex:api [codex-4242]  ·  interactive  ·  idle  ·  started 3h ago
+
+  ⏺ telepathy - send_message (to: "codex:api", message: "Do the auth tests pass now?")
+    Queued m-0muf747cz-76ced4 for Codex session codex:api [codex-4242]. Codex starts a new turn…
 
   ⏺ Monitor event: [telepathy] New message from Codex session codex:api:
     "Yes, 48/48 pass. I also fixed the token refresh race in session.ts."
 ```
 
-- **From Claude Code:** Codex sessions show up when Claude calls the built-in `ListAgents`, and the built-in
-  `SendMessage` reaches them.
+- **From Claude Code:** Codex sessions show up as rows in the built-in `ListAgents` output, busy/idle status
+  included. Claude messages them with the plugin's `send_message` tool, and the built-in `SendMessage` reaches
+  them too.
 - **From Codex:** use the plugin's tools. Both agents get the same three: `list_peers`, `send_message` and
   `read_messages`.
 - **Receiving:** an incoming message starts a turn on its own when the receiving session is idle, so nobody
@@ -92,7 +100,7 @@ What the receiver sees:
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): a background command Claude Code runs for the whole session. Each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s and starts a turn |
 | Session identity | SessionStart [hooks](https://code.claude.com/docs/en/hooks) in both agents record the session / thread id and cwd. Codex also sends its thread id with every tool call, which is used as a fallback |
-| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds Codex sessions to the ListAgents result. A PreToolUse hook delivers a SendMessage addressed to `codex:…` and stops the call, since SendMessage itself only reaches Claude sessions |
+| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds Codex sessions to the ListAgents result as rows in its own format (`updatedToolOutput`). A PreToolUse hook delivers a SendMessage addressed to `codex:…` and stops the call, since SendMessage itself only reaches Claude sessions |
 
 Every session is identified by its agent process (`claude-<pid>` / `codex-<pid>`). Its hook, MCP server and
 monitor are all descendants of that process, so they agree on who they are without extra coordination.
@@ -108,8 +116,11 @@ Registrations of exited sessions (checked by pid plus process start time) are re
   example `claude -p`), messages wait in the inbox until Claude calls `read_messages`, and senders are told so.
 - **One Codex thread per process.** The Codex desktop app's app-server hosts many threads in one process;
   that setup isn't supported.
-- **A SendMessage to Codex shows up as an error line in Claude's UI.** The hook has to stop the SendMessage
-  call after delivering. The text tells Claude it was delivered.
+- **A SendMessage to Codex shows up as an error line in Claude's UI.** SendMessage would fail on an address it
+  doesn't know, so the hook delivers the message and then stops the call, and hooks can't turn a stopped call
+  into a successful one. The line starts with "Sent via telepathy, not a failure", and the `ListAgents` rows
+  point Claude to telepathy's `send_message` tool, which gives a normal result. Claude-to-Claude SendMessage
+  calls are never touched.
 - **Loop guard.** Sending the same text to the same session twice within 2 minutes is refused, and so is
   sending more than 20 messages to one session in 10 minutes.
 
@@ -137,6 +148,8 @@ A few best-effort lookups use files that aren't documented interfaces; if the fi
 back gracefully:
 - display names come from `~/.claude/sessions/<pid>.json` and `~/.codex/session_index.jsonl`, falling back to
   the folder name
+- a Codex row's busy/idle status comes from the end of that thread's log in `~/.codex/sessions/`; when it
+  can't be read, the row leaves the status out
 - `codex queue` is marked experimental in Codex's app-server protocol
 - plugin monitors are an experimental Claude Code plugin component
 

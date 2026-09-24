@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Telepathy for your coding agents: Claude Code and Codex sessions on the same machine message each other.",
   "private": true,
   "type": "module",

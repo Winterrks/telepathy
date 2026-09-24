@@ -34195,6 +34195,9 @@ async function sendMessage(self, to, body) {
   return { ok: true, message, recipient, status };
 }
 
+// src/core/codex-activity.ts
+var TAIL_BYTES = 1024 * 1024;
+
 // src/core/listing.ts
 function describePeer(peer) {
   const notes = [agentLabel(peer.agent)];
@@ -34219,7 +34222,7 @@ function formatPeerList(self, peers) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.1.0" : "0.0.0-dev";
+var VERSION = true ? "0.1.1" : "0.0.0-dev";
 
 // src/server.ts
 var argv = process.argv.slice(2);
