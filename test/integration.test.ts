@@ -56,7 +56,11 @@ describe('telepathy plugin', () => {
       const client = await connect(agent, spawnAgent().pid);
       const { tools } = await client.listTools();
       assert.deepEqual(tools.map((t) => t.name).sort(), ['list_peers', 'read_messages', 'send_message']);
-      assert.match(client.getInstructions() ?? '', /not from your user/);
+      const instructions = client.getInstructions() ?? '';
+      assert.match(instructions, /come from another AI agent, not your user/);
+      assert.match(instructions, /telepathy:using-telepathy skill/);
+      if (agent === 'claude') assert.match(instructions, /ListAgents/);
+      else assert.doesNotMatch(instructions, /ListAgents|SendMessage/);
     }
   });
 
@@ -205,28 +209,15 @@ describe('telepathy plugin', () => {
     }
   });
 
-  test('SessionStart loads the using-telepathy skill into new sessions of both agents, not resumed ones', () => {
+  test('SessionStart registers the session and prints nothing; the skill is a normal on-demand skill', () => {
     const skill = fs.readFileSync(path.join(ROOT, 'plugin', 'skills', 'using-telepathy', 'SKILL.md'), 'utf8');
     assert.match(skill, /^---\nname: using-telepathy\ndescription: Use when .+\n---\n/);
-    const registered = (agent: string, pid: number) => fs.existsSync(path.join(sb.home, 'peers', `${agent}-${pid}`, 'session.json'));
     for (const agent of ['claude', 'codex'] as const) {
-      for (const source of ['startup', 'clear', 'compact', undefined]) {
+      for (const source of ['startup', 'resume', 'clear', 'compact', undefined]) {
         const { pid } = spawnAgent();
         const res = runHook(sb, agent, pid, 'session-start', { session_id: 's', cwd: '/w/x', ...(source ? { source } : {}) });
-        const out = JSON.parse(res.stdout).hookSpecificOutput;
-        assert.equal(out.hookEventName, 'SessionStart');
-        assert.match(out.additionalContext, /^The telepathy plugin is installed in this session\. This is its telepathy:using-telepathy skill/);
-        assert.match(out.additionalContext, /\n# Using telepathy\n/);
-        assert.doesNotMatch(out.additionalContext, /^name: using-telepathy$/m, 'frontmatter is stripped');
-        // Claude Code caps hook context at 10,000 characters; Codex spills anything over about 2,500 tokens to a file.
-        assert.ok(out.additionalContext.length < 8000, `skill context is ${out.additionalContext.length} characters`);
-        assert.ok(registered(agent, pid));
-      }
-      for (const source of ['resume', 'fork']) {
-        const { pid } = spawnAgent();
-        const res = runHook(sb, agent, pid, 'session-start', { session_id: 's', cwd: '/w/x', source });
-        assert.equal(res.stdout, '', `a ${source}d conversation already has the skill`);
-        assert.ok(registered(agent, pid), 'a resumed session is a new process and must register again');
+        assert.equal(res.stdout, '', 'both agents add SessionStart stdout to context');
+        assert.ok(fs.existsSync(path.join(sb.home, 'peers', `${agent}-${pid}`, 'session.json')));
       }
     }
   });

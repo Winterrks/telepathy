@@ -1,6 +1,3 @@
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { debugLog } from './core/debug.ts';
 import { sendMessage } from './core/deliver.ts';
 import { listAgentsRow } from './core/listing.ts';
@@ -16,8 +13,6 @@ import { type Agent, findAgentPid, parseAgent } from './core/proc.ts';
 interface HookInput {
   session_id?: string;
   cwd?: string;
-  /** SessionStart: `startup`, `resume`, `clear`, `compact` (and `fork` in Claude Code). */
-  source?: string;
   tool_input?: { to?: unknown; message?: unknown };
   tool_response?: unknown;
 }
@@ -31,28 +26,9 @@ async function readStdin(): Promise<HookInput> {
 
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 
-/** The plugin's own skill, next to the bundle: dist/hook.mjs → skills/using-telepathy/SKILL.md. */
-const SKILL_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'using-telepathy', 'SKILL.md');
-
 /**
- * The using-telepathy skill as session context, like superpowers loads using-superpowers. A resumed or forked
- * conversation already has it, so it is only added when the context starts empty.
- */
-function skillContext(source: string | undefined): string | undefined {
-  if (source === 'resume' || source === 'fork') return undefined;
-  let skill: string;
-  try {
-    skill = fs.readFileSync(SKILL_FILE, 'utf8');
-  } catch {
-    return undefined;
-  }
-  const body = skill.replace(/^---\n[\s\S]*?\n---\n+/, '').trim();
-  return `The telepathy plugin is installed in this session. This is its telepathy:using-telepathy skill, already loaded:\n\n${body}`;
-}
-
-/**
- * SessionStart: record which session/thread this agent process is running, so peers can address it, and
- * load the using-telepathy skill. Both agents accept the same `additionalContext` output.
+ * SessionStart: record which session/thread this agent process is running, so peers can address it.
+ * Prints nothing: both agents would add stdout to the model's context.
  */
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   registerSession(agent, agentPid, {
@@ -61,8 +37,6 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
-  const context = skillContext(input.source);
-  if (context) print({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } });
 }
 
 /**

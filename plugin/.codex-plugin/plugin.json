@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Telepathy for your coding agents: message Claude Code sessions from Codex and back. Their messages start a turn in this session.",
   "author": {
     "name": "Winterrks"

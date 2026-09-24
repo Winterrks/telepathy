@@ -1,10 +1,5 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
-// src/hook.ts
-import fs6 from "node:fs";
-import path8 from "node:path";
-import { fileURLToPath } from "node:url";
-
 // src/core/debug.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
@@ -483,20 +478,6 @@ async function readStdin() {
   return raw ? JSON.parse(raw) : {};
 }
 var print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-var SKILL_FILE = path8.join(path8.dirname(fileURLToPath(import.meta.url)), "..", "skills", "using-telepathy", "SKILL.md");
-function skillContext(source) {
-  if (source === "resume" || source === "fork") return void 0;
-  let skill;
-  try {
-    skill = fs6.readFileSync(SKILL_FILE, "utf8");
-  } catch {
-    return void 0;
-  }
-  const body = skill.replace(/^---\n[\s\S]*?\n---\n+/, "").trim();
-  return `The telepathy plugin is installed in this session. This is its telepathy:using-telepathy skill, already loaded:
-
-${body}`;
-}
 function sessionStart(agent, agentPid, input) {
   registerSession(agent, agentPid, {
     sessionId: input.session_id,
@@ -504,8 +485,6 @@ function sessionStart(agent, agentPid, input) {
     source: "hook",
     codexHome: agent === "codex" ? defaultCodexHome() : void 0
   });
-  const context = skillContext(input.source);
-  if (context) print({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } });
 }
 function listAgents(agentPid, input) {
   const selfId = peerId("claude", agentPid);

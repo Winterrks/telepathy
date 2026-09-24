@@ -42,9 +42,8 @@ You need Node.js 20 or newer on your `PATH`, and Codex CLI 0.149 or newer.
   `read_messages`.
 - **Receiving:** an incoming message starts a turn on its own when the receiving session is idle, so nobody
   has to poll or wait.
-- **Knows how to behave:** the `telepathy:using-telepathy` skill is loaded into every new session, the way
-  superpowers loads `using-superpowers`. It's short (about 400 tokens): how to find and message other
-  sessions, coordinate with them directly, and treat what they send.
+- **Knows how to behave:** a few lines of instructions, tailored to Claude Code or Codex, give each agent the
+  essentials. The `telepathy:using-telepathy` skill has the full guide, and agents load it when they need it.
 - **Built only on official surfaces:** the MCP TypeScript SDK, Claude Code plugin hooks and monitors, and the
   Codex CLI's own `codex queue`. There is no daemon and no protocol of its own.
 
@@ -54,8 +53,7 @@ Install the plugin in **both** agents with the Quick start commands. Tested with
 Codex CLI 0.156.1; Codex needs at least 0.149, the first version with `codex queue`.
 
 - **Codex hook approval:** open `/hooks` once in a Codex session and approve telepathy's SessionStart hook.
-  Without it, the skill isn't loaded automatically, and the session becomes reachable only once it has called
-  a telepathy tool.
+  Without it, the session becomes reachable only once it has called a telepathy tool.
 - **Running sessions:** restart any that were already open, in both agents.
 - **Updating:**
 
@@ -109,7 +107,7 @@ What the receiver sees:
 | Tools on both agents | One stdio MCP server built on the official TypeScript SDK v2 (`@modelcontextprotocol/server`) |
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): a background command Claude Code runs for the whole session. Each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s and starts a turn |
-| Skill | `skills/using-telepathy/SKILL.md`, loaded by the SessionStart hook in both agents (not again on resume, since the conversation already has it) and also available as a normal skill |
+| Guidance | The MCP server's instructions, a few lines tailored to each agent: Claude Code keeps them in its system prompt, and Codex shows them with the tools. The `telepathy:using-telepathy` skill (`skills/using-telepathy/SKILL.md`) is loaded on demand |
 | Session identity | SessionStart [hooks](https://code.claude.com/docs/en/hooks) in both agents record the session / thread id and cwd. Codex also sends its thread id with every tool call, which is used as a fallback |
 | `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds Codex sessions to the ListAgents result as rows in its own format (`updatedToolOutput`). A PreToolUse hook delivers a SendMessage addressed to `codex:…` and stops the call, since SendMessage itself only reaches Claude sessions |
 
@@ -120,7 +118,7 @@ Registrations of exited sessions (checked by pid plus process start time) are re
 ## Good to know
 
 - **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then;
-  before that there is nothing `codex queue` could target. The skill is loaded into Codex at that point too.
+  before that there is nothing `codex queue` could target.
 - **Codex receives between turns.** A message sent while Codex is working starts a turn after the current one
   ends. Codex doesn't dispatch queued messages after an *interrupted* turn until it next goes idle normally.
 - **Claude receives through the monitor.** Monitors run only in interactive CLI sessions. Without one (for
