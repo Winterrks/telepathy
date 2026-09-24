@@ -34410,7 +34410,7 @@ function readMessagesTool(selfId2, { id, limit }) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.4.0" : "0.0.0-dev";
+var VERSION = true ? "0.4.1" : "0.0.0-dev";
 
 // src/server.ts
 var argv = process.argv.slice(2);

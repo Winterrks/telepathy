@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.4.0" src="https://img.shields.io/badge/version-0.4.0-6d28d9">
+  <img alt="version 0.4.1" src="https://img.shields.io/badge/version-0.4.1-6d28d9">
   <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -172,10 +172,11 @@ Update: `gemini extensions update telepathy`. Gemini only starts extension MCP s
 ### Qwen Code
 
 ```sh
-qwen extensions install Winterrks/telepathy
+qwen extensions install https://github.com/Winterrks/telepathy/archive/refs/heads/main.tar.gz
 ```
 
-Update: `qwen extensions update telepathy`. Tested with Qwen Code 0.24.4.
+Update: `qwen extensions update telepathy`. Tested with Qwen Code 0.24.4. Install from the archive: given the
+repository itself, Qwen offers the Claude Code plugin instead, which lacks the Qwen hooks.
 
 ### Grok Build CLI
 
@@ -355,7 +356,7 @@ claude --plugin-dir ./plugin      # try it in one Claude Code session without in
 - `test/integration.test.ts`: drives the built plugin through the official MCP client SDK, runs the real hooks,
   monitor and OpenCode plugin, and uses a fake `codex` binary that records what `codex queue` would receive.
 
-`npm run build` also writes every agent's generated files (manifest versions, the Antigravity and Gemini copies, rule
+`npm run bundle` builds `plugin/dist` and also writes every agent's generated files (manifest versions, the Antigravity and Gemini copies, rule
 files). Agents cache installed plugins by version, so bump the version in `package.json` when you change the plugin.
 
 ## License
