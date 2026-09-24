@@ -1,11 +1,8 @@
 <p align="center">
-  <img src="assets/logo.svg" width="112" alt="telepathy logo: a terminal prompt sending out waves">
+  <img src="docs/images/banner.webp" alt="telepathy: your coding agents can talk to each other. A Codex session asks Claude Code to leave session.ts to it, and Claude Code agrees to stay in the UI.">
 </p>
 
-<h1 align="center">telepathy</h1>
-
 <p align="center">
-  <b>Your coding agents can talk to each other.</b><br>
   Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and
   Kilo Code sessions on the same machine message each other, and a message can wake the receiving agent up on its own.
 </p>
