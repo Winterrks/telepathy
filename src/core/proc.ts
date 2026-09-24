@@ -1,13 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import path from 'node:path';
+import { AGENT_IDS, type Agent, agentFromEnv, isAgentProcess } from './agents.ts';
 
-export type Agent = 'claude' | 'codex';
-export const AGENTS: readonly Agent[] = ['claude', 'codex'];
-
-export function parseAgent(value: string | undefined): Agent {
-  if (value === 'claude' || value === 'codex') return value;
-  throw new Error(`--agent must be "claude" or "codex" (got ${JSON.stringify(value)})`);
-}
+export { type Agent, parseAgent } from './agents.ts';
 
 export interface ProcInfo {
   pid: number;
@@ -69,27 +63,59 @@ export function isSameProcess(pid: number, recordedStart: string | undefined): b
   return current === undefined || current === recordedStart;
 }
 
-/**
- * Finds the pid of the agent process (the `claude` or `codex` CLI) that this process belongs to.
- * MCP servers, hooks and monitors are all descendants of it, so it is the one identifier they share.
- */
-export function findAgentPid(agent: Agent): number {
-  const override = Number(process.env.TELEPATHY_AGENT_PID);
-  if (Number.isInteger(override) && override > 0) return override;
+/** One `ps` column for one process; only needed for agents that run as node or Python scripts. */
+function psField(pid: number, field: 'args' | 'ucomm'): string | undefined {
+  try {
+    return execFileSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
+  } catch {
+    return undefined;
+  }
+}
 
+function lazy<T>(fn: () => T): () => T {
+  let done = false;
+  let value: T;
+  return () => {
+    if (!done) {
+      value = fn();
+      done = true;
+    }
+    return value;
+  };
+}
+
+export interface AgentProcess {
+  agent: Agent;
+  pid: number;
+}
+
+/**
+ * Finds the agent process (the `claude`, `codex`, `gemini`… CLI) this process belongs to: the nearest
+ * ancestor that is one. MCP servers, hooks and monitors are all descendants of it, so its pid is the one
+ * identifier they share. The agent named on the command line only breaks ties and serves as the fallback,
+ * because some agents run other agents' plugins (Qwen Code installs Claude Code plugins, for one).
+ */
+export function findAgent(hint: Agent): AgentProcess {
+  const override = Number(process.env.TELEPATHY_AGENT_PID);
+  if (Number.isInteger(override) && override > 0) return { agent: hint, pid: override };
+
+  const candidates = [hint, ...AGENT_IDS.filter((a) => a !== hint)];
   const table = processTable(0);
   const seen = new Set<number>();
   for (let pid = process.ppid; pid > 1 && !seen.has(pid); ) {
     seen.add(pid);
     const info = table.get(pid);
     if (!info) break;
-    if (path.basename(info.comm) === agent) return pid;
+    const args = lazy(() => psField(pid, 'args'));
+    const kernelName = lazy(() => psField(pid, 'ucomm'));
+    const agent = candidates.find((a) => isAgentProcess(a, info.comm, args, kernelName));
+    if (agent) return { agent, pid };
     pid = info.ppid;
   }
 
   // Claude Code exports its own pid to hooks, monitors and Bash commands.
   const claudePid = Number(process.env.CLAUDE_PID);
-  if (agent === 'claude' && Number.isInteger(claudePid) && isAlive(claudePid)) return claudePid;
+  if (hint === 'claude' && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: 'claude', pid: claudePid };
 
-  return process.ppid;
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
 }

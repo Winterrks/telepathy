@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "telepathy": {
+      "command": "node",
+      "args": [
+        "${CURSOR_PLUGIN_ROOT}/dist/server.mjs",
+        "--agent",
+        "cursor"
+      ],
+      "env": {
+        "TELEPATHY_HOME": "${env:TELEPATHY_HOME}",
+        "TELEPATHY_DEBUG": "${env:TELEPATHY_DEBUG}",
+        "TELEPATHY_CODEX_BIN": "${env:TELEPATHY_CODEX_BIN}",
+        "CODEX_HOME": "${env:CODEX_HOME}"
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "telepathy": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/dist/server.mjs", "--agent", "devin"]
+    }
+  }
+}

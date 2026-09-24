@@ -1,3 +1,4 @@
+import { agentSpec } from './agents.ts';
 import { codexActivity } from './codex-activity.ts';
 import { agentLabel, type Peer, peerRef } from './peers.ts';
 
@@ -10,14 +11,18 @@ export function formatAgo(ms: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
+/** Codex needs a thread id before `codex queue` can reach it. */
+const codexUnreachable = (peer: Peer) => peer.agent === 'codex' && !peer.sessionId;
+
 /**
- * One Codex session as a ListAgents row: `<name> [<ref>]  ·  <type>  ·  <status>  ·  started <time ago>`.
- * The status is left out when it can't be read.
+ * One other agent's session as a ListAgents row: `<name> [<ref>]  ·  <type>  ·  <status>  ·  started <time ago>`.
+ * The status is left out when it can't be read (only Codex's can, from its thread log).
  */
 export function listAgentsRow(peer: Peer, now = Date.now()): string {
   const columns = [peerRef(peer), 'interactive'];
-  if (!peer.sessionId) columns.push('not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)');
-  else {
+  if (codexUnreachable(peer)) {
+    columns.push('not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)');
+  } else if (peer.agent === 'codex' && peer.sessionId) {
     const status = peer.codexHome ? codexActivity(peer.codexHome, peer.sessionId) : undefined;
     if (status) columns.push(status);
   }
@@ -29,10 +34,15 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
 export function describePeer(peer: Peer): string {
   const notes: string[] = [agentLabel(peer.agent)];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
-  if (peer.agent === 'codex' && !peer.sessionId) {
+  if (codexUnreachable(peer)) {
     notes.push('not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)');
+  } else if (peer.agent !== 'codex' && !peer.hasListener) {
+    notes.push(
+      agentSpec(peer.agent).nextTurnHook && peer.hookRan
+        ? 'sees messages at its next turn'
+        : 'no listener: it reads messages only via read_messages',
+    );
   }
-  if (peer.agent === 'claude' && !peer.hasListener) notes.push('no listener: it reads messages only via read_messages');
   return `- ${peerRef(peer)} · ${notes.join(' · ')}`;
 }
 
@@ -40,7 +50,7 @@ export function formatPeerList(self: Peer, peers: Peer[]): string {
   const lines = [`This session is ${peerRef(self)}.`];
   if (!peers.length) {
     lines.push(
-      'No other sessions with telepathy are running. A Claude Code or Codex session appears here once it starts with the plugin installed.',
+      'No other sessions with telepathy are running. A session of any supported agent appears here once it starts with the plugin installed.',
     );
     return lines.join('\n');
   }

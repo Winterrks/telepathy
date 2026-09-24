@@ -1,0 +1,15 @@
+{
+  "name": "telepathy",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: Gemini CLI, Claude Code, Codex, OpenCode and other sessions on this machine message each other.",
+  "mcpServers": {
+    "telepathy": {
+      "command": "node",
+      "args": [
+        "${extensionPath}${/}plugin${/}dist${/}server.mjs",
+        "--agent",
+        "gemini"
+      ]
+    }
+  }
+}

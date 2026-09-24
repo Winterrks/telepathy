@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
+import type { Agent } from '../src/core/agents.ts';
 
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const DIST = path.join(ROOT, 'plugin', 'dist');
@@ -58,7 +59,7 @@ export async function killAndWait(child: ChildProcess): Promise<void> {
   });
 }
 
-export async function connectServer(sb: Sandbox, agent: 'claude' | 'codex', agentPid: number, cwd = ROOT) {
+export async function connectServer(sb: Sandbox, agent: Agent, agentPid: number, cwd = ROOT) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(DIST, 'server.mjs'), '--agent', agent],
@@ -76,9 +77,9 @@ export function toolText(result: { content?: unknown }): string {
   return content.map((c) => c.text ?? '').join('\n');
 }
 
-/** Runs a hook the way Claude Code / Codex do: JSON on stdin, output on stdout. */
-export function runHook(sb: Sandbox, agent: 'claude' | 'codex', agentPid: number, event: string, input: object) {
-  const res = spawnSync(process.execPath, [path.join(DIST, 'hook.mjs'), '--agent', agent, event], {
+/** Runs a hook the way the agents do: JSON on stdin, output on stdout (and for some, stderr plus exit code). */
+export function runHook(sb: Sandbox, agent: Agent, agentPid: number, event: string, input: object, ...extra: string[]) {
+  const res = spawnSync(process.execPath, [path.join(DIST, 'hook.mjs'), '--agent', agent, event, ...extra], {
     input: JSON.stringify(input),
     env: { ...sb.env, TELEPATHY_AGENT_PID: String(agentPid) },
     encoding: 'utf8',

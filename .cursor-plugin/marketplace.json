@@ -1,0 +1,12 @@
+{
+  "name": "telepathy",
+  "owner": { "name": "Winterrks" },
+  "metadata": { "description": "Telepathy: coding-agent sessions on one machine message each other." },
+  "plugins": [
+    {
+      "name": "telepathy",
+      "source": "./plugin",
+      "description": "Let Cursor, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other."
+    }
+  ]
+}

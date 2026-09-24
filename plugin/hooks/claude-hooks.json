@@ -1,0 +1,28 @@
+{
+  "description": "telepathy: register this Claude Code session, show other agents' sessions in ListAgents, and deliver SendMessage calls addressed to them.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude session-start" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "ListAgents",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude list-agents" }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "SendMessage",
+        "hooks": [
+          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude send-message", "timeout": 60 }
+        ]
+      }
+    ]
+  }
+}

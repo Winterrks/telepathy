@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      { "type": "command", "bash": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent copilot session-start", "timeoutSec": 15 }
+    ],
+    "userPromptSubmitted": [
+      { "type": "command", "bash": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent copilot inbox userPromptSubmitted", "timeoutSec": 10 }
+    ],
+    "postToolUse": [
+      { "type": "command", "bash": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent copilot inbox postToolUse", "timeoutSec": 10 }
+    ],
+    "agentStop": [
+      { "type": "command", "bash": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent copilot turn-end", "timeoutSec": 10 }
+    ]
+  }
+}

@@ -1,0 +1,57 @@
+{
+  "description": "telepathy (Gemini CLI): register this session and hand it messages from other agents at the next prompt, after tool calls and when a turn ends.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "telepathy-session-start",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent gemini session-start",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "BeforeAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "telepathy-inbox",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent gemini inbox BeforeAgent",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "AfterTool": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "telepathy-inbox-after-tool",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent gemini inbox AfterTool",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "AfterAgent": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "name": "telepathy-turn-end",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent gemini turn-end",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

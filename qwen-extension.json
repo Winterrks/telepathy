@@ -1,0 +1,62 @@
+{
+  "name": "telepathy",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: Qwen Code, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other.",
+  "mcpServers": {
+    "telepathy": {
+      "command": "node",
+      "args": [
+        "${extensionPath}/plugin/dist/server.mjs",
+        "--agent",
+        "qwen"
+      ]
+    }
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen session-start",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen inbox UserPromptSubmit",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen inbox PostToolUse",
+            "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen turn-end",
+            "timeout": 10000
+          }
+        ]
+      }
+    ]
+  }
+}

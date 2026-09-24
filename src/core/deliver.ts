@@ -3,9 +3,10 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { agentSpec } from './agents.ts';
 import {
   archiveMessage,
-  formatForCodex,
+  formatAsUserTurn,
   MAX_MESSAGE_CHARS,
   type Message,
   newMessageId,
@@ -124,7 +125,7 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
       };
     }
     try {
-      await queueIntoCodex(recipient.sessionId, formatForCodex(message), recipient.codexHome);
+      await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${(err as Error).message}` };
     }
@@ -135,9 +136,19 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
 
   writeToInbox(message);
   recordSent(self.id, recipient.id, body);
-  // Plugin monitors only run in interactive Claude Code sessions; without one, nothing announces the message.
-  const status = recipient.hasListener
-    ? `Message delivered to ${peerRef(recipient)}.`
-    : `Message stored for ${peerRef(recipient)}. It has no listener, so it will see it only when it calls read_messages.`;
-  return { ok: true, message, recipient, status };
+  return { ok: true, message, recipient, status: inboxStatus(recipient) };
+}
+
+/**
+ * What happens to a message left in a session's inbox. A listener (Claude's monitor, an in-process plugin)
+ * starts a turn right away; otherwise the agent's hooks may hand it over at its next turn; otherwise the
+ * session sees it only when it calls read_messages.
+ */
+function inboxStatus(recipient: Peer): string {
+  const ref = peerRef(recipient);
+  if (recipient.hasListener) return `Message delivered to ${ref}.`;
+  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+    return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
+  }
+  return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;
 }

@@ -3,12 +3,12 @@
   "owner": {
     "name": "Winterrks"
   },
-  "description": "Telepathy: Claude Code and Codex sessions on one machine message each other.",
+  "description": "Telepathy: coding-agent sessions on one machine (Claude Code, Codex, OpenCode, Gemini CLI and more) message each other.",
   "plugins": [
     {
       "name": "telepathy",
       "source": "./plugin",
-      "description": "Let Claude Code and Codex sessions on the same machine message each other.",
+      "description": "Let Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI and other agent sessions on this machine message each other.",
       "homepage": "https://github.com/Winterrks/telepathy"
     }
   ]

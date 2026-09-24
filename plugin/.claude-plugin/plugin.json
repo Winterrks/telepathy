@@ -1,7 +1,7 @@
 {
   "name": "telepathy",
-  "version": "0.3.0",
-  "description": "Telepathy for your coding agents: message Codex sessions from Claude Code and back. Codex sessions show up in ListAgents, SendMessage reaches them, and their replies wake this session.",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: this Claude Code session can message Codex, OpenCode, Gemini CLI, Copilot CLI and other agent sessions on this machine, and their messages wake it. Adds three tools (list_peers, send_message, read_messages), a SessionStart hook that registers the session, hooks on ListAgents and SendMessage that add other agents' sessions to them, and a background monitor that announces incoming messages. Everything stays on this machine in ~/.telepathy. It reads Claude Code's session-name files, Codex's session index, and the last turn marker of Codex session logs (for busy/idle status). No network calls, no telemetry.",
   "author": {
     "name": "Winterrks"
   },
@@ -10,9 +10,13 @@
   "license": "MIT",
   "keywords": [
     "codex",
+    "opencode",
+    "gemini-cli",
     "messaging",
     "multi-agent",
     "cross-session",
     "mcp"
-  ]
+  ],
+  "mcpServers": "./claude.mcp.json",
+  "hooks": "./hooks/claude-hooks.json"
 }

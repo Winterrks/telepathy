@@ -106,10 +106,11 @@ function pruneArchive(peerId: string): void {
 const describeSender = (from: Party) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
 
 /**
- * Text queued into a Codex thread. Codex shows queued text as a user turn, so the header says plainly
- * that another agent wrote it, mirroring how Claude Code labels cross-session messages.
+ * Text handed to an agent as a user turn (Codex's queue, an in-process plugin's injected prompt). It shows
+ * up where the user's own prompts do, so the header says plainly that another agent wrote it, mirroring how
+ * Claude Code labels cross-session messages.
  */
-export function formatForCodex(msg: Message): string {
+export function formatAsUserTurn(msg: Message): string {
   return [
     `[telepathy] Message from ${describeSender(msg.from)}.`,
     `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` +
@@ -117,6 +118,30 @@ export function formatForCodex(msg: Message): string {
     '',
     msg.body,
   ].join('\n');
+}
+
+/**
+ * Messages handed over by a hook, as context for the next model call or as the prompt that continues a turn.
+ * Hooks can't carry much (Copilot caps it at 10 KB), so long messages come as a preview plus read_messages.
+ */
+export function formatForContext(messages: Message[], { lead: withLead = true, inlineLimit = 4000 } = {}): string {
+  // Delivered next to the user's prompt or a tool result, a message is easy to overlook; say what to do with it.
+  const lead =
+    `[telepathy] ${messages.length === 1 ? 'A new message' : `${messages.length} new messages`} from another AI agent ` +
+    "session (not your user). Deal with it alongside your current work: reply with send_message if it asks for something.";
+  const bodies = messages
+    .map((msg) => {
+      if (msg.body.length <= inlineLimit) return formatAsUserTurn(msg);
+      const preview: Message = {
+        ...msg,
+        body:
+          `${msg.body.slice(0, 1500)}…\n\n(First 1500 of ${msg.body.length} characters. Call read_messages with id ` +
+          `"${msg.id}" for the full text.)`,
+      };
+      return formatAsUserTurn(preview);
+    })
+    .join('\n\n');
+  return withLead ? `${lead}\n\n${bodies}` : bodies;
 }
 
 /** One stdout line for the Claude Code monitor; each line becomes one notification for Claude. */

@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { after, before, describe, test } from 'node:test';
+import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { formatAgo } from '../src/core/listing.ts';
-import { formatForCodex, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
+import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
 import { peerDir } from '../src/core/paths.ts';
 import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
 
-const peer = (agent: 'claude' | 'codex', pid: number, name: string): Peer => ({
+const peer = (agent: Agent, pid: number, name: string): Peer => ({
   id: `${agent}-${pid}`,
   agent,
   pid,
@@ -37,6 +38,9 @@ describe('resolvePeer', () => {
     peer('codex', 102, 'Fix auth flow'),
     peer('codex', 103, 'Billing migration'),
     peer('claude', 201, 'billing-review'),
+    peer('claude', 202, 'pi-server'),
+    peer('gemini', 301, 'docs'),
+    peer('pi', 401, 'ui'),
   ];
   const ok = (to: string) => {
     const r = resolvePeer(to, peers);
@@ -52,6 +56,14 @@ describe('resolvePeer', () => {
     assert.equal(ok('Billing migration'), 'codex-103');
     assert.equal(ok('claude:billing'), 'claude-201');
     assert.equal(ok('billing-r'), 'claude-201');
+    assert.equal(ok('gemini:docs'), 'gemini-301');
+    assert.equal(ok('pi-401'), 'pi-401');
+    assert.equal(ok('pi:ui'), 'pi-401');
+  });
+
+  test('a name that starts like an agent id is still just a name', () => {
+    assert.equal(ok('pi-server'), 'claude-202');
+    assert.equal(ok('pi-serv'), 'claude-202');
   });
 
   test('reports ambiguity with refs instead of guessing', () => {
@@ -68,6 +80,31 @@ describe('resolvePeer', () => {
     assert.ok('error' in r);
     assert.match(r.error, /No reachable session matches/);
     assert.match(r.error, /codex:billing-migration \[codex-103\]/);
+  });
+});
+
+describe('agents', () => {
+  const none = () => undefined;
+  test('recognizes native binaries by name, scripts by command line, generic names by path', () => {
+    assert.ok(isAgentProcess('codex', '/opt/homebrew/bin/codex', none));
+    assert.ok(isAgentProcess('claude', 'claude', none));
+    assert.ok(isAgentProcess('gemini', '/opt/homebrew/opt/node/bin/node', () => 'node /opt/homebrew/bin/gemini --yolo'));
+    assert.ok(isAgentProcess('qwen', 'node', () => 'node /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js'));
+    assert.ok(isAgentProcess('kimi', 'kimi-code', none)); // Kimi Code sets its process title
+    assert.ok(isAgentProcess('cursor', 'node', () => 'node /Users/me/.local/share/cursor-agent/versions/2026.09.18/index.js'));
+    // Cursor's wrapper runs `exec -a "$0" node …`: ps shows a truncated argv[0], the kernel still says node.
+    const cursorArgs = () => '/opt/homebrew/bin/cursor-agent --use-system-ca /opt/homebrew/Caskroom/cursor-cli/x/dist-package/index.js';
+    assert.ok(isAgentProcess('cursor', '/opt/homebrew/bi', cursorArgs, () => 'node'));
+    assert.ok(!isAgentProcess('cursor', '/opt/homebrew/bi', cursorArgs, () => 'bash'));
+    assert.ok(isAgentProcess('grok', '/Users/me/.grok/bin/agent', none));
+    assert.ok(!isAgentProcess('cursor', '/Users/me/.grok/bin/agent', none));
+    assert.ok(!isAgentProcess('gemini', 'node', () => 'node /usr/lib/node_modules/some-mcp-server/index.js'));
+    assert.ok(!isAgentProcess('pi', 'node', () => 'node /tmp/pipeline.js'));
+  });
+
+  test('--agent accepts only known ids', () => {
+    assert.equal(parseAgent('opencode'), 'opencode');
+    assert.throws(() => parseAgent('vim'), /--agent must be one of/);
   });
 });
 
@@ -88,7 +125,7 @@ describe('message formatting', () => {
   });
 
   test('Codex text says who sent it, that it is not the user, and how to reply', () => {
-    const text = formatForCodex(msg);
+    const text = formatAsUserTurn(msg);
     assert.match(text, /^\[telepathy\] Message from Claude Code session claude:api-worker \[claude-1\]/);
     assert.match(text, /not typed by your user/);
     assert.match(text, /to: "claude:api-worker"/);

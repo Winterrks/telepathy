@@ -1,0 +1,22 @@
+{
+  "name": "telepathy",
+  "displayName": "Telepathy",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: Cursor, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other.",
+  "author": {
+    "name": "Winterrks"
+  },
+  "homepage": "https://github.com/Winterrks/telepathy",
+  "repository": "https://github.com/Winterrks/telepathy",
+  "license": "MIT",
+  "keywords": [
+    "telepathy",
+    "messaging",
+    "multi-agent",
+    "mcp"
+  ],
+  "logo": "assets/logo.svg",
+  "skills": "./skills/",
+  "hooks": "./hooks/cursor-hooks.json",
+  "mcpServers": "./cursor.mcp.json"
+}

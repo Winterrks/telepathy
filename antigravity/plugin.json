@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "telepathy",
+  "description": "Telepathy for your coding agents: Antigravity, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other."
+}

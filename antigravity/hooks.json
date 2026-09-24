@@ -1,0 +1,10 @@
+{
+  "telepathy": {
+    "PreInvocation": [
+      { "type": "command", "command": "node dist/hook.mjs --agent antigravity inbox PreInvocation", "timeout": 10 }
+    ],
+    "Stop": [
+      { "type": "command", "command": "node dist/hook.mjs --agent antigravity turn-end", "timeout": 10 }
+    ]
+  }
+}

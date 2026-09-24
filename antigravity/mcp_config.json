@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "telepathy": {
+      "command": "node",
+      "args": ["dist/server.mjs", "--agent", "antigravity"]
+    }
+  }
+}

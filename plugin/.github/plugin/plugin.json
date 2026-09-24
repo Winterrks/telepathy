@@ -1,0 +1,20 @@
+{
+  "name": "telepathy",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: Copilot CLI, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other.",
+  "author": {
+    "name": "Winterrks"
+  },
+  "homepage": "https://github.com/Winterrks/telepathy",
+  "repository": "https://github.com/Winterrks/telepathy",
+  "license": "MIT",
+  "keywords": [
+    "telepathy",
+    "messaging",
+    "multi-agent",
+    "mcp"
+  ],
+  "skills": "skills",
+  "hooks": "hooks/copilot-hooks.json",
+  "mcpServers": "copilot.mcp.json"
+}

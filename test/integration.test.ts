@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { Agent } from '../src/core/agents.ts';
 import { after, afterEach, before, describe, test } from 'node:test';
 import type { Client } from '@modelcontextprotocol/client';
 import {
@@ -223,7 +224,7 @@ describe('telepathy plugin', () => {
   });
 
   describe('Claude Code hooks', () => {
-    test('ListAgents gets the Codex sessions added to its listing, as rows in its own shape', () => {
+    test('ListAgents gets other agents\' sessions added to its listing, as rows in its own shape', () => {
       const claudeAgent = spawnAgent();
       const codexAgent = spawnAgent();
       const listing =
@@ -238,7 +239,7 @@ describe('telepathy plugin', () => {
       assert.equal(out.hookEventName, 'PostToolUse');
       assert.equal(out.additionalContext, undefined);
       const rewritten: string = out.updatedToolOutput.listing;
-      assert.ok(rewritten.startsWith(`${listing}\n\nCodex sessions (1), reachable through the telepathy plugin `));
+      assert.ok(rewritten.startsWith(`${listing}\n\nOther agents' sessions (1), reachable through the telepathy plugin `));
       const added = rewritten.slice(listing.length);
       assert.match(added, /with SendMessage or its send_message tool/);
       // No rollout log for thread "t" in this sandbox, so the status column is left out.
@@ -289,7 +290,7 @@ describe('telepathy plugin', () => {
       assert.equal(out.permissionDecision, 'deny');
       assert.equal(
         out.permissionDecisionReason,
-        `Delivered by telepathy to codex:auth [codex-${codexAgent.pid}]. SendMessage can't reach Codex, so this shows as an error. Don't resend.`,
+        `Message queued for delivery to codex:auth [codex-${codexAgent.pid}]. (Sent by telepathy: SendMessage can't reach Codex, so this shows as an error. Don't resend.)`,
       );
       const [queued] = codexCalls(sb);
       assert.equal(queued.argv[1], '--thread=thread-x');
@@ -325,14 +326,175 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', {
         tool_input: { to: `codex-${codexAgent.pid}`, message: 'by ref' },
       });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Delivered by telepathy to codex:/);
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Message queued for delivery to codex:/);
       assert.equal(codexCalls(sb)[0].argv[1], '--thread=thread-r');
     });
 
     test('a failing hook never blocks the agent', () => {
       const res = runHook(sb, 'claude', 1, 'bogus-event', {});
       assert.equal(res.status, 0);
-      assert.match(res.stderr, /unknown hook event/);
+      assert.match(res.stderr, /unknown hook action/);
+    });
+  });
+
+  describe('OpenCode and Kilo Code plugin', () => {
+    /** Runs the built plugin in its own process (its pid is the session identity) with a fake SDK client. */
+    function startOpenCode(directory: string) {
+      const child = spawn(process.execPath, [path.join(ROOT, 'test', 'fixtures', 'opencode-driver.mjs'), path.join(DIST, 'opencode.mjs'), directory], {
+        env: sb.env,
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      agents.push(child as ReturnType<typeof fakeAgent>);
+      const lines: Record<string, unknown>[] = [];
+      let buf = '';
+      child.stdout!.on('data', (chunk) => {
+        buf += chunk;
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          lines.push(JSON.parse(buf.slice(0, i)));
+          buf = buf.slice(i + 1);
+        }
+      });
+      const send = (cmd: object) => child.stdin!.write(JSON.stringify(cmd) + '\n');
+      const next = (key: string) => waitFor(() => lines.find((l) => key in l && !(l as { seen?: boolean }).seen));
+      const take = async (key: string) => {
+        const line = await next(key);
+        (line as { seen?: boolean }).seen = true;
+        return line as Record<string, any>;
+      };
+      return { child, send, take, lines };
+    }
+
+    test('registers native tools, and wakes the active session with promptAsync once it is idle', async () => {
+      const oc = startOpenCode('/w/ui');
+      const ready = await oc.take('ready');
+      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages']);
+      const pid = ready.ready as number;
+
+      oc.send({ op: 'chat', sessionID: 'ses_main' });
+      oc.send({ op: 'event', event: { type: 'session.status', properties: { sessionID: 'ses_main', status: { type: 'busy' } } } });
+      await oc.take('done');
+      await oc.take('done');
+
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
+      const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', { tool_input: { to: 'opencode:ui', message: 'new daemon API is in' } });
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`^Message delivered to opencode:ui \\[opencode-${pid}\\]\\.`));
+
+      await new Promise((r) => setTimeout(r, 400));
+      assert.ok(!oc.lines.some((l) => 'prompt' in l), 'must not prompt a busy session');
+
+      oc.send({ op: 'event', event: { type: 'session.idle', properties: { sessionID: 'ses_main' } } });
+      const { prompt } = await oc.take('prompt');
+      assert.equal(prompt.path.id, 'ses_main');
+      assert.equal(prompt.body.agent, 'build');
+      assert.match(prompt.body.parts[0].text, /^\[telepathy\] Message from Claude Code session claude:sdk/);
+      assert.match(prompt.body.parts[0].text, /new daemon API is in$/);
+    });
+
+    test('tools and the system-prompt guide work like the MCP server\'s', async () => {
+      const oc = startOpenCode('/w/ui2');
+      await oc.take('ready');
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/api' });
+      oc.send({ op: 'tool', name: 'telepathy_list_peers', sessionID: 'ses_x' });
+      assert.match((await oc.take('tool')).output, /claude:api \[claude-\d+\]/);
+      oc.send({ op: 'tool', name: 'telepathy_send_message', args: { to: 'claude:api', message: 'hi from opencode' }, sessionID: 'ses_x' });
+      assert.match((await oc.take('tool')).output, /^Message stored for claude:api/);
+      oc.send({ op: 'system' });
+      assert.match((await oc.take('system')).system[0], /^telepathy: message other coding-agent sessions/);
+    });
+  });
+
+  describe('delivery through hooks, for agents nothing can wake while idle', () => {
+    /** Claude sends `text` to `to` through its SendMessage hook; returns the stated delivery status. */
+    const sendFromClaude = (to: string, text: string) => {
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/web' });
+      const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', { tool_input: { to, message: text } });
+      return JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason as string;
+    };
+
+    test('Gemini gets messages as context at its next prompt or tool call, once', () => {
+      const gemini = spawnAgent();
+      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g-1', cwd: '/w/docs', hook_event_name: 'SessionStart' });
+      const status = sendFromClaude('gemini:docs', 'Is the API reference current?');
+      assert.equal(
+        status,
+        `Message stored for gemini:docs [gemini-${gemini.pid}]. It can't be woken while idle, so it will see it at its next turn. ` +
+          "(Sent by telepathy: SendMessage can't reach Gemini CLI, so this shows as an error. Don't resend.)",
+      );
+      const res = runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1', hook_event_name: 'AfterTool' }, 'AfterTool');
+      const out = JSON.parse(res.stdout).hookSpecificOutput;
+      assert.equal(out.hookEventName, 'AfterTool');
+      assert.match(out.additionalContext, /^\[telepathy\] A new message from another AI agent session \(not your user\)/);
+      assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
+      assert.match(out.additionalContext, /Is the API reference current\?$/);
+      assert.equal(runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1' }, 'BeforeAgent').stdout, '');
+    });
+
+    test('a turn that ends with messages pending goes on with them, in each agent\'s own shape', () => {
+      const cases: [Agent, (res: ReturnType<typeof runHook>) => string][] = [
+        ['gemini', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
+        ['qwen', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
+        ['grok', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
+        ['devin', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
+        ['copilot', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
+        ['cursor', (r) => JSON.parse(r.stdout).followup_message],
+        ['antigravity', (r) => JSON.parse(r.stdout).decision === 'continue' && JSON.parse(r.stdout).reason],
+        ['kimi', (r) => (r.status === 2 && r.stdout === '' ? r.stderr : '')],
+      ];
+      for (const [agent, delivered] of cases) {
+        const proc = spawnAgent();
+        runHook(sb, agent, proc.pid, 'session-start', { session_id: `${agent}-s`, cwd: `/w/${agent}-proj` });
+        sendFromClaude(`${agent}:${agent}-proj`, `ping ${agent}`);
+        const res = runHook(sb, agent, proc.pid, 'turn-end', { session_id: `${agent}-s`, status: 'completed' });
+        assert.match(delivered(res) || '', new RegExp(`ping ${agent}$`), `${agent}: ${JSON.stringify(res)}`);
+        const again = runHook(sb, agent, proc.pid, 'turn-end', { session_id: `${agent}-s`, status: 'completed' });
+        assert.deepEqual([again.stdout, again.status], ['', 0], `${agent} must stop once the inbox is empty`);
+      }
+    });
+
+    test('context shapes: Copilot and Cursor use their own fields, Kimi plain text, Antigravity a user message', () => {
+      const expect: [Agent, (stdout: string) => string][] = [
+        ['copilot', (o) => JSON.parse(o).additionalContext],
+        ['cursor', (o) => JSON.parse(o).additional_context],
+        ['kimi', (o) => o],
+        ['antigravity', (o) => JSON.parse(o).injectSteps[0].userMessage],
+      ];
+      for (const [agent, text] of expect) {
+        const proc = spawnAgent();
+        runHook(sb, agent, proc.pid, 'session-start', { session_id: `${agent}-c`, cwd: `/w/${agent}-ctx` });
+        sendFromClaude(`${agent}:${agent}-ctx`, `hello ${agent}`);
+        const res = runHook(sb, agent, proc.pid, 'inbox', { session_id: `${agent}-c` });
+        assert.match(text(res.stdout), new RegExp(`hello ${agent}$`), agent);
+      }
+    });
+
+    test('an interrupted turn does not take the messages; the next one does', () => {
+      const cursor = spawnAgent();
+      runHook(sb, 'cursor', cursor.pid, 'session-start', { conversation_id: 'c-9', workspace_roots: ['/w/site'] });
+      sendFromClaude('cursor:site', 'after the interrupt');
+      assert.equal(runHook(sb, 'cursor', cursor.pid, 'turn-end', { conversation_id: 'c-9', status: 'aborted' }).stdout, '');
+      const res = runHook(sb, 'cursor', cursor.pid, 'turn-end', { conversation_id: 'c-9', status: 'completed' });
+      assert.match(JSON.parse(res.stdout).followup_message, /after the interrupt$/);
+    });
+
+    test('an agent without a session-start event registers from its first hook', () => {
+      const agy = spawnAgent();
+      runHook(sb, 'antigravity', agy.pid, 'inbox', { conversationId: 'conv-1', workspacePaths: ['/w/infra'] }, 'PreInvocation');
+      const status = sendFromClaude('antigravity:infra', 'hi');
+      assert.match(status, new RegExp(`^Message stored for antigravity:infra \\[antigravity-${agy.pid}\\]\\. It can't be woken while idle`));
+    });
+
+    test('Copilot and Cursor get the guide at session start, since they don\'t show MCP instructions', () => {
+      const copilot = spawnAgent();
+      const guide = JSON.parse(runHook(sb, 'copilot', copilot.pid, 'session-start', { sessionId: 'x', cwd: '/w/a' }).stdout);
+      assert.match(guide.additionalContext, /^telepathy: message other coding-agent sessions/);
+      const cursor = spawnAgent();
+      const cguide = JSON.parse(runHook(sb, 'cursor', cursor.pid, 'session-start', { conversation_id: 'y' }).stdout);
+      assert.match(cguide.additional_context, /come from another AI agent, not your user/);
+      const gemini = spawnAgent();
+      assert.equal(runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'z' }).stdout, '');
     });
   });
 });

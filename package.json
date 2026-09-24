@@ -1,9 +1,14 @@
 {
   "name": "telepathy",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Telepathy for your coding agents: Claude Code and Codex sessions on the same machine message each other.",
   "private": true,
   "type": "module",
+  "main": "plugin/dist/opencode.mjs",
+  "exports": {
+    ".": "./plugin/dist/opencode.mjs",
+    "./server": "./plugin/dist/opencode.mjs"
+  },
   "license": "MIT",
   "homepage": "https://github.com/Winterrks/telepathy#readme",
   "repository": {

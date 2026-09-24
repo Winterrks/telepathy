@@ -1,0 +1,17 @@
+{
+  "description": "telepathy (Devin CLI): register this session and hand it messages from other agents at the next prompt, after tool calls and when a turn ends.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"$DEVIN_PLUGIN_ROOT/dist/hook.mjs\" --agent devin session-start", "timeout": 10 }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "node \"$DEVIN_PLUGIN_ROOT/dist/hook.mjs\" --agent devin inbox UserPromptSubmit", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "matcher": "", "hooks": [{ "type": "command", "command": "node \"$DEVIN_PLUGIN_ROOT/dist/hook.mjs\" --agent devin inbox PostToolUse", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"$DEVIN_PLUGIN_ROOT/dist/hook.mjs\" --agent devin turn-end", "timeout": 10 }] }
+    ]
+  }
+}

@@ -1,15 +1,19 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
 import { peerDir, peersDir, readJson, writeJsonAtomic } from './paths.ts';
-import { type Agent, isSameProcess, procStart } from './proc.ts';
+import { isSameProcess, procStart } from './proc.ts';
+
+export { agentLabel };
 
 /**
  * The registry is one directory per agent process, `peers/<agent>-<pid>/`, holding one file per writer
  * so no two processes ever write the same file:
- *   session.json   SessionStart hook: session/thread id and cwd (documented hook input)
- *   presence.json  MCP server: proves the plugin is loaded in that session
- *   listener.json  Claude monitor: proves inbound messages will reach the model
+ *   session.json   SessionStart hook (or in-process plugin): session/thread id and cwd
+ *   presence.json  MCP server (or in-process plugin): proves telepathy is loaded in that session
+ *   listener.json  whatever wakes the session when a message arrives (Claude's monitor, an in-process
+ *                  plugin): proves inbound messages reach the model without it asking
  */
 export interface SessionRecord {
   agent: Agent;
@@ -17,8 +21,8 @@ export interface SessionRecord {
   procStart?: string;
   sessionId?: string;
   cwd?: string;
-  /** Where the id came from: the SessionStart hook, or the `_meta` of a Codex tool call. */
-  source: 'hook' | 'meta';
+  /** Where the id came from: a SessionStart hook, the `_meta` of a Codex tool call, or an in-process plugin. */
+  source: 'hook' | 'meta' | 'plugin';
   codexHome?: string;
   updatedAt: string;
 }
@@ -54,6 +58,8 @@ export interface Peer {
   address: string;
   hasListener: boolean;
   hasServer: boolean;
+  /** Its session was registered by a hook, so the agent runs telepathy's hooks. */
+  hookRan?: boolean;
   /**
    * Other names that also reach this peer. The cwd's folder name stays valid after a Codex thread gets its
    * title (or a Claude session is renamed), so an address another agent already has keeps working.
@@ -62,7 +68,15 @@ export interface Peer {
 }
 
 export const peerId = (agent: Agent, pid: number) => `${agent}-${pid}`;
-const PEER_DIR_RE = /^(claude|codex)-(\d+)$/;
+/**
+ * A peer's id and directory name: `<agent>-<key>`. Every agent is keyed by the pid of its process today;
+ * the key may become a session id for agents that host many sessions in one process.
+ */
+const PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
+/** `codex:` at the start of an address. */
+const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
+/** A pid ref like `codex-4242`. */
+const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-\\d+$`);
 
 export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
 const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
@@ -145,7 +159,8 @@ function codexThreadName(codexHome: string, sessionId: string | undefined): stri
 }
 
 function displayName(agent: Agent, pid: number, cwd: string | undefined, sessionId: string | undefined, codexHome: string) {
-  const fromAgent = agent === 'claude' ? claudeSessionName(pid) : codexThreadName(codexHome, sessionId);
+  const fromAgent =
+    agent === 'claude' ? claudeSessionName(pid) : agent === 'codex' ? codexThreadName(codexHome, sessionId) : undefined;
   return fromAgent || (cwd ? path.basename(cwd) : '') || `session-${pid}`;
 }
 
@@ -154,12 +169,12 @@ export function readPeer(id: string): Peer | undefined {
   const m = PEER_DIR_RE.exec(id);
   if (!m) return undefined;
   const agent = m[1] as Agent;
-  const pid = Number(m[2]);
   const dir = peerDir(id);
   const session = readJson<SessionRecord>(path.join(dir, 'session.json'));
   const presence = readJson<PresenceRecord>(path.join(dir, 'presence.json'));
   const listener = readJson<ListenerRecord>(path.join(dir, 'listener.json'));
   if (!session && !presence) return undefined;
+  const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
   const name = displayName(agent, pid, cwd, session?.sessionId, codexHome);
@@ -176,6 +191,7 @@ export function readPeer(id: string): Peer | undefined {
     address: `${agent}:${slugify(name) || id}`,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, undefined),
+    hookRan: session?.source === 'hook',
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : [],
   };
 }
@@ -193,7 +209,9 @@ export function listPeers(): Peer[] {
     const m = PEER_DIR_RE.exec(name);
     if (!m) continue;
     const peer = readPeer(name);
-    if (!isSameProcess(Number(m[2]), peer?.procStart)) {
+    const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : undefined);
+    if (pid === undefined) continue; // not registered yet
+    if (!isSameProcess(pid, peer?.procStart)) {
       // The session is gone (or its pid was reused); nothing can be delivered to it anymore.
       fs.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
@@ -219,8 +237,6 @@ export function selfPeer(agent: Agent, pid: number): Peer {
     }
   );
 }
-
-export const agentLabel = (agent: Agent) => (agent === 'claude' ? 'Claude Code' : 'Codex');
 
 /** `codex:fix-auth [codex-4242]` — the same `name [ref]` shape Claude Code's ListAgents uses. */
 export const peerRef = (peer: Pick<Peer, 'address' | 'id'>) => `${peer.address} [${peer.id}]`;
@@ -249,8 +265,9 @@ export function resolvePeer(to: string, peers: Peer[]): Resolution {
   };
 
   const slugsOf = (p: Peer) => [p.address.slice(p.agent.length + 1), ...(p.aliases ?? [])];
-  const qSlug = slugify(q.replace(/^(claude|codex):/, ''));
-  const qAgent = /^(claude|codex)[:-]/.exec(q)?.[1];
+  const qSlug = slugify(q.replace(AGENT_PREFIX_RE, ''));
+  // Only an explicit `agent:` prefix or a ref narrows by agent: a bare "pi-server" may name any session.
+  const qAgent = AGENT_PREFIX_RE.exec(q)?.[1] ?? (REF_RE.test(q) ? q.slice(0, q.lastIndexOf('-')) : undefined);
   const sameAgent = (p: Peer) => !qAgent || p.agent === qAgent;
 
   return (

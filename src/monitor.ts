@@ -4,7 +4,7 @@ import { debugLog } from './core/debug.ts';
 import { claimInbox, formatMonitorLine } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir } from './core/paths.ts';
 import { peerId, registerListener } from './core/peers.ts';
-import { findAgentPid, isAlive, parseAgent } from './core/proc.ts';
+import { findAgent, isAlive, parseAgent } from './core/proc.ts';
 
 /**
  * Claude Code plugin monitor. Claude Code runs it for the whole session and turns every stdout line into a
@@ -12,8 +12,7 @@ import { findAgentPid, isAlive, parseAgent } from './core/proc.ts';
  * prints one line per arriving message.
  */
 const argv = process.argv.slice(2);
-const agent = parseAgent(argv[argv.indexOf('--agent') + 1]);
-const agentPid = findAgentPid(agent);
+const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
 const id = peerId(agent, agentPid);
 const listenerFile = path.join(peerDir(id), 'listener.json');
 

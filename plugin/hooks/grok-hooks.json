@@ -1,0 +1,14 @@
+{
+  "description": "telepathy: register this Grok session and hand it messages from other agents after tool calls and when a turn ends.",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "node \"${GROK_PLUGIN_ROOT}/dist/hook.mjs\" --agent grok session-start", "timeout": 10 }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "node \"${GROK_PLUGIN_ROOT}/dist/hook.mjs\" --agent grok inbox PostToolUse", "timeout": 10 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "node \"${GROK_PLUGIN_ROOT}/dist/hook.mjs\" --agent grok turn-end", "timeout": 10 }] }
+    ]
+  }
+}

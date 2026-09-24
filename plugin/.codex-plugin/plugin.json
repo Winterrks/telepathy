@@ -1,7 +1,7 @@
 {
   "name": "telepathy",
-  "version": "0.3.0",
-  "description": "Telepathy for your coding agents: message Claude Code sessions from Codex and back. Their messages start a turn in this session.",
+  "version": "0.4.0",
+  "description": "Telepathy for your coding agents: this Codex session can message Claude Code, OpenCode, Gemini CLI and other agent sessions on this machine, and their messages start a turn here. Everything stays on this machine in ~/.telepathy; no network calls, no telemetry.",
   "author": {
     "name": "Winterrks"
   },
@@ -10,6 +10,8 @@
   "license": "MIT",
   "keywords": [
     "claude-code",
+    "opencode",
+    "gemini-cli",
     "messaging",
     "multi-agent",
     "cross-session",
@@ -20,14 +22,23 @@
   "hooks": "./hooks/codex-hooks.json",
   "interface": {
     "displayName": "Telepathy",
-    "shortDescription": "Message Claude Code sessions on this machine",
-    "longDescription": "Lets this Codex session list, message and be messaged by Claude Code (and other Codex) sessions running on the same machine. Incoming messages start a new turn here.",
+    "shortDescription": "Message other agent sessions",
+    "longDescription": "Lets this Codex session find, message and be messaged by the other coding-agent sessions on this machine: Claude Code, other Codex sessions, OpenCode, Gemini CLI, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and Kilo Code. Incoming messages start a new turn here, so two agents can coordinate on their own, for example a UI session asking the backend session for an API change. Local only: messages go through ~/.telepathy on this machine, with no network calls and no telemetry.",
     "developerName": "Winterrks",
-    "category": "Productivity",
+    "category": "Developer Tools",
     "capabilities": [
       "Interactive",
       "Write"
     ],
-    "websiteURL": "https://github.com/Winterrks/telepathy"
+    "websiteURL": "https://github.com/Winterrks/telepathy",
+    "defaultPrompt": [
+      "List the other agent sessions on this machine",
+      "Ask the Claude Code session in this repo what it is working on",
+      "Tell the other sessions in this repo that the API change landed"
+    ],
+    "supportURL": "https://github.com/Winterrks/telepathy/issues",
+    "brandColor": "#6D28D9",
+    "logo": "./assets/logo.svg",
+    "composerIcon": "./assets/logo.svg"
   }
 }
