@@ -9,6 +9,7 @@ import {
   defaultCodexHome,
   listPeers,
   peerId,
+  readPeer,
   readSession,
   registerSession,
   selfPeer,
@@ -94,6 +95,7 @@ interface HookShape {
 }
 
 const SHAPES: Partial<Record<Agent, HookShape>> = {
+  claude: { context: hookSpecificContext, turnEnd: blockStop },
   gemini: { context: hookSpecificContext, turnEnd: blockStop },
   qwen: { context: hookSpecificContext, turnEnd: blockStop },
   devin: { context: hookSpecificContext, turnEnd: blockStop },
@@ -147,11 +149,18 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   registerSession(agent, agentPid, { sessionId: sessionId ?? existing?.sessionId, cwd: cwd ?? existing?.cwd, source: 'hook' });
 }
 
+/**
+ * Whether something else already wakes this session with its messages: Claude's plugin monitor, or the monitor Grok
+ * runs with its monitor tool. Then the hooks stay out of its way.
+ */
+const hasListener = (agent: Agent, agentPid: number) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
+
 /** Before a prompt or after a tool call: pending messages go into the model's context. */
 function inbox(agent: Agent, agentPid: number, input: HookInput, event: string): void {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  if (hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (!messages.length) return;
   debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
@@ -173,7 +182,7 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
-  if (!endedNormally(input)) return;
+  if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (!messages.length) return;
   debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);

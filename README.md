@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.4.2" src="https://img.shields.io/badge/version-0.4.2-6d28d9">
+  <img alt="version 0.4.3" src="https://img.shields.io/badge/version-0.4.3-6d28d9">
   <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -69,7 +69,7 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
 
 | Agent | How it receives a message | Tested live |
 |---|---|---|
-| **Claude Code** | Wakes an idle session (plugin monitor) | ✅ |
+| **Claude Code** | Wakes an idle session (plugin monitor); in the Claude app's Code tab, next turn (hooks) | ✅ |
 | **Codex CLI** | Wakes an idle session (`codex queue`) | ✅ |
 | **OpenCode** 1.x | Wakes an idle session (in-process plugin) | ✅ |
 | **Kilo Code** CLI | Wakes an idle session (same plugin as OpenCode) | Loads and registers; no model run yet |
@@ -87,8 +87,9 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
   while the agent is working, the turn keeps going with it instead of stopping. An idle session sees it when you next
   prompt it; senders are told so.
 
-Not supported yet: OpenCode 2.x (one shared background server hosts every session), the Cursor and Kilo Code IDE
-extensions and the Antigravity desktop app (one process hosts many chats), Hermes Agent, OpenClaw and Pi.
+Not supported yet: OpenCode 2.x (one shared background server hosts every session); the ChatGPT app's Codex, the
+Cursor and Kilo Code IDE extensions and the Antigravity desktop app (one process hosts many chats, so they share one
+address); Claude Cowork (it runs in a VM, which can't see the other sessions); Hermes Agent, OpenClaw and Pi.
 
 ## Quick start
 
@@ -293,8 +294,9 @@ are removed automatically.
 - **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then. Copilot
   and Antigravity also register their folder name at the first prompt; before that they show up as `session-<pid>`.
 - **Codex receives between turns.** A message sent while Codex is working starts a turn after the current one ends.
-- **Claude receives through the monitor.** Monitors run only in interactive CLI sessions. Without one (for example
-  `claude -p`), messages wait until Claude calls `read_messages`, and senders are told so.
+- **Claude receives through the monitor.** Monitors run only in interactive CLI sessions. The Claude app's Code tab
+  and `claude -p` run Claude Code in stream-json mode, where monitors don't start; there telepathy's hooks hand
+  messages over at the next prompt or when a turn ends, and senders are told so.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
   dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
   whichever chat runs its hooks next.
@@ -313,9 +315,10 @@ are removed automatically.
 - **What it reads:** Claude Code's session name (`~/.claude/sessions/<pid>.json`), Codex's thread titles
   (`~/.codex/session_index.jsonl`), and the last turn marker at the end of a Codex session log
   (`~/.codex/sessions/…`) to show busy/idle. It never reads message content from those logs, and stores none of it.
-- **What runs:** the MCP server while a session is open; in Claude Code, a background monitor and three hooks
-  (SessionStart, and PostToolUse/PreToolUse matched to ListAgents and SendMessage only); in the other agents, the hooks
-  listed in their manifest. They register the session and hand over messages, nothing else.
+- **What runs:** the MCP server while a session is open; in Claude Code, a background monitor and five hooks
+  (SessionStart; PostToolUse/PreToolUse matched to ListAgents and SendMessage only; UserPromptSubmit and Stop, which
+  act only when a message is waiting and no monitor delivered it); in the other agents, the hooks listed in their
+  manifest. They register the session and hand over messages, nothing else.
 - **No approval step.** Claude Code's native cross-session messages pass through `crossSessionInbound`: for example, a
   message from a bypass-permissions session to a prompting one is held for your approval. telepathy messages skip
   that check and are delivered directly.

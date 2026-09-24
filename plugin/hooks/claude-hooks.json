@@ -1,10 +1,13 @@
 {
-  "description": "telepathy: register this Claude Code session, show other agents' sessions in ListAgents, and deliver SendMessage calls addressed to them.",
+  "description": "telepathy: register this Claude Code session, show other agents' sessions in ListAgents, deliver SendMessage calls addressed to them, and hand over messages at the next prompt or turn end in sessions without the plugin monitor (the Claude app, claude -p).",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude session-start" }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude session-start"
+          }
         ]
       }
     ],
@@ -12,7 +15,10 @@
       {
         "matcher": "ListAgents",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude list-agents" }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude list-agents"
+          }
         ]
       }
     ],
@@ -20,7 +26,33 @@
       {
         "matcher": "SendMessage",
         "hooks": [
-          { "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude send-message", "timeout": 60 }
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude send-message",
+            "timeout": 60
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude inbox UserPromptSubmit",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude turn-end",
+            "timeout": 10
+          }
         ]
       }
     ]

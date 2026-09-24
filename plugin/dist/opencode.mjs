@@ -103,7 +103,9 @@ var AGENT_IDS = [
   "pi"
 ];
 var SPECS = {
-  claude: { id: "claude", label: "Claude Code", names: ["claude"] },
+  // Its plugin monitor wakes interactive CLI sessions; the hooks cover sessions without one (the Claude app's Code
+  // tab and `claude -p` run in stream-json mode, where plugin monitors don't start).
+  claude: { id: "claude", label: "Claude Code", names: ["claude"], nextTurnHook: true },
   codex: { id: "codex", label: "Codex", names: ["codex"] },
   opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },

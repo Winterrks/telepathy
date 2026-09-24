@@ -114,9 +114,9 @@ describe('telepathy plugin', () => {
     const codex = await connect('codex', codexAgent.pid);
     const claude = await connect('claude', claudeAgent.pid);
 
-    // No listener yet: the sender is told the message waits for read_messages.
+    // No monitor yet: the sender is told the message waits for Claude's next turn (its hooks hand it over).
     const stored = await call(codex, 'send_message', { to: 'claude:web', message: 'first' });
-    assert.match(toolText(stored), /^Message stored for claude:web \[claude-\d+\]\. It has no listener/);
+    assert.match(toolText(stored), /^Message stored for claude:web \[claude-\d+\]\. It can't be woken while idle/);
 
     const monitor = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude'], {
       env: { ...sb.env, TELEPATHY_AGENT_PID: String(claudeAgent.pid) },
@@ -467,6 +467,35 @@ describe('telepathy plugin', () => {
         sendFromClaude(`${agent}:${agent}-ctx`, `hello ${agent}`);
         const res = runHook(sb, agent, proc.pid, 'inbox', { session_id: `${agent}-c` });
         assert.match(text(res.stdout), new RegExp(`hello ${agent}$`), agent);
+      }
+    });
+
+    test('Claude without a monitor (the Claude app, claude -p) gets messages from its hooks; with one, they stay out', async () => {
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'app', cwd: '/w/app' });
+      const codexAgent = spawnAgent();
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't', cwd: '/w/api' });
+      const codex = await connect('codex', codexAgent.pid);
+      await call(codex, 'send_message', { to: 'claude:app', message: 'schema is migrated' });
+      const res = runHook(sb, 'claude', claudeAgent.pid, 'turn-end', { session_id: 'app', hook_event_name: 'Stop' });
+      assert.equal(JSON.parse(res.stdout).decision, 'block');
+      assert.match(JSON.parse(res.stdout).reason, /schema is migrated$/);
+
+      const monitor = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude'], {
+        env: { ...sb.env, TELEPATHY_AGENT_PID: String(claudeAgent.pid) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '';
+      monitor.stdout.on('data', (d) => (out += d));
+      try {
+        await waitFor(() => fs.existsSync(path.join(sb.home, 'peers', `claude-${claudeAgent.pid}`, 'listener.json')));
+        await call(codex, 'send_message', { to: 'claude:app', message: 'for the monitor' });
+        await waitFor(() => out.includes('for the monitor'));
+        const prompt = runHook(sb, 'claude', claudeAgent.pid, 'inbox', { session_id: 'app' }, 'UserPromptSubmit');
+        const stop = runHook(sb, 'claude', claudeAgent.pid, 'turn-end', { session_id: 'app' });
+        assert.deepEqual([prompt.stdout, stop.stdout], ['', ''], 'hooks stay quiet while the monitor delivers');
+      } finally {
+        await killAndWait(monitor);
       }
     });
 

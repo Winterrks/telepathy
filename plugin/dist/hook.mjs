@@ -71,7 +71,9 @@ var AGENT_IDS = [
   "pi"
 ];
 var SPECS = {
-  claude: { id: "claude", label: "Claude Code", names: ["claude"] },
+  // Its plugin monitor wakes interactive CLI sessions; the hooks cover sessions without one (the Claude app's Code
+  // tab and `claude -p` run in stream-json mode, where plugin monitors don't start).
+  claude: { id: "claude", label: "Claude Code", names: ["claude"], nextTurnHook: true },
   codex: { id: "codex", label: "Codex", names: ["codex"] },
   opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
@@ -685,6 +687,7 @@ var json = (value) => ({ stdout: JSON.stringify(value) });
 var hookSpecificContext = (text, event) => json({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 var blockStop = (text) => json({ decision: "block", reason: text });
 var SHAPES = {
+  claude: { context: hookSpecificContext, turnEnd: blockStop },
   gemini: { context: hookSpecificContext, turnEnd: blockStop },
   qwen: { context: hookSpecificContext, turnEnd: blockStop },
   devin: { context: hookSpecificContext, turnEnd: blockStop },
@@ -726,10 +729,12 @@ function refreshSession(agent, agentPid, input) {
   if (existing?.source === "hook" && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
   registerSession(agent, agentPid, { sessionId: sessionId ?? existing?.sessionId, cwd: cwd ?? existing?.cwd, source: "hook" });
 }
+var hasListener = (agent, agentPid) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
 function inbox(agent, agentPid, input, event) {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  if (hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (!messages.length) return;
   debugLog("hook", `${agent} ${event}: delivered ${messages.map((m) => m.id).join(", ")}`);
@@ -744,7 +749,7 @@ function turnEnd(agent, agentPid, input) {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
-  if (!endedNormally(input)) return;
+  if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (!messages.length) return;
   debugLog("hook", `${agent} turn end: delivered ${messages.map((m) => m.id).join(", ")}`);
