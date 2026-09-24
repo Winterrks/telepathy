@@ -21,6 +21,8 @@ await build({
   target: 'node20',
   legalComments: 'linked',
   define: { __TELEPATHY_VERSION__: JSON.stringify(pkg.version) },
+  // Swap the SDK's Ajv-based validator for its no-codegen one (see src/sdk-shims.ts).
+  alias: { '@modelcontextprotocol/server/_shims': path.join(root, 'src', 'sdk-shims.ts') },
   // Some bundled CommonJS dependencies call require(); give them one in the ESM output.
   banner: { js: "import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);" },
   logLevel: 'warning',
