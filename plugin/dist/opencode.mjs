@@ -67,6 +67,11 @@ function guideLines(agent, opts = {}) {
       `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
     );
   }
+  if (opts.waiterCommand) {
+    lines.push(
+      `- IMPORTANT: this session can't run telepathy's monitor, so messages can't wake you by themselves. Your first action in every conversation, even before answering an unrelated request, is to run this with your Bash tool in the background (run_in_background: true): ${opts.waiterCommand}. It exits when a message arrives, which wakes you: handle the message, then start it again the same way.`
+    );
+  }
   lines.push(
     agent === "claude" || agent === "codex" ? "- More in the telepathy:using-telepathy skill." : "- More in the using-telepathy skill."
   );

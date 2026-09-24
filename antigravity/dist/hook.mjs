@@ -1,5 +1,9 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
+// src/hook.ts
+import path8 from "node:path";
+import { fileURLToPath } from "node:url";
+
 // src/core/debug.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
@@ -202,6 +206,8 @@ function isSameProcess(pid, recordedStart) {
   const current = processTable(0).get(pid)?.start;
   return current === void 0 || current === recordedStart;
 }
+var commandLine = (pid) => psField(pid, "args");
+var isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
 function psField(pid, field) {
   try {
     return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
@@ -569,6 +575,11 @@ function guideLines(agent, opts = {}) {
       `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
     );
   }
+  if (opts.waiterCommand) {
+    lines.push(
+      `- IMPORTANT: this session can't run telepathy's monitor, so messages can't wake you by themselves. Your first action in every conversation, even before answering an unrelated request, is to run this with your Bash tool in the background (run_in_background: true): ${opts.waiterCommand}. It exits when a message arrives, which wakes you: handle the message, then start it again the same way.`
+    );
+  }
   lines.push(
     agent === "claude" || agent === "codex" ? "- More in the telepathy:using-telepathy skill." : "- More in the using-telepathy skill."
   );
@@ -730,15 +741,20 @@ function refreshSession(agent, agentPid, input) {
   registerSession(agent, agentPid, { sessionId: sessionId ?? existing?.sessionId, cwd: cwd ?? existing?.cwd, source: "hook" });
 }
 var hasListener = (agent, agentPid) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
+function waiterReminder(agent, agentPid) {
+  if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
+  const waiter = `node "${path8.join(path8.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
+}
 function inbox(agent, agentPid, input, event) {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   if (hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
-  if (!messages.length) return;
-  debugLog("hook", `${agent} ${event}: delivered ${messages.map((m) => m.id).join(", ")}`);
-  reply(shape.context(formatForContext(messages), event));
+  if (messages.length) debugLog("hook", `${agent} ${event}: delivered ${messages.map((m) => m.id).join(", ")}`);
+  const parts = [messages.length ? formatForContext(messages) : "", waiterReminder(agent, agentPid) ?? ""].filter(Boolean);
+  if (parts.length) reply(shape.context(parts.join("\n\n"), event));
 }
 function endedNormally(input) {
   if (typeof input.status === "string" && input.status !== "completed") return false;
@@ -751,9 +767,13 @@ function turnEnd(agent, agentPid, input) {
   refreshSession(agent, agentPid, input);
   if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
-  if (!messages.length) return;
-  debugLog("hook", `${agent} turn end: delivered ${messages.map((m) => m.id).join(", ")}`);
-  reply(shape.turnEnd(formatForContext(messages)));
+  if (messages.length) {
+    debugLog("hook", `${agent} turn end: delivered ${messages.map((m) => m.id).join(", ")}`);
+    reply(shape.turnEnd([formatForContext(messages), waiterReminder(agent, agentPid)].filter(Boolean).join("\n\n")));
+    return;
+  }
+  const reminder = input.stop_hook_active === true ? void 0 : waiterReminder(agent, agentPid);
+  if (reminder) reply(shape.turnEnd(reminder));
 }
 function listAgents(agentPid, input) {
   const selfId = peerId("claude", agentPid);

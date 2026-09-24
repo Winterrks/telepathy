@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { debugLog } from './core/debug.ts';
 import { guideText } from './core/guide.ts';
 import { defaultCodexHome, peerId, readSession, registerPresence, registerSession, selfPeer } from './core/peers.ts';
-import { findAgent, parseAgent } from './core/proc.ts';
+import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { VERSION } from './core/version.ts';
 
@@ -39,6 +39,15 @@ function monitorCommand(): string {
   return `node "${monitor}" --agent ${agent}`;
 }
 
+/**
+ * Claude Code starts plugin monitors only in interactive terminal sessions. Hosts that drive it over stream-json
+ * (the Claude app's Code tab, Agent SDK apps) never run one, so there the session keeps a one-shot waiter running
+ * itself. A one-prompt `claude -p` run ends anyway, so it needs neither.
+ */
+function claudeWithoutMonitor(): boolean {
+  return agent === 'claude' && isStreamJsonClaude(agentPid);
+}
+
 registerPresence(agent, agentPid, {
   cwd: sessionCwd(),
   codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
@@ -65,7 +74,10 @@ const server = new McpServer(
     capabilities: { tools: {} },
     // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
     // using-telepathy skill, loaded on demand.
-    instructions: guideText(agent, { monitorCommand: agent === 'grok' ? monitorCommand() : undefined }),
+    instructions: guideText(agent, {
+      monitorCommand: agent === 'grok' ? monitorCommand() : undefined,
+      waiterCommand: claudeWithoutMonitor() ? `${monitorCommand()} --once` : undefined,
+    }),
   },
 );
 

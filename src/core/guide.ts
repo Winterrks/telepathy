@@ -4,7 +4,14 @@ import type { Agent } from './agents.ts';
  * The few lines every agent gets about telepathy. Agents that show MCP server instructions get them that way;
  * the others get the same lines from a session-start hook, a rule file or a system-prompt field.
  */
-export function guideLines(agent: Agent, opts: { monitorCommand?: string } = {}): string[] {
+export interface GuideOptions {
+  /** A monitor command the agent starts itself, with a streaming monitor tool (Grok). */
+  monitorCommand?: string;
+  /** A one-shot waiter the agent runs as a background command and restarts after each message (Claude app). */
+  waiterCommand?: string;
+}
+
+export function guideLines(agent: Agent, opts: GuideOptions = {}): string[] {
   const lines = [
     'telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI, OpenCode and more).',
     agent === 'claude'
@@ -18,10 +25,16 @@ export function guideLines(agent: Agent, opts: { monitorCommand?: string } = {})
       `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`,
     );
   }
+  if (opts.waiterCommand) {
+    lines.push(
+      "- IMPORTANT: this session can't run telepathy's monitor, so messages can't wake you by themselves. Your first action in every conversation, even before answering an unrelated request, is to run this with your Bash tool in the background (run_in_background: true): " +
+        `${opts.waiterCommand}. It exits when a message arrives, which wakes you: handle the message, then start it again the same way.`,
+    );
+  }
   lines.push(
     agent === 'claude' || agent === 'codex' ? '- More in the telepathy:using-telepathy skill.' : '- More in the using-telepathy skill.',
   );
   return lines;
 }
 
-export const guideText = (agent: Agent, opts: { monitorCommand?: string } = {}) => guideLines(agent, opts).join('\n');
+export const guideText = (agent: Agent, opts: GuideOptions = {}) => guideLines(agent, opts).join('\n');

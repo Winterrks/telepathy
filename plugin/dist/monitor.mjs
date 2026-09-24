@@ -285,6 +285,7 @@ function formatMonitorLine(msg, inlineLimit = 4e3) {
 
 // src/monitor.ts
 var argv = process.argv.slice(2);
+var once = argv.includes("--once");
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
 var id = peerId(agent, agentPid);
 var listenerFile = path6.join(peerDir(id), "listener.json");
@@ -293,10 +294,12 @@ function drain() {
   if (draining) return;
   draining = true;
   try {
-    for (const msg of claimInbox(id)) {
-      process.stdout.write(formatMonitorLine(msg) + "\n");
-      debugLog("monitor", `delivered ${msg.id} from ${msg.from.id}`);
-    }
+    const messages = claimInbox(id);
+    for (const msg of messages) debugLog("monitor", `delivered ${msg.id} from ${msg.from.id}`);
+    if (!messages.length) return;
+    const text = messages.map((msg) => formatMonitorLine(msg) + "\n").join("");
+    if (once) process.stdout.write(text, () => stop());
+    else process.stdout.write(text);
   } finally {
     draining = false;
   }
@@ -318,7 +321,7 @@ function ensureWatching() {
 }
 function stop() {
   try {
-    fs4.rmSync(listenerFile, { force: true });
+    if (readJson(listenerFile)?.pid === process.pid) fs4.rmSync(listenerFile, { force: true });
   } catch {
   }
   process.exit(0);

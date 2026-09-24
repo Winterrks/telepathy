@@ -28,8 +28,8 @@ describe('telepathy plugin', () => {
   let sb: Sandbox;
   const agents: ReturnType<typeof fakeAgent>[] = [];
   const clients: Client[] = [];
-  const spawnAgent = () => {
-    const a = fakeAgent();
+  const spawnAgent = (...args: string[]) => {
+    const a = fakeAgent(...args);
     agents.push(a);
     return a;
   };
@@ -497,6 +497,36 @@ describe('telepathy plugin', () => {
       } finally {
         await killAndWait(monitor);
       }
+    });
+
+    test('a Claude app session (stream-json) is told to keep a one-shot waiter running; a terminal session is not', async () => {
+      const app = spawnAgent('--output-format', 'stream-json', '--input-format', 'stream-json');
+      const appClient = await connect('claude', app.pid);
+      assert.match(appClient.getInstructions() ?? '', /run this with your Bash tool in the background \(run_in_background: true\): node ".*monitor\.mjs" --agent claude --once/);
+      const terminal = spawnAgent();
+      const terminalClient = await connect('claude', terminal.pid);
+      assert.doesNotMatch(terminalClient.getInstructions() ?? '', /--once/);
+    });
+
+    test('the one-shot waiter prints the next message and exits, so its completion wakes the session', async () => {
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'app', cwd: '/w/app2' });
+      const waiter = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude', '--once'], {
+        env: { ...sb.env, TELEPATHY_AGENT_PID: String(claudeAgent.pid) },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let out = '';
+      waiter.stdout.on('data', (d) => (out += d));
+      const exited = new Promise<number | null>((resolve) => waiter.once('exit', (code) => resolve(code)));
+      const listener = path.join(sb.home, 'peers', `claude-${claudeAgent.pid}`, 'listener.json');
+      await waitFor(() => fs.existsSync(listener));
+      const codexAgent = spawnAgent();
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't', cwd: '/w/api2' });
+      const codex = await connect('codex', codexAgent.pid);
+      assert.match(toolText(await call(codex, 'send_message', { to: 'claude:app2', message: 'wake up' })), /^Message delivered to/);
+      assert.equal(await exited, 0);
+      assert.match(out, /\[telepathy\] New message .*wake up$/m);
+      assert.ok(!fs.existsSync(listener), 'the waiter removes its listener registration, so the hooks take over until it restarts');
     });
 
     test('an interrupted turn does not take the messages; the next one does', () => {

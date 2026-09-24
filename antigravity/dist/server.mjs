@@ -27714,6 +27714,11 @@ function guideLines(agent2, opts = {}) {
       `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
     );
   }
+  if (opts.waiterCommand) {
+    lines.push(
+      `- IMPORTANT: this session can't run telepathy's monitor, so messages can't wake you by themselves. Your first action in every conversation, even before answering an unrelated request, is to run this with your Bash tool in the background (run_in_background: true): ${opts.waiterCommand}. It exits when a message arrives, which wakes you: handle the message, then start it again the same way.`
+    );
+  }
   lines.push(
     agent2 === "claude" || agent2 === "codex" ? "- More in the telepathy:using-telepathy skill." : "- More in the using-telepathy skill."
   );
@@ -27867,6 +27872,8 @@ function isSameProcess(pid, recordedStart) {
   const current = processTable(0).get(pid)?.start;
   return current === void 0 || current === recordedStart;
 }
+var commandLine = (pid) => psField(pid, "args");
+var isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
 function psField(pid, field) {
   try {
     return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
@@ -28321,7 +28328,7 @@ function readMessagesTool(selfId2, { id, limit }) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.4.3" : "0.0.0-dev";
+var VERSION = true ? "0.4.4" : "0.0.0-dev";
 
 // src/server.ts
 var argv = process.argv.slice(2);
@@ -28339,6 +28346,9 @@ function sessionCwd() {
 function monitorCommand() {
   const monitor = path7.join(path7.dirname(fileURLToPath(import.meta.url)), "monitor.mjs");
   return `node "${monitor}" --agent ${agent}`;
+}
+function claudeWithoutMonitor() {
+  return agent === "claude" && isStreamJsonClaude(agentPid);
 }
 registerPresence(agent, agentPid, {
   cwd: sessionCwd(),
@@ -28360,7 +28370,10 @@ var server = new McpServer(
     capabilities: { tools: {} },
     // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
     // using-telepathy skill, loaded on demand.
-    instructions: guideText(agent, { monitorCommand: agent === "grok" ? monitorCommand() : void 0 })
+    instructions: guideText(agent, {
+      monitorCommand: agent === "grok" ? monitorCommand() : void 0,
+      waiterCommand: claudeWithoutMonitor() ? `${monitorCommand()} --once` : void 0
+    })
   }
 );
 var text = ({ text: text2, isError }) => ({ content: [{ type: "text", text: text2 }], ...isError ? { isError } : {} });

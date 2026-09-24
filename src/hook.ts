@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { debugLog } from './core/debug.ts';
 import { sendMessage } from './core/deliver.ts';
 import { guideText } from './core/guide.ts';
@@ -14,7 +16,7 @@ import {
   registerSession,
   selfPeer,
 } from './core/peers.ts';
-import { type Agent, findAgent, parseAgent } from './core/proc.ts';
+import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 
 /**
  * Hook entry point, shared by every agent with command hooks:
@@ -155,6 +157,21 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
  */
 const hasListener = (agent: Agent, agentPid: number) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
 
+/**
+ * A Claude Code session driven over stream-json (the Claude app) runs no plugin monitor, so it keeps a one-shot
+ * waiter running as a background command instead: the waiter exits when a message arrives, and its completion
+ * wakes the session. Returns the reminder to start it, when this is such a session and no waiter is running.
+ */
+function waiterReminder(agent: Agent, agentPid: number): string | undefined {
+  if (agent !== 'claude' || !isStreamJsonClaude(agentPid)) return undefined;
+  const waiter = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude --once`;
+  return (
+    "[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it " +
+    `yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits ` +
+    'when a message arrives, which wakes you; after handling the message, start it again the same way.'
+  );
+}
+
 /** Before a prompt or after a tool call: pending messages go into the model's context. */
 function inbox(agent: Agent, agentPid: number, input: HookInput, event: string): void {
   const shape = SHAPES[agent];
@@ -162,9 +179,9 @@ function inbox(agent: Agent, agentPid: number, input: HookInput, event: string):
   refreshSession(agent, agentPid, input);
   if (hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
-  if (!messages.length) return;
-  debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
-  reply(shape.context(formatForContext(messages), event));
+  if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
+  const parts = [messages.length ? formatForContext(messages) : '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
+  if (parts.length) reply(shape.context(parts.join('\n\n'), event));
 }
 
 /** Whether the turn ended on its own, rather than by an interrupt, an error or the agent shutting down. */
@@ -184,9 +201,14 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   refreshSession(agent, agentPid, input);
   if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
-  if (!messages.length) return;
-  debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);
-  reply(shape.turnEnd(formatForContext(messages)));
+  if (messages.length) {
+    debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);
+    reply(shape.turnEnd([formatForContext(messages), waiterReminder(agent, agentPid)].filter(Boolean).join('\n\n')));
+    return;
+  }
+  // Don't go idle without the waiter, but ask only once per stop: if it can't be started, let the turn end.
+  const reminder = input.stop_hook_active === true ? undefined : waiterReminder(agent, agentPid);
+  if (reminder) reply(shape.turnEnd(reminder));
 }
 
 /**

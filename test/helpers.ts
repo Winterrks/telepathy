@@ -46,8 +46,11 @@ export function codexCalls(sb: Sandbox): { argv: string[]; codexHome: string | n
 }
 
 /** A live process standing in for a `claude` or `codex` agent process; its pid is the session identity. */
-export function fakeAgent(): ChildProcess & { pid: number } {
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)'], { stdio: 'ignore' });
+export function fakeAgent(...args: string[]): ChildProcess & { pid: number } {
+  // Extra arguments go after `--`, so a stand-in for `claude --input-format stream-json` shows them in `ps`.
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)', ...(args.length ? ['--', ...args] : [])], {
+    stdio: 'ignore',
+  });
   return child as ChildProcess & { pid: number };
 }
 

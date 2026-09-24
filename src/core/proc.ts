@@ -63,6 +63,16 @@ export function isSameProcess(pid: number, recordedStart: string | undefined): b
   return current === undefined || current === recordedStart;
 }
 
+/** A process's full command line, when `ps` can read it. */
+export const commandLine = (pid: number): string | undefined => psField(pid, 'args');
+
+/**
+ * Whether this Claude Code process is driven over stream-json by a host app (the Claude app's Code tab, Agent SDK
+ * apps). Claude Code starts plugin monitors only in interactive terminal sessions, so these never run one.
+ */
+export const isStreamJsonClaude = (pid: number): boolean =>
+  /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? '');
+
 /** One `ps` column for one process; only needed for agents that run as node or Python scripts. */
 function psField(pid: number, field: 'args' | 'ucomm'): string | undefined {
   try {

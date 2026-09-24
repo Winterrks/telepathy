@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Telepathy for your coding agents: Qwen Code, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other.",
   "mcpServers": {
     "telepathy": {
