@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bridge": {
+      "command": "node",
+      "args": ["./dist/server.mjs", "--agent", "codex"],
+      "cwd": ".",
+      "env_vars": ["CODEX_HOME", "TELEPATHY_HOME", "TELEPATHY_CODEX_BIN", "TELEPATHY_DEBUG"]
+    }
+  }
+}

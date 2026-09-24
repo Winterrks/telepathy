@@ -1,0 +1,32 @@
+{
+  "name": "telepathy",
+  "version": "0.1.0",
+  "description": "Telepathy for your coding agents: message Claude Code sessions from Codex and back. Their messages start a turn in this session.",
+  "author": {
+    "name": "Winterrks"
+  },
+  "homepage": "https://github.com/Winterrks/telepathy",
+  "repository": "https://github.com/Winterrks/telepathy",
+  "license": "MIT",
+  "keywords": [
+    "claude-code",
+    "messaging",
+    "multi-agent",
+    "cross-session",
+    "mcp"
+  ],
+  "mcpServers": "./codex.mcp.json",
+  "hooks": "./hooks/codex-hooks.json",
+  "interface": {
+    "displayName": "Telepathy",
+    "shortDescription": "Message Claude Code sessions on this machine",
+    "longDescription": "Lets this Codex session list, message and be messaged by Claude Code (and other Codex) sessions running on the same machine. Incoming messages start a new turn here.",
+    "developerName": "Winterrks",
+    "category": "Productivity",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/Winterrks/telepathy"
+  }
+}

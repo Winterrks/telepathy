@@ -1,0 +1,15 @@
+{
+  "name": "telepathy",
+  "owner": {
+    "name": "Winterrks"
+  },
+  "description": "Telepathy: Claude Code and Codex sessions on one machine message each other.",
+  "plugins": [
+    {
+      "name": "telepathy",
+      "source": "./plugin",
+      "description": "Let Claude Code and Codex sessions on the same machine message each other.",
+      "homepage": "https://github.com/Winterrks/telepathy"
+    }
+  ]
+}

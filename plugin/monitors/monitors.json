@@ -1,0 +1,7 @@
+[
+  {
+    "name": "inbox",
+    "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/monitor.mjs\" --agent claude",
+    "description": "Messages from Codex and other agent sessions (telepathy)"
+  }
+]

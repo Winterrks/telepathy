@@ -1,0 +1,12 @@
+{
+  "description": "telepathy: register this Codex thread so other agent sessions can message it.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex session-start" }
+        ]
+      }
+    ]
+  }
+}

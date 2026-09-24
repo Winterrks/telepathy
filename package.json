@@ -1,0 +1,43 @@
+{
+  "name": "telepathy",
+  "version": "0.1.0",
+  "description": "Telepathy for your coding agents: Claude Code and Codex sessions on the same machine message each other.",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "homepage": "https://github.com/Winterrks/telepathy#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Winterrks/telepathy.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Winterrks/telepathy/issues"
+  },
+  "keywords": [
+    "claude-code",
+    "codex",
+    "mcp",
+    "plugin",
+    "multi-agent",
+    "agent-communication"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "check": "npm run typecheck && npm run build && npm test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.1.0",
+    "zod": "^4.2.0"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/client": "^2.1.0",
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

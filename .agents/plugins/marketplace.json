@@ -1,0 +1,12 @@
+{
+  "name": "telepathy",
+  "interface": { "displayName": "Telepathy" },
+  "plugins": [
+    {
+      "name": "telepathy",
+      "source": { "source": "local", "path": "./plugin" },
+      "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+      "category": "Productivity"
+    }
+  ]
+}
