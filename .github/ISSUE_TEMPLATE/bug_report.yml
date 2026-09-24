@@ -1,0 +1,41 @@
+name: Bug report
+description: Something doesn't work as described.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: input
+    id: agents
+    attributes:
+      label: Agents and versions
+      description: Which agents were involved, and their versions. For example "Claude Code 2.1.281 → Codex 0.156.1".
+    validations:
+      required: true
+  - type: input
+    id: telepathy
+    attributes:
+      label: telepathy version
+      description: As shown in your agent's plugin list.
+    validations:
+      required: true
+  - type: input
+    id: system
+    attributes:
+      label: OS and Node.js version
+      placeholder: macOS 26.0, Node 22.20
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Debug log
+      description: >-
+        Optional, but it helps a lot. Run the agents with `TELEPATHY_DEBUG=1`, reproduce the problem, then paste the
+        relevant part of `~/.telepathy/debug.log`. It records session ids, folder paths, message ids and errors, never
+        message text. Remove anything you don't want to share.
+      render: text

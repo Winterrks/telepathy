@@ -1,0 +1,18 @@
+name: Feature or agent request
+description: Suggest an improvement, or support for another agent.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What would you like?
+      description: For another agent, name it and link its docs for plugins, MCP servers or hooks.
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why
+      description: What are you trying to do that telepathy doesn't handle today?
+    validations:
+      required: true
