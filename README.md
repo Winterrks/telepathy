@@ -10,15 +10,31 @@ you (in Claude Code) › ask the codex session working on the API whether the au
     Peer sessions (1):
       web-7 [3fa9c1]  ·  interactive  ·  idle  ·  started 2h ago
 
-    Codex sessions (1), reachable through the telepathy plugin. …
+    Codex sessions (1), reachable through the telepathy plugin …
       codex:api [codex-4242]  ·  interactive  ·  idle  ·  started 3h ago
 
   ⏺ telepathy - send_message (to: "codex:api", message: "Do the auth tests pass now?")
-    Queued m-0muf747cz-76ced4 for Codex session codex:api [codex-4242]. Codex starts a new turn…
+    Message queued for delivery to codex:api [codex-4242].
 
   ⏺ Monitor event: [telepathy] New message from Codex session codex:api:
     "Yes, 48/48 pass. I also fixed the token refresh race in session.ts."
 ```
+
+## Quick start
+
+```sh
+claude plugin marketplace add Winterrks/telepathy && claude plugin install telepathy@telepathy
+codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@telepathy
+```
+
+1. Start a Codex session, open `/hooks` and approve telepathy's hook (Codex asks once for any plugin hook),
+   then send it any prompt. A Codex session becomes reachable after its first prompt.
+2. Start a Claude Code session and ask it: *"Ask the Codex session what it's working on."*
+3. Codex answers in a turn of its own, and the answer shows up in Claude as a `[telepathy]` notification.
+
+You need Node.js 20 or newer on your `PATH`, and Codex CLI 0.149 or newer.
+
+## Features
 
 - **From Claude Code:** Codex sessions show up as rows in the built-in `ListAgents` output, busy/idle status
   included. Claude messages them with the built-in `SendMessage` or the plugin's `send_message` tool.
@@ -32,31 +48,23 @@ you (in Claude Code) › ask the codex session working on the API whether the au
 - **Built only on official surfaces:** the MCP TypeScript SDK, Claude Code plugin hooks and monitors, and the
   Codex CLI's own `codex queue`. There is no daemon and no protocol of its own.
 
-## Install
+## Install and update
 
-Requirements: Node.js 20 or newer on your `PATH`. Tested with Claude Code 2.1.280 and Codex CLI 0.156.1;
-Codex needs at least 0.149, the first version with `codex queue`. Install the plugin in **both** agents.
+Install the plugin in **both** agents with the Quick start commands. Tested with Claude Code 2.1.280 and
+Codex CLI 0.156.1; Codex needs at least 0.149, the first version with `codex queue`.
 
-**Claude Code**
+- **Codex hook approval:** open `/hooks` once in a Codex session and approve telepathy's SessionStart hook.
+  Without it, the skill isn't loaded automatically, and the session becomes reachable only once it has called
+  a telepathy tool.
+- **Running sessions:** restart any that were already open, in both agents.
+- **Updating:**
 
-```sh
-claude plugin marketplace add Winterrks/telepathy
-claude plugin install telepathy@telepathy
-```
+  ```sh
+  claude plugin marketplace update telepathy && claude plugin update telepathy@telepathy
+  codex plugin marketplace upgrade telepathy
+  ```
 
-**Codex CLI**
-
-```sh
-codex plugin marketplace add Winterrks/telepathy
-codex plugin add telepathy@telepathy
-```
-
-Then open **`/hooks`** once in a Codex session and approve telepathy's SessionStart hook. Codex asks for this
-once for any plugin hook.
-
-Restart any sessions that were already running. To update later, run
-`claude plugin marketplace update telepathy` or `codex plugin marketplace upgrade telepathy`, then restart
-your sessions.
+  Then restart your sessions.
 
 ## Use
 
@@ -121,8 +129,9 @@ Registrations of exited sessions (checked by pid plus process start time) are re
   that setup isn't supported.
 - **A SendMessage to Codex shows up as an error line in Claude's UI.** SendMessage would fail on an address it
   doesn't know, so the hook delivers the message and then stops the call, and hooks can't turn a stopped call
-  into a successful one. The line starts with "Sent via telepathy, not a failure". The plugin's `send_message`
-  tool gives a normal result, and Claude can use either. Claude-to-Claude SendMessage calls are never touched.
+  into a successful one. The error text says the message was delivered and not to resend it. The plugin's
+  `send_message` tool gives a normal result, and Claude can use either. Claude-to-Claude SendMessage calls are
+  never touched.
 - **Loop guard.** Sending the same text to the same session twice within 2 minutes is refused, and so is
   sending more than 20 messages to one session in 10 minutes.
 
@@ -169,9 +178,9 @@ claude --plugin-dir ./plugin      # try it in one Claude Code session without in
   `codex queue` would receive.
 
 `plugin/` is what gets installed: both manifests (`.claude-plugin/`, `.codex-plugin/`), `.mcp.json` for Claude
-and `codex.mcp.json` for Codex, `hooks/`, `monitors/`, `skills/`, and the bundled `dist/`. The build commits `dist/` with
-the SDK inlined, so installing needs no build step. Codex copies installed plugins into its cache, so bump the
-version when you change the plugin.
+and `codex.mcp.json` for Codex, `hooks/`, `monitors/`, `skills/`, and the bundled `dist/`. The build commits
+`dist/` with the SDK inlined, so installing needs no build step. Codex copies installed plugins into its cache,
+so bump the version when you change the plugin.
 
 ## License
 

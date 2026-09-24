@@ -34167,7 +34167,6 @@ async function sendMessage(self, to, body) {
     sentAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
-  const replyNote = "A reply, if any, arrives as a new message; there is no need to wait or poll.";
   if (recipient.agent === "codex") {
     if (!recipient.sessionId) {
       return {
@@ -34182,16 +34181,11 @@ async function sendMessage(self, to, body) {
     }
     archiveMessage(message);
     recordSent(self.id, recipient.id, body);
-    return {
-      ok: true,
-      message,
-      recipient,
-      status: `Queued ${message.id} for ${who}. Codex starts a new turn with it within about 10 seconds if that session is idle, or right after its current turn. ${replyNote}`
-    };
+    return { ok: true, message, recipient, status: `Message queued for delivery to ${peerRef(recipient)}.` };
   }
   writeToInbox(message);
   recordSent(self.id, recipient.id, body);
-  const status = recipient.hasListener ? `Delivered ${message.id} to ${who}. Claude sees it right away and starts a turn if that session is idle. ${replyNote}` : `Stored ${message.id} in the inbox of ${who}, but that session has no active listener (plugin monitors only run in interactive Claude Code sessions), so it sees the message only when it calls read_messages.`;
+  const status = recipient.hasListener ? `Message delivered to ${peerRef(recipient)}.` : `Message stored for ${peerRef(recipient)}. It has no listener, so it will see it only when it calls read_messages.`;
   return { ok: true, message, recipient, status };
 }
 
@@ -34222,7 +34216,7 @@ function formatPeerList(self, peers) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.2.0" : "0.0.0-dev";
+var VERSION = true ? "0.2.1" : "0.0.0-dev";
 
 // src/server.ts
 var argv = process.argv.slice(2);

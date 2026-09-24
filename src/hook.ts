@@ -117,9 +117,8 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
   debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
     result.ok
-      ? `Sent via telepathy, not a failure: queued ${result.message.id} for ${peerRef(result.recipient)}, which ` +
-          "picks it up within about 10 seconds, or after its current turn. SendMessage can't reach Codex, so " +
-          'telepathy delivered the message and cancelled this call. Do not resend it; a reply arrives as a new message.'
+      ? `Delivered by telepathy to ${peerRef(result.recipient)}. SendMessage can't reach Codex, so this shows as ` +
+          "an error. Don't resend."
       : `Not delivered: ${result.error}`,
   );
 }

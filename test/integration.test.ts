@@ -73,7 +73,7 @@ describe('telepathy plugin', () => {
 
     const sent = await call(claude, 'send_message', { to: 'codex:auth-fix', message: 'Schema migration finished.\n--flags stay literal' });
     assert.equal(sent.isError, undefined, toolText(sent));
-    assert.match(toolText(sent), /Queued m-.* for Codex session codex:auth-fix/);
+    assert.equal(toolText(sent), `Message queued for delivery to codex:auth-fix [codex-${codexAgent.pid}].`);
 
     const [queued] = codexCalls(sb);
     assert.equal(queued.argv[0], 'queue');
@@ -111,7 +111,7 @@ describe('telepathy plugin', () => {
 
     // No listener yet: the sender is told the message waits for read_messages.
     const stored = await call(codex, 'send_message', { to: 'claude:web', message: 'first' });
-    assert.match(toolText(stored), /no active listener/);
+    assert.match(toolText(stored), /^Message stored for claude:web \[claude-\d+\]\. It has no listener/);
 
     const monitor = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude'], {
       env: { ...sb.env, TELEPATHY_AGENT_PID: String(claudeAgent.pid) },
@@ -126,7 +126,7 @@ describe('telepathy plugin', () => {
       const peers = toolText(await call(codex, 'list_peers'));
       assert.doesNotMatch(peers, /no listener/, 'the monitor registers itself as the listener');
       const delivered = await call(codex, 'send_message', { to: 'claude:web', message: 'Tests pass on my side.\nShip it?' });
-      assert.match(toolText(delivered), /Claude sees it right away/);
+      assert.equal(toolText(delivered), `Message delivered to claude:web [claude-${claudeAgent.pid}].`);
 
       await waitFor(() => out.includes('Ship it?'));
       const lines = out.trim().split('\n');
@@ -296,11 +296,10 @@ describe('telepathy plugin', () => {
       });
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.permissionDecision, 'deny');
-      assert.match(
+      assert.equal(
         out.permissionDecisionReason,
-        new RegExp(`^Sent via telepathy, not a failure: queued m-\\S+ for codex:auth \\[codex-${codexAgent.pid}\\]`),
+        `Delivered by telepathy to codex:auth [codex-${codexAgent.pid}]. SendMessage can't reach Codex, so this shows as an error. Don't resend.`,
       );
-      assert.match(out.permissionDecisionReason, /Do not resend it/);
       const [queued] = codexCalls(sb);
       assert.equal(queued.argv[1], '--thread=thread-x');
       assert.ok(queued.argv[2].endsWith('Please rerun the auth tests.'));
@@ -335,7 +334,7 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', {
         tool_input: { to: `codex-${codexAgent.pid}`, message: 'by ref' },
       });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Sent via telepathy, not a failure: queued/);
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, /^Delivered by telepathy to codex:/);
       assert.equal(codexCalls(sb)[0].argv[1], '--thread=thread-r');
     });
 

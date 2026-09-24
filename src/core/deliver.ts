@@ -113,7 +113,6 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     sentAt: new Date().toISOString(),
   };
   const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
-  const replyNote = 'A reply, if any, arrives as a new message; there is no need to wait or poll.';
 
   if (recipient.agent === 'codex') {
     if (!recipient.sessionId) {
@@ -131,21 +130,14 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     }
     archiveMessage(message);
     recordSent(self.id, recipient.id, body);
-    return {
-      ok: true,
-      message,
-      recipient,
-      status:
-        `Queued ${message.id} for ${who}. Codex starts a new turn with it within about 10 seconds if that ` +
-        `session is idle, or right after its current turn. ${replyNote}`,
-    };
+    return { ok: true, message, recipient, status: `Message queued for delivery to ${peerRef(recipient)}.` };
   }
 
   writeToInbox(message);
   recordSent(self.id, recipient.id, body);
+  // Plugin monitors only run in interactive Claude Code sessions; without one, nothing announces the message.
   const status = recipient.hasListener
-    ? `Delivered ${message.id} to ${who}. Claude sees it right away and starts a turn if that session is idle. ${replyNote}`
-    : `Stored ${message.id} in the inbox of ${who}, but that session has no active listener (plugin monitors ` +
-      `only run in interactive Claude Code sessions), so it sees the message only when it calls read_messages.`;
+    ? `Message delivered to ${peerRef(recipient)}.`
+    : `Message stored for ${peerRef(recipient)}. It has no listener, so it will see it only when it calls read_messages.`;
   return { ok: true, message, recipient, status };
 }
