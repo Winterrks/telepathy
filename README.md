@@ -21,12 +21,14 @@ you (in Claude Code) › ask the codex session working on the API whether the au
 ```
 
 - **From Claude Code:** Codex sessions show up as rows in the built-in `ListAgents` output, busy/idle status
-  included. Claude messages them with the plugin's `send_message` tool, and the built-in `SendMessage` reaches
-  them too.
+  included. Claude messages them with the built-in `SendMessage` or the plugin's `send_message` tool.
 - **From Codex:** use the plugin's tools. Both agents get the same three: `list_peers`, `send_message` and
   `read_messages`.
 - **Receiving:** an incoming message starts a turn on its own when the receiving session is idle, so nobody
   has to poll or wait.
+- **Knows how to behave:** the `telepathy:using-telepathy` skill is loaded into every new session, the way
+  superpowers loads `using-superpowers`. It's short (about 400 tokens): how to find and message other
+  sessions, coordinate with them directly, and treat what they send.
 - **Built only on official surfaces:** the MCP TypeScript SDK, Claude Code plugin hooks and monitors, and the
   Codex CLI's own `codex queue`. There is no daemon and no protocol of its own.
 
@@ -99,6 +101,7 @@ What the receiver sees:
 | Tools on both agents | One stdio MCP server built on the official TypeScript SDK v2 (`@modelcontextprotocol/server`) |
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): a background command Claude Code runs for the whole session. Each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s and starts a turn |
+| Skill | `skills/using-telepathy/SKILL.md`, loaded by the SessionStart hook in both agents (not again on resume, since the conversation already has it) and also available as a normal skill |
 | Session identity | SessionStart [hooks](https://code.claude.com/docs/en/hooks) in both agents record the session / thread id and cwd. Codex also sends its thread id with every tool call, which is used as a fallback |
 | `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds Codex sessions to the ListAgents result as rows in its own format (`updatedToolOutput`). A PreToolUse hook delivers a SendMessage addressed to `codex:…` and stops the call, since SendMessage itself only reaches Claude sessions |
 
@@ -109,7 +112,7 @@ Registrations of exited sessions (checked by pid plus process start time) are re
 ## Good to know
 
 - **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then;
-  before that there is nothing `codex queue` could target.
+  before that there is nothing `codex queue` could target. The skill is loaded into Codex at that point too.
 - **Codex receives between turns.** A message sent while Codex is working starts a turn after the current one
   ends. Codex doesn't dispatch queued messages after an *interrupted* turn until it next goes idle normally.
 - **Claude receives through the monitor.** Monitors run only in interactive CLI sessions. Without one (for
@@ -118,9 +121,8 @@ Registrations of exited sessions (checked by pid plus process start time) are re
   that setup isn't supported.
 - **A SendMessage to Codex shows up as an error line in Claude's UI.** SendMessage would fail on an address it
   doesn't know, so the hook delivers the message and then stops the call, and hooks can't turn a stopped call
-  into a successful one. The line starts with "Sent via telepathy, not a failure", and the `ListAgents` rows
-  point Claude to telepathy's `send_message` tool, which gives a normal result. Claude-to-Claude SendMessage
-  calls are never touched.
+  into a successful one. The line starts with "Sent via telepathy, not a failure". The plugin's `send_message`
+  tool gives a normal result, and Claude can use either. Claude-to-Claude SendMessage calls are never touched.
 - **Loop guard.** Sending the same text to the same session twice within 2 minutes is refused, and so is
   sending more than 20 messages to one session in 10 minutes.
 
@@ -167,7 +169,7 @@ claude --plugin-dir ./plugin      # try it in one Claude Code session without in
   `codex queue` would receive.
 
 `plugin/` is what gets installed: both manifests (`.claude-plugin/`, `.codex-plugin/`), `.mcp.json` for Claude
-and `codex.mcp.json` for Codex, `hooks/`, `monitors/`, and the bundled `dist/`. The build commits `dist/` with
+and `codex.mcp.json` for Codex, `hooks/`, `monitors/`, `skills/`, and the bundled `dist/`. The build commits `dist/` with
 the SDK inlined, so installing needs no build step. Codex copies installed plugins into its cache, so bump the
 version when you change the plugin.
 

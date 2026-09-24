@@ -1,5 +1,10 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
+// src/hook.ts
+import fs6 from "node:fs";
+import path8 from "node:path";
+import { fileURLToPath } from "node:url";
+
 // src/core/debug.ts
 import fs2 from "node:fs";
 import path2 from "node:path";
@@ -484,6 +489,20 @@ async function readStdin() {
   return raw ? JSON.parse(raw) : {};
 }
 var print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
+var SKILL_FILE = path8.join(path8.dirname(fileURLToPath(import.meta.url)), "..", "skills", "using-telepathy", "SKILL.md");
+function skillContext(source) {
+  if (source === "resume" || source === "fork") return void 0;
+  let skill;
+  try {
+    skill = fs6.readFileSync(SKILL_FILE, "utf8");
+  } catch {
+    return void 0;
+  }
+  const body = skill.replace(/^---\n[\s\S]*?\n---\n+/, "").trim();
+  return `The telepathy plugin is installed in this session. This is its telepathy:using-telepathy skill, already loaded:
+
+${body}`;
+}
 function sessionStart(agent, agentPid, input) {
   registerSession(agent, agentPid, {
     sessionId: input.session_id,
@@ -491,13 +510,14 @@ function sessionStart(agent, agentPid, input) {
     source: "hook",
     codexHome: agent === "codex" ? defaultCodexHome() : void 0
   });
+  const context = skillContext(input.source);
+  if (context) print({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: context } });
 }
-var SEND_TOOL = "mcp__plugin_telepathy_bridge__send_message";
 function listAgents(agentPid, input) {
   const selfId = peerId("claude", agentPid);
   const codexPeers = listPeers().filter((p) => p.id !== selfId && p.agent === "codex");
   if (!codexPeers.length) return;
-  const heading = `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin. Message them with its send_message tool (${SEND_TOOL}); SendMessage to them is delivered too, but its result shows as a blocked call:`;
+  const heading = `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin with SendMessage or its send_message tool (SendMessage shows an error for these, but the message is delivered):`;
   const block = [heading, ...codexPeers.map((p) => listAgentsRow(p))].join("\n");
   const response = input.tool_response;
   if (typeof response?.listing === "string") {

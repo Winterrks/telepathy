@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { debugLog } from './core/debug.ts';
 import { sendMessage } from './core/deliver.ts';
 import { listAgentsRow } from './core/listing.ts';
@@ -13,6 +16,8 @@ import { type Agent, findAgentPid, parseAgent } from './core/proc.ts';
 interface HookInput {
   session_id?: string;
   cwd?: string;
+  /** SessionStart: `startup`, `resume`, `clear`, `compact` (and `fork` in Claude Code). */
+  source?: string;
   tool_input?: { to?: unknown; message?: unknown };
   tool_response?: unknown;
 }
@@ -26,7 +31,29 @@ async function readStdin(): Promise<HookInput> {
 
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
 
-/** SessionStart: record which session/thread this agent process is running, so peers can address it. */
+/** The plugin's own skill, next to the bundle: dist/hook.mjs → skills/using-telepathy/SKILL.md. */
+const SKILL_FILE = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'skills', 'using-telepathy', 'SKILL.md');
+
+/**
+ * The using-telepathy skill as session context, like superpowers loads using-superpowers. A resumed or forked
+ * conversation already has it, so it is only added when the context starts empty.
+ */
+function skillContext(source: string | undefined): string | undefined {
+  if (source === 'resume' || source === 'fork') return undefined;
+  let skill: string;
+  try {
+    skill = fs.readFileSync(SKILL_FILE, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const body = skill.replace(/^---\n[\s\S]*?\n---\n+/, '').trim();
+  return `The telepathy plugin is installed in this session. This is its telepathy:using-telepathy skill, already loaded:\n\n${body}`;
+}
+
+/**
+ * SessionStart: record which session/thread this agent process is running, so peers can address it, and
+ * load the using-telepathy skill. Both agents accept the same `additionalContext` output.
+ */
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   registerSession(agent, agentPid, {
     sessionId: input.session_id,
@@ -34,10 +61,9 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
+  const context = skillContext(input.source);
+  if (context) print({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: context } });
 }
-
-/** The MCP tool that reaches Codex without SendMessage's blocked-call result. */
-const SEND_TOOL = 'mcp__plugin_telepathy_bridge__send_message';
 
 /**
  * Claude PostToolUse on ListAgents: the built-in listing can't show Codex sessions, so add them to it, as
@@ -49,8 +75,8 @@ function listAgents(agentPid: number, input: HookInput): void {
   const codexPeers = listPeers().filter((p) => p.id !== selfId && p.agent === 'codex');
   if (!codexPeers.length) return;
   const heading =
-    `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin. Message them with its ` +
-    `send_message tool (${SEND_TOOL}); SendMessage to them is delivered too, but its result shows as a blocked call:`;
+    `Codex sessions (${codexPeers.length}), reachable through the telepathy plugin with SendMessage or its ` +
+    'send_message tool (SendMessage shows an error for these, but the message is delivered):';
   const block = [heading, ...codexPeers.map((p) => listAgentsRow(p))].join('\n');
   const response = input.tool_response as { listing?: unknown } | undefined;
   if (typeof response?.listing === 'string') {

@@ -11,6 +11,7 @@ import {
   fakeAgent,
   killAndWait,
   makeSandbox,
+  ROOT,
   runHook,
   type Sandbox,
   toolText,
@@ -63,9 +64,7 @@ describe('telepathy plugin', () => {
     const claudeAgent = spawnAgent();
     const codexAgent = spawnAgent();
     assert.equal(runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'claude-s1', cwd: '/w/api' }).status, 0);
-    const hook = runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-abc', cwd: '/w/auth-fix' });
-    assert.equal(hook.status, 0);
-    assert.equal(hook.stdout, '', 'SessionStart must print nothing (Claude would add stdout to context)');
+    assert.equal(runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-abc', cwd: '/w/auth-fix' }).status, 0);
 
     const claude = await connect('claude', claudeAgent.pid);
     const list = toolText(await call(claude, 'list_peers'));
@@ -206,6 +205,32 @@ describe('telepathy plugin', () => {
     }
   });
 
+  test('SessionStart loads the using-telepathy skill into new sessions of both agents, not resumed ones', () => {
+    const skill = fs.readFileSync(path.join(ROOT, 'plugin', 'skills', 'using-telepathy', 'SKILL.md'), 'utf8');
+    assert.match(skill, /^---\nname: using-telepathy\ndescription: Use when .+\n---\n/);
+    const registered = (agent: string, pid: number) => fs.existsSync(path.join(sb.home, 'peers', `${agent}-${pid}`, 'session.json'));
+    for (const agent of ['claude', 'codex'] as const) {
+      for (const source of ['startup', 'clear', 'compact', undefined]) {
+        const { pid } = spawnAgent();
+        const res = runHook(sb, agent, pid, 'session-start', { session_id: 's', cwd: '/w/x', ...(source ? { source } : {}) });
+        const out = JSON.parse(res.stdout).hookSpecificOutput;
+        assert.equal(out.hookEventName, 'SessionStart');
+        assert.match(out.additionalContext, /^The telepathy plugin is installed in this session\. This is its telepathy:using-telepathy skill/);
+        assert.match(out.additionalContext, /\n# Using telepathy\n/);
+        assert.doesNotMatch(out.additionalContext, /^name: using-telepathy$/m, 'frontmatter is stripped');
+        // Claude Code caps hook context at 10,000 characters; Codex spills anything over about 2,500 tokens to a file.
+        assert.ok(out.additionalContext.length < 8000, `skill context is ${out.additionalContext.length} characters`);
+        assert.ok(registered(agent, pid));
+      }
+      for (const source of ['resume', 'fork']) {
+        const { pid } = spawnAgent();
+        const res = runHook(sb, agent, pid, 'session-start', { session_id: 's', cwd: '/w/x', source });
+        assert.equal(res.stdout, '', `a ${source}d conversation already has the skill`);
+        assert.ok(registered(agent, pid), 'a resumed session is a new process and must register again');
+      }
+    }
+  });
+
   describe('Claude Code hooks', () => {
     test('ListAgents gets the Codex sessions added to its listing, as rows in its own shape', () => {
       const claudeAgent = spawnAgent();
@@ -222,9 +247,9 @@ describe('telepathy plugin', () => {
       assert.equal(out.hookEventName, 'PostToolUse');
       assert.equal(out.additionalContext, undefined);
       const rewritten: string = out.updatedToolOutput.listing;
-      assert.ok(rewritten.startsWith(`${listing}\n\nCodex sessions (1), reachable through the telepathy plugin.`));
+      assert.ok(rewritten.startsWith(`${listing}\n\nCodex sessions (1), reachable through the telepathy plugin `));
       const added = rewritten.slice(listing.length);
-      assert.match(added, /mcp__plugin_telepathy_bridge__send_message/);
+      assert.match(added, /with SendMessage or its send_message tool/);
       // No rollout log for thread "t" in this sandbox, so the status column is left out.
       assert.match(added, new RegExp(`\\n  codex:auth \\[codex-${codexAgent.pid}\\]  ·  interactive  ·  started \\d+s ago$`));
       assert.doesNotMatch(added, /claude:me/);
