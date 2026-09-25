@@ -14,6 +14,10 @@
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
 
+<p align="center">
+  <img src="docs/images/demo.webp" alt="Claude Code and Codex side by side. Asked to add rate limiting and have Codex review it, Claude sends its change to the idle Codex session through telepathy. Codex picks the message up on its own, finds that trust proxy isn't set behind nginx and replies, and Claude fixes it.">
+</p>
+
 ```
 you (in Claude Code) › ask the codex session working on the API whether the auth tests pass now
 
