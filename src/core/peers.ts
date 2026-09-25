@@ -60,6 +60,8 @@ export interface Peer {
   hasServer: boolean;
   /** Its session was registered by a hook, so the agent runs telepathy's hooks. */
   hookRan?: boolean;
+  /** Its after-tool-call hook has run, so it gets messages mid-turn (Codex, where that hook needs its own approval). */
+  toolHookRan?: boolean;
   /**
    * Other names that also reach this peer. The cwd's folder name stays valid after a Codex thread gets its
    * title (or a Claude session is renamed), so an address another agent already has keeps working.
@@ -68,6 +70,11 @@ export interface Peer {
 }
 
 export const peerId = (agent: Agent, pid: number) => `${agent}-${pid}`;
+
+export function markToolHook(id: string): void {
+  const file = path.join(peerDir(id), 'tool-hook.json');
+  if (!fs.existsSync(file)) writeJsonAtomic(file, { at: new Date().toISOString() });
+}
 /**
  * A peer's id and directory name: `<agent>-<key>`. Every agent is keyed by the pid of its process today;
  * the key may become a session id for agents that host many sessions in one process.
@@ -192,6 +199,7 @@ export function readPeer(id: string): Peer | undefined {
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, undefined),
     hookRan: session?.source === 'hook',
+    toolHookRan: fs.existsSync(path.join(dir, 'tool-hook.json')),
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : [],
   };
 }

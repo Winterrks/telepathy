@@ -1,10 +1,24 @@
 {
-  "description": "telepathy: register this Codex thread so other agent sessions can message it.",
+  "description": "telepathy: register this Codex thread so other agent sessions can message it, and hand their messages over after a tool call or with your next prompt instead of only between turns.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex session-start" }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex inbox PostToolUse", "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex inbox UserPromptSubmit", "timeout": 15 }
         ]
       }
     ]

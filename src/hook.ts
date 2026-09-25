@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { sendMessage } from './core/deliver.ts';
 import { guideText } from './core/guide.ts';
@@ -10,6 +11,7 @@ import {
   agentLabel,
   defaultCodexHome,
   listPeers,
+  markToolHook,
   peerId,
   readPeer,
   readSession,
@@ -98,6 +100,8 @@ interface HookShape {
 
 const SHAPES: Partial<Record<Agent, HookShape>> = {
   claude: { context: hookSpecificContext, turnEnd: blockStop },
+  // Codex has no turn-end hook here: its queue starts a turn with anything still unread once the turn ends.
+  codex: { context: hookSpecificContext, turnEnd: blockStop },
   gemini: { context: hookSpecificContext, turnEnd: blockStop },
   qwen: { context: hookSpecificContext, turnEnd: blockStop },
   devin: { context: hookSpecificContext, turnEnd: blockStop },
@@ -148,7 +152,12 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   const { sessionId, cwd } = sessionOf(agent, input);
   const existing = readSession(peerId(agent, agentPid));
   if (existing?.source === 'hook' && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
-  registerSession(agent, agentPid, { sessionId: sessionId ?? existing?.sessionId, cwd: cwd ?? existing?.cwd, source: 'hook' });
+  registerSession(agent, agentPid, {
+    sessionId: sessionId ?? existing?.sessionId,
+    cwd: cwd ?? existing?.cwd,
+    source: 'hook',
+    codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
+  });
 }
 
 /**
@@ -173,12 +182,19 @@ function waiterReminder(agent: Agent, agentPid: number): string | undefined {
 }
 
 /** Before a prompt or after a tool call: pending messages go into the model's context. */
-function inbox(agent: Agent, agentPid: number, input: HookInput, event: string): void {
+async function inbox(agent: Agent, agentPid: number, input: HookInput, event: string): Promise<void> {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   if (hasListener(agent, agentPid)) return;
-  const messages = claimInbox(peerId(agent, agentPid));
+  const selfId = peerId(agent, agentPid);
+  if (agent === 'codex') {
+    // Senders can then say a busy Codex gets messages after its next tool call, not only at the end of the turn.
+    if (event === 'PostToolUse') markToolHook(selfId);
+    const session = readSession(selfId);
+    if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
+  }
+  const messages = claimInbox(selfId);
   if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
   const parts = [messages.length ? formatForContext(messages) : '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join('\n\n'), event));
@@ -287,7 +303,7 @@ async function main(): Promise<void> {
   debugLog('hook', `${agent} ${action}${event ? ` ${event}` : ''} (agent pid ${agentPid})`);
 
   if (action === 'session-start') sessionStart(agent, agentPid, input);
-  else if (action === 'inbox') inbox(agent, agentPid, input, event ?? 'PostToolUse');
+  else if (action === 'inbox') await inbox(agent, agentPid, input, event ?? 'PostToolUse');
   else if (action === 'turn-end') turnEnd(agent, agentPid, input);
   else if (action === 'list-agents' && agent === 'claude') listAgents(agentPid, input);
   else if (action === 'send-message' && agent === 'claude') await interceptSendMessage(agentPid, input);

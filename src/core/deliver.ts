@@ -1,9 +1,8 @@
-import { execFile } from 'node:child_process';
 import crypto from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
-import { promisify } from 'node:util';
 import { agentSpec } from './agents.ts';
+import { codexActivity } from './codex-activity.ts';
+import { queueIntoCodex } from './codex-queue.ts';
 import {
   archiveMessage,
   formatAsUserTurn,
@@ -15,8 +14,6 @@ import {
 } from './messages.ts';
 import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { agentLabel, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
-
-const execFileAsync = promisify(execFile);
 
 export type SendResult =
   | { ok: true; message: Message; recipient: Peer; status: string }
@@ -54,34 +51,6 @@ function recordSent(selfId: string, toId: string, body: string): void {
   const log = (readJson<SentEntry[]>(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   log.push({ to: toId, hash: crypto.createHash('sha256').update(body).digest('hex').slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
-}
-
-function codexCandidates(): string[] {
-  const configured = process.env.TELEPATHY_CODEX_BIN;
-  if (configured) return [configured];
-  // MCP servers and hooks may run with a minimal PATH, so also try the usual install locations.
-  return ['codex', '/opt/homebrew/bin/codex', '/usr/local/bin/codex', path.join(os.homedir(), '.local', 'bin', 'codex')];
-}
-
-/** Hands the text to Codex's own queue (`codex queue`), which starts a turn in the live session. */
-async function queueIntoCodex(threadId: string, text: string, codexHome: string | undefined): Promise<void> {
-  const args = ['queue', `--thread=${threadId}`, `--message=${text}`];
-  const env = { ...process.env, ...(codexHome ? { CODEX_HOME: codexHome } : {}) };
-  let lastError: unknown;
-  for (const bin of codexCandidates()) {
-    try {
-      await execFileAsync(bin, args, { env, timeout: 30_000, maxBuffer: 1024 * 1024 });
-      return;
-    } catch (err) {
-      lastError = err;
-      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') break;
-    }
-  }
-  const e = lastError as NodeJS.ErrnoException & { stderr?: string };
-  if (e?.code === 'ENOENT') {
-    throw new Error('The codex CLI was not found on PATH; set TELEPATHY_CODEX_BIN to its path.');
-  }
-  throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
 }
 
 /** Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook. */
@@ -124,19 +93,41 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
           `SessionStart hook with /hooks (or have it call list_peers once), then retry.`,
       };
     }
+    let codexQueueId: string | undefined;
     try {
-      await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
+      codexQueueId = await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${(err as Error).message}` };
     }
-    archiveMessage(message);
+    // Also in the inbox, so read_messages can hand it over mid-turn and take it back out of Codex's queue.
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    else archiveMessage(message);
     recordSent(self.id, recipient.id, body);
-    return { ok: true, message, recipient, status: `Message queued for delivery to ${peerRef(recipient)}.` };
+    return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
   }
 
   writeToInbox(message);
   recordSent(self.id, recipient.id, body);
   return { ok: true, message, recipient, status: inboxStatus(recipient) };
+}
+
+/** When a queued message reaches Codex, from the state of its last turn. */
+function codexQueueStatus(recipient: Peer): string {
+  const ref = peerRef(recipient);
+  const activity =
+    recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : undefined;
+  if (activity === 'busy') {
+    return recipient.toolHookRan
+      ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`
+      : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+  }
+  if (activity === 'interrupted') {
+    return (
+      `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
+      `queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`
+    );
+  }
+  return `Message queued for delivery to ${ref}.`;
 }
 
 /**

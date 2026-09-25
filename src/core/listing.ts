@@ -11,6 +11,14 @@ export function formatAgo(ms: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
+/** A Codex session's busy/idle column, when its rollout log says. */
+function codexStatus(peer: Peer): string | undefined {
+  const status = peer.codexHome && peer.sessionId ? codexActivity(peer.codexHome, peer.sessionId) : undefined;
+  return status === 'interrupted'
+    ? 'idle after an interrupted turn: gets messages only after its user sends it a prompt'
+    : status;
+}
+
 /** Codex needs a thread id before `codex queue` can reach it. */
 const codexUnreachable = (peer: Peer) => peer.agent === 'codex' && !peer.sessionId;
 
@@ -22,8 +30,8 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
   const columns = [peerRef(peer), 'interactive'];
   if (codexUnreachable(peer)) {
     columns.push('not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)');
-  } else if (peer.agent === 'codex' && peer.sessionId) {
-    const status = peer.codexHome ? codexActivity(peer.codexHome, peer.sessionId) : undefined;
+  } else if (peer.agent === 'codex') {
+    const status = codexStatus(peer);
     if (status) columns.push(status);
   }
   const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
@@ -36,7 +44,10 @@ export function describePeer(peer: Peer): string {
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   if (codexUnreachable(peer)) {
     notes.push('not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)');
-  } else if (peer.agent !== 'codex' && !peer.hasListener) {
+  } else if (peer.agent === 'codex') {
+    const status = codexStatus(peer);
+    if (status) notes.push(status);
+  } else if (!peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan
         ? 'sees messages at its next turn'

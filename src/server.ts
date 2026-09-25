@@ -3,6 +3,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
+import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { guideText } from './core/guide.ts';
 import { defaultCodexHome, peerId, readSession, registerPresence, registerSession, selfPeer } from './core/peers.ts';
@@ -121,6 +122,10 @@ server.registerTool(
   },
   async ({ id, limit }, ctx) => {
     learnCodexThread(ctx.mcpReq._meta);
+    if (agent === 'codex') {
+      const session = readSession(selfId);
+      if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
+    }
     return text(readMessagesTool(selfId, { id, limit }));
   },
 );

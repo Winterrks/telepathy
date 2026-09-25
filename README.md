@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.4.4" src="https://img.shields.io/badge/version-0.4.4-6d28d9">
+  <img alt="version 0.5.0" src="https://img.shields.io/badge/version-0.5.0-6d28d9">
   <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -77,7 +77,7 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
 | Agent | How it receives a message | Tested live |
 |---|---|---|
 | **Claude Code** | Wakes an idle session (plugin monitor; in the Claude app, a waiter Claude starts itself) | ✅ |
-| **Codex CLI** | Wakes an idle session (`codex queue`) | ✅ |
+| **Codex CLI** | Wakes an idle session (`codex queue`); mid-turn, after its next tool call | ✅ |
 | **OpenCode** 1.x | Wakes an idle session (in-process plugin) | ✅ |
 | **Kilo Code** CLI | Wakes an idle session (same plugin as OpenCode) | Loads and registers; no model run yet |
 | **GitHub Copilot CLI** | Next turn (hooks) | ✅ |
@@ -107,8 +107,8 @@ claude plugin marketplace add Winterrks/telepathy && claude plugin install telep
 codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@telepathy
 ```
 
-1. Start a Codex session, open `/hooks` and approve telepathy's hook (Codex asks once for any plugin hook), then send
-   it any prompt. A Codex session becomes reachable after its first prompt.
+1. Start a Codex session, open `/hooks` and approve telepathy's hooks (Codex asks once for each plugin hook), then
+   send it any prompt. A Codex session becomes reachable after its first prompt.
 2. Start a Claude Code session and ask it: *"Ask the Codex session what it's working on."*
 3. Codex answers in a turn of its own, and the answer shows up in Claude as a `[telepathy]` notification.
 
@@ -134,8 +134,10 @@ Code 2.1.281.
 codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@telepathy
 ```
 
-Then open `/hooks` in a Codex session and approve telepathy's SessionStart hook. Without it, a session becomes
-reachable only once it has called a telepathy tool. Update: `codex plugin marketplace upgrade telepathy`. Needs Codex
+Then open `/hooks` in a Codex session and approve telepathy's three hooks (press `t` to trust all). SessionStart makes
+the session reachable; without it, a session becomes reachable only once it has called a telepathy tool. PostToolUse
+and UserPromptSubmit hand messages over during a turn and with your next prompt; without them, a busy Codex gets a
+message only when its turn ends. Update: `codex plugin marketplace upgrade telepathy`. Needs Codex
 CLI 0.149 or newer (tested with 0.156.1).
 
 ### OpenCode
@@ -274,6 +276,7 @@ Messages over 4,000 characters come with a preview and are read in full with `re
                                          inbox/  archive/
 
  to Codex:            send_message ──▶ `codex queue --thread <id>` ──▶ Codex starts a turn (≤ 10 s)
+                                  └──▶ inbox/<msg>.json ──▶ mid-turn: the next tool call hands it over
  to Claude Code:      send_message ──▶ inbox/<msg>.json ──▶ monitor prints a line ──▶ Claude starts a turn
  to OpenCode / Kilo:  send_message ──▶ inbox/<msg>.json ──▶ plugin calls session.promptAsync ──▶ a turn starts
  to the others:       send_message ──▶ inbox/<msg>.json ──▶ the next prompt, tool call or turn end hands it over
@@ -284,7 +287,7 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | Tools | One stdio MCP server built on the official TypeScript SDK v2 (`@modelcontextprotocol/server`). OpenCode and Kilo Code get the same tools as native plugin tools |
 | Session identity | The agent's own process: the MCP server, hooks and monitor walk up the process tree to the nearest agent process (`claude`, `codex`, `node …/gemini`, `kimi-code`…), so they agree on `<agent>-<pid>` without coordinating. Session hooks add the session id and folder |
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): each line it prints becomes a notification that starts a turn when the session is idle |
-| Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s |
+| Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s. During a turn, the PostToolUse hook hands the message over from the inbox and removes it from the queue (`thread/queue/delete` on a short-lived `codex app-server`) |
 | OpenCode receives | The plugin runs inside OpenCode and calls `client.session.promptAsync` once the session goes idle |
 | The others receive | Their hooks: before a prompt or after a tool call the pending messages go into the context; at the end of a turn they keep the turn going (`decision: block`, Cursor's `followup_message`, Antigravity's `continue`) |
 | Guidance | A few lines of instructions: MCP server instructions where the agent shows them, otherwise a session-start hook, a rule file or a system-prompt field. The `using-telepathy` skill has the full guide |
@@ -300,7 +303,14 @@ are removed automatically.
 
 - **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then. Copilot
   and Antigravity also register their folder name at the first prompt; before that they show up as `session-<pid>`.
-- **Codex receives between turns.** A message sent while Codex is working starts a turn after the current one ends.
+- **A busy Codex gets messages after its next tool call.** Each message goes into Codex's queue, which starts a turn
+  when Codex is idle, and into telepathy's inbox, which the PostToolUse hook hands over mid-turn. Whichever comes
+  first wins: a message handed over mid-turn (or read with `read_messages`) is taken back out of Codex's queue, so it
+  doesn't arrive twice. Without the PostToolUse hook approved, messages wait for the turn to end.
+- **An interrupted Codex holds messages.** After you interrupt a Codex turn (Esc), Codex doesn't start queued
+  messages until you send that session a prompt; the UserPromptSubmit hook hands them over with that prompt. The
+  sender is told the message is being held, and `list_peers` shows the session as idle after an interrupted turn.
+  (Seen in Codex 0.156.)
 - **Claude receives through the monitor.** Claude Code runs plugin monitors only in interactive terminal sessions.
   The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
@@ -352,8 +362,8 @@ are removed automatically.
 
 A few best-effort lookups use files that aren't documented interfaces; if the files change, telepathy falls back
 gracefully: display names come from Claude's and Codex's session files, falling back to the folder name; a Codex
-row's busy/idle status comes from the end of its thread log; `codex queue` is marked experimental in Codex's
-app-server protocol, and plugin monitors are an experimental Claude Code plugin component.
+row's busy/idle status comes from the end of its thread log; `codex queue` and `thread/queue/delete` are marked
+experimental in Codex's app-server protocol, and plugin monitors are an experimental Claude Code plugin component.
 
 ## Develop
 

@@ -211,7 +211,7 @@ describe('ListAgents rows', () => {
     assert.equal(formatAgo(36 * 3_600_000), '1d ago');
   });
 
-  test('Codex busy/idle comes from the last turn event in the thread\'s rollout log', () => {
+  test('Codex busy/idle/interrupted comes from the last turn event in the thread\'s rollout log', () => {
     const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'um-rollout-'));
     try {
       assert.equal(codexActivity(codexHome, 'abc'), undefined);
@@ -224,7 +224,7 @@ describe('ListAgents rows', () => {
       const file = path.join(older, 'rollout-2026-08-30T10-00-00-abc.jsonl');
       fs.writeFileSync(path.join(newer, 'rollout-2026-09-02T09-00-00-other.jsonl'), event('task_started'));
       fs.writeFileSync(file, event('task_started') + event('turn_aborted'));
-      assert.equal(codexActivity(codexHome, 'abc'), 'idle');
+      assert.equal(codexActivity(codexHome, 'abc'), 'interrupted');
       // Only the last megabyte is read; a huge item after the turn started must not hide that it's running.
       fs.appendFileSync(file, event('task_started') + JSON.stringify({ type: 'response_item', payload: { output: 'x'.repeat(2_000_000) } }) + '\n');
       assert.equal(codexActivity(codexHome, 'abc'), undefined);

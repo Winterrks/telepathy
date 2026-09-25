@@ -6,8 +6,8 @@ var __export = (target, all) => {
 };
 
 // src/opencode.ts
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/debug.ts
@@ -299,6 +299,7 @@ function readPeer(id) {
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     hookRan: session?.source === "hook",
+    toolHookRan: fs3.existsSync(path3.join(dir, "tool-hook.json")),
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : []
   };
 }
@@ -1268,10 +1269,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path7) {
-  if (!path7)
+function getElementAtPath(obj, path9) {
+  if (!path9)
     return obj;
-  return path7.reduce((acc, key) => acc?.[key], obj);
+  return path9.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1611,11 +1612,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path7, issues) {
+function prefixIssues(path9, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path7);
+    iss.path.unshift(path9);
     return iss;
   });
 }
@@ -2065,16 +2066,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path7 = []) => {
+  const processError = (error63, path9 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2113,17 +2114,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path7 = []) => {
+  const processError = (error63, path9 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path7, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path7, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
       } else {
-        const fullpath = [...path7, ...issue2.path];
+        const fullpath = [...path9, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2162,8 +2163,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path7 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path7) {
+  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path9) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -19265,13 +19266,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path7 = ref.slice(1).split("/").filter(Boolean);
-  if (path7.length === 0) {
+  const path9 = ref.slice(1).split("/").filter(Boolean);
+  if (path9.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path7[0] === defsKey) {
-    const key = path7[1] === void 0 ? void 0 : decodeJSONPointerSegment(path7[1]);
+  if (path9[0] === defsKey) {
+    const key = path9[1] === void 0 ? void 0 : decodeJSONPointerSegment(path9[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -20121,16 +20122,105 @@ function date4(params) {
 }
 
 // src/core/deliver.ts
-import { execFile } from "node:child_process";
 import crypto2 from "node:crypto";
-import os3 from "node:os";
+import path7 from "node:path";
+
+// src/core/codex-activity.ts
+import fs5 from "node:fs";
 import path5 from "node:path";
+var TAIL_BYTES = 1024 * 1024;
+var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
+function findRollout(codexHome, threadId) {
+  const suffix = `-${threadId}.jsonl`;
+  const sorted = (dir) => {
+    try {
+      return fs5.readdirSync(dir).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const root = path5.join(codexHome, "sessions");
+  for (const year of sorted(root)) {
+    for (const month of sorted(path5.join(root, year))) {
+      for (const day of sorted(path5.join(root, year, month))) {
+        const dir = path5.join(root, year, month, day);
+        const file2 = sorted(dir).find((f) => f.startsWith("rollout-") && f.endsWith(suffix));
+        if (file2) return path5.join(dir, file2);
+      }
+    }
+  }
+  return void 0;
+}
+function readTail(file2) {
+  const fd = fs5.openSync(file2, "r");
+  try {
+    const { size } = fs5.fstatSync(fd);
+    const start = Math.max(0, size - TAIL_BYTES);
+    const buf = Buffer.alloc(size - start);
+    fs5.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    return start > 0 ? text.slice(text.indexOf("\n") + 1) : text;
+  } finally {
+    fs5.closeSync(fd);
+  }
+}
+function codexActivity(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    const lines = readTail(file2).split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"event_msg"')) continue;
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
+      if (state) return state;
+    }
+  } catch {
+  }
+  return void 0;
+}
+
+// src/core/codex-queue.ts
+import { execFile, spawn } from "node:child_process";
+import os3 from "node:os";
+import path6 from "node:path";
 import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
+function codexCandidates() {
+  const configured = process.env.TELEPATHY_CODEX_BIN;
+  if (configured) return [configured];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path6.join(os3.homedir(), ".local", "bin", "codex")];
+}
+var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
+async function queueIntoCodex(threadId, text, codexHome) {
+  const args = ["queue", `--thread=${threadId}`, `--message=${text}`];
+  let lastError;
+  for (const bin of codexCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(bin, args, { env: codexEnv(codexHome), timeout: 3e4, maxBuffer: 1024 * 1024 });
+      return /Queued message (\S+) for thread/.exec(stdout)?.[1];
+    } catch (err) {
+      lastError = err;
+      if (err.code !== "ENOENT") break;
+    }
+  }
+  const e = lastError;
+  if (e?.code === "ENOENT") {
+    throw new Error("The codex CLI was not found on PATH; set TELEPATHY_CODEX_BIN to its path.");
+  }
+  throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
+}
+
+// src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId) => path5.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path7.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -20149,30 +20239,6 @@ function recordSent(selfId, toId, body) {
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   log.push({ to: toId, hash: crypto2.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
-}
-function codexCandidates() {
-  const configured = process.env.TELEPATHY_CODEX_BIN;
-  if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path5.join(os3.homedir(), ".local", "bin", "codex")];
-}
-async function queueIntoCodex(threadId, text, codexHome) {
-  const args = ["queue", `--thread=${threadId}`, `--message=${text}`];
-  const env = { ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} };
-  let lastError;
-  for (const bin of codexCandidates()) {
-    try {
-      await execFileAsync(bin, args, { env, timeout: 3e4, maxBuffer: 1024 * 1024 });
-      return;
-    } catch (err) {
-      lastError = err;
-      if (err.code !== "ENOENT") break;
-    }
-  }
-  const e = lastError;
-  if (e?.code === "ENOENT") {
-    throw new Error("The codex CLI was not found on PATH; set TELEPATHY_CODEX_BIN to its path.");
-  }
-  throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
 }
 async function sendMessage(self, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
@@ -20207,18 +20273,31 @@ async function sendMessage(self, to, body) {
         error: `${who} hasn't reported its thread id yet. In that Codex session, approve the telepathy SessionStart hook with /hooks (or have it call list_peers once), then retry.`
       };
     }
+    let codexQueueId;
     try {
-      await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
+      codexQueueId = await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${err.message}` };
     }
-    archiveMessage(message);
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    else archiveMessage(message);
     recordSent(self.id, recipient.id, body);
-    return { ok: true, message, recipient, status: `Message queued for delivery to ${peerRef(recipient)}.` };
+    return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
   }
   writeToInbox(message);
   recordSent(self.id, recipient.id, body);
   return { ok: true, message, recipient, status: inboxStatus(recipient) };
+}
+function codexQueueStatus(recipient) {
+  const ref = peerRef(recipient);
+  const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  if (activity === "busy") {
+    return recipient.toolHookRan ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.` : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+  }
+  if (activity === "interrupted") {
+    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`;
+  }
+  return `Message queued for delivery to ${ref}.`;
 }
 function inboxStatus(recipient) {
   const ref = peerRef(recipient);
@@ -20229,17 +20308,21 @@ function inboxStatus(recipient) {
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;
 }
 
-// src/core/codex-activity.ts
-var TAIL_BYTES = 1024 * 1024;
-
 // src/core/listing.ts
+function codexStatus(peer) {
+  const status = peer.codexHome && peer.sessionId ? codexActivity(peer.codexHome, peer.sessionId) : void 0;
+  return status === "interrupted" ? "idle after an interrupted turn: gets messages only after its user sends it a prompt" : status;
+}
 var codexUnreachable = (peer) => peer.agent === "codex" && !peer.sessionId;
 function describePeer(peer) {
   const notes = [agentLabel(peer.agent)];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   if (codexUnreachable(peer)) {
     notes.push("not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)");
-  } else if (peer.agent !== "codex" && !peer.hasListener) {
+  } else if (peer.agent === "codex") {
+    const status = codexStatus(peer);
+    if (status) notes.push(status);
+  } else if (!peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan ? "sees messages at its next turn" : "no listener: it reads messages only via read_messages"
     );
@@ -20304,10 +20387,10 @@ function readMessagesTool(selfId, { id, limit }) {
 }
 
 // src/opencode.ts
-var skillsDir = path6.join(path6.dirname(path6.dirname(fileURLToPath(import.meta.url))), "skills");
+var skillsDir = path8.join(path8.dirname(path8.dirname(fileURLToPath(import.meta.url))), "skills");
 var out = (r) => r.isError ? `Error: ${r.text}` : r.text;
 var TelepathyPlugin = async ({ client, directory }) => {
-  const agent = /kilo/i.test(path6.basename(process.execPath)) ? "kilo" : "opencode";
+  const agent = /kilo/i.test(path8.basename(process.execPath)) ? "kilo" : "opencode";
   const pid = process.pid;
   const id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
@@ -20341,7 +20424,7 @@ var TelepathyPlugin = async ({ client, directory }) => {
   const watch = () => {
     if (watcher) return;
     try {
-      watcher = fs5.watch(ensureDir(inboxDir(id)), () => void deliver());
+      watcher = fs6.watch(ensureDir(inboxDir(id)), () => void deliver());
       watcher.on("error", () => {
         watcher?.close();
         watcher = void 0;

@@ -49,6 +49,7 @@ describe('telepathy plugin', () => {
     await Promise.all(agents.splice(0).map(killAndWait));
     fs.rmSync(sb.home, { recursive: true, force: true });
     fs.rmSync(sb.codexLog, { force: true });
+    fs.rmSync(`${sb.codexLog}.queue.json`, { force: true });
   });
   after(() => sb.cleanup());
 
@@ -88,6 +89,35 @@ describe('telepathy plugin', () => {
     assert.match(text, new RegExp(`^\\[telepathy\\] Message from Claude Code session claude:api \\[claude-${claudeAgent.pid}\\]`));
     assert.match(text, /to: "claude:api"/);
     assert.ok(text.endsWith('Schema migration finished.\n--flags stay literal'));
+  });
+
+  test('read_messages in Codex takes unread messages back out of its queue, and skips ones it already got as a turn', async () => {
+    const claudeAgent = spawnAgent();
+    const codexAgent = spawnAgent();
+    runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/api' });
+    runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-q', cwd: '/w/auth' });
+    const claude = await connect('claude', claudeAgent.pid);
+    const codex = await connect('codex', codexAgent.pid);
+    for (const message of ['already a turn', 'still queued']) {
+      assert.equal((await call(claude, 'send_message', { to: 'codex:auth', message })).isError, undefined);
+    }
+    const queueFile = `${sb.codexLog}.queue.json`;
+    const [delivered, waiting] = JSON.parse(fs.readFileSync(queueFile, 'utf8'));
+    // Codex started a turn with the first one, which takes it off the queue.
+    fs.writeFileSync(queueFile, JSON.stringify([waiting]));
+
+    const read = toolText(await call(codex, 'read_messages'));
+    assert.match(read, /^1 new message\(s\):/);
+    assert.match(read, /still queued/);
+    assert.doesNotMatch(read, /already a turn/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(queueFile, 'utf8')), [], 'the read one no longer comes back as a turn');
+    const deletes = codexCalls(sb).filter((c) => c.argv[0] === 'app-server');
+    assert.equal(deletes.length, 1);
+    assert.equal(deletes[0].codexHome, sb.codexHome);
+    assert.ok(delivered);
+
+    assert.match(toolText(await call(codex, 'read_messages')), /^No new messages\./);
+    assert.equal(codexCalls(sb).filter((c) => c.argv[0] === 'app-server').length, 1, 'nothing left to take back');
   });
 
   test('Codex without an approved hook becomes reachable from the thread id in tool-call _meta', async () => {
@@ -264,6 +294,35 @@ describe('telepathy plugin', () => {
       assert.match(row(), /  ·  interactive  ·  busy  ·  started /);
       fs.appendFileSync(rollout, event('task_complete') + event('token_count'));
       assert.match(row(), /  ·  interactive  ·  idle  ·  started /);
+      fs.appendFileSync(rollout, event('task_started') + event('turn_aborted'));
+      assert.match(row(), /  ·  interactive  ·  idle after an interrupted turn: gets messages only after its user sends it a prompt  ·  started /);
+    });
+
+    test('Sending to a busy or interrupted Codex says when it will see the message', async () => {
+      const claudeAgent = spawnAgent();
+      const codexAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/me' });
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-7', cwd: '/w/auth' });
+      const day = path.join(sb.codexHome, 'sessions', '2026', '09', '25');
+      fs.mkdirSync(day, { recursive: true });
+      const rollout = path.join(day, 'rollout-2026-09-25T08-51-02-thread-7.jsonl');
+      const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
+      const ref = `codex:auth [codex-${codexAgent.pid}]`;
+      const claude = await connect('claude', claudeAgent.pid);
+
+      fs.writeFileSync(rollout, event('task_started'));
+      assert.equal(
+        toolText(await call(claude, 'send_message', { to: 'codex:auth', message: 'one' })),
+        `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`,
+      );
+      fs.appendFileSync(rollout, event('turn_aborted'));
+      assert.equal(
+        toolText(await call(claude, 'send_message', { to: 'codex:auth', message: 'two' })),
+        `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
+          `queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`,
+      );
+      assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · idle after an interrupted turn/);
+      assert.equal(codexCalls(sb).length, 2, 'both are still queued');
     });
 
     test('ListAgents output of an unknown shape gets the Codex sessions as a note instead', () => {
@@ -430,6 +489,39 @@ describe('telepathy plugin', () => {
       assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
       assert.match(out.additionalContext, /Is the API reference current\?$/);
       assert.equal(runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1' }, 'BeforeAgent').stdout, '');
+    });
+
+    test('Codex gets queued messages after a tool call or with the next prompt, and they leave its queue', () => {
+      const codex = spawnAgent();
+      runHook(sb, 'codex', codex.pid, 'session-start', { session_id: 'thread-h', cwd: '/w/cx' });
+      const day = path.join(sb.codexHome, 'sessions', '2026', '09', '25');
+      fs.mkdirSync(day, { recursive: true });
+      const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
+      fs.writeFileSync(path.join(day, 'rollout-2026-09-25T10-00-00-thread-h.jsonl'), event('task_started'));
+      const ref = `codex:cx [codex-${codex.pid}]`;
+      const tail = " (Sent by telepathy: SendMessage can't reach Codex, so this shows as an error. Don't resend.)";
+
+      // Until its after-tool-call hook has run (it needs approval in /hooks), a busy Codex waits for the turn to end.
+      assert.equal(
+        sendFromClaude('codex:cx', 'first'),
+        `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.${tail}`,
+      );
+      const queueFile = `${sb.codexLog}.queue.json`;
+      assert.equal(JSON.parse(fs.readFileSync(queueFile, 'utf8')).length, 1);
+      const res = runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h', hook_event_name: 'PostToolUse' }, 'PostToolUse');
+      const out = JSON.parse(res.stdout).hookSpecificOutput;
+      assert.equal(out.hookEventName, 'PostToolUse');
+      assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
+      assert.match(out.additionalContext, /first$/);
+      assert.deepEqual(JSON.parse(fs.readFileSync(queueFile, 'utf8')), [], 'no second copy as a turn');
+
+      assert.equal(
+        sendFromClaude('codex:cx', 'second'),
+        `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.${tail}`,
+      );
+      const prompt = runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h' }, 'UserPromptSubmit');
+      assert.match(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /second$/);
+      assert.equal(runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h' }, 'PostToolUse').stdout, '');
     });
 
     test('a turn that ends with messages pending goes on with them, in each agent\'s own shape', () => {

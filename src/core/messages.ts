@@ -18,6 +18,8 @@ export interface Message {
   to: Party;
   body: string;
   sentAt: string;
+  /** For a message to Codex: its item in Codex's own queue, which delivers it as a turn. */
+  codexQueueId?: string;
 }
 
 export const MAX_MESSAGE_CHARS = 100_000;
@@ -64,6 +66,26 @@ export function claimInbox(peerId: string): Message[] {
   }
   if (claimed.length) pruneArchive(peerId);
   return claimed;
+}
+
+/** The inbox, oldest first, without claiming anything. */
+export function pendingMessages(peerId: string): Message[] {
+  let files: string[];
+  try {
+    files = fs.readdirSync(inboxDir(peerId)).filter((f) => MSG_FILE_RE.test(f)).sort();
+  } catch {
+    return [];
+  }
+  return files.map((f) => readJson<Message>(path.join(inboxDir(peerId), f))).filter((m): m is Message => !!m);
+}
+
+/** Moves one message from the inbox to the archive without handing it to anyone. */
+export function archivePending(peerId: string, id: string): void {
+  try {
+    fs.renameSync(path.join(inboxDir(peerId), `${id}.json`), path.join(ensureDir(archiveDir(peerId)), `${id}.json`));
+  } catch {
+    // already claimed
+  }
 }
 
 export function pendingCount(peerId: string): number {

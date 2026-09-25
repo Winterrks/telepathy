@@ -2,7 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const TAIL_BYTES = 1024 * 1024;
-const TURN_EVENTS: Record<string, 'busy' | 'idle'> = { task_started: 'busy', task_complete: 'idle', turn_aborted: 'idle' };
+/**
+ * `interrupted`: the last turn was aborted (Esc). Codex 0.156 then holds `codex queue` messages until the user sends
+ * the next prompt, so the session is idle but won't wake for a message.
+ */
+export type CodexActivity = 'busy' | 'idle' | 'interrupted';
+
+const TURN_EVENTS: Record<string, CodexActivity> = { task_started: 'busy', task_complete: 'idle', turn_aborted: 'interrupted' };
 
 /** Codex writes each thread to `<codexHome>/sessions/YYYY/MM/DD/rollout-<time>-<threadId>.jsonl`. */
 function findRollout(codexHome: string, threadId: string): string | undefined {
@@ -46,7 +52,7 @@ function readTail(file: string): string {
  * Best effort: whether a Codex thread is in the middle of a turn, from the last turn event in its rollout
  * log. The rollout format isn't a documented interface, so anything unexpected yields undefined.
  */
-export function codexActivity(codexHome: string, threadId: string): 'busy' | 'idle' | undefined {
+export function codexActivity(codexHome: string, threadId: string): CodexActivity | undefined {
   try {
     const file = findRollout(codexHome, threadId);
     if (!file) return undefined;
