@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Telepathy for your coding agents: this Codex session can message Claude Code, OpenCode, Gemini CLI and other agent sessions on this machine, and their messages start a turn here. Everything stays on this machine in ~/.telepathy; no network calls, no telemetry.",
   "author": {
     "name": "Winterrks"

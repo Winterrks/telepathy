@@ -225,11 +225,11 @@ describe('ListAgents rows', () => {
       fs.writeFileSync(path.join(newer, 'rollout-2026-09-02T09-00-00-other.jsonl'), event('task_started'));
       fs.writeFileSync(file, event('task_started') + event('turn_aborted'));
       assert.equal(codexActivity(codexHome, 'abc'), 'interrupted');
-      // Only the last megabyte is read; a huge item after the turn started must not hide that it's running.
+      // A huge item after the turn started must not hide that it's running: reading goes further back.
       fs.appendFileSync(file, event('task_started') + JSON.stringify({ type: 'response_item', payload: { output: 'x'.repeat(2_000_000) } }) + '\n');
-      assert.equal(codexActivity(codexHome, 'abc'), undefined);
+      assert.equal(codexActivity(codexHome, 'abc'), 'busy');
       fs.appendFileSync(file, event('token_count'));
-      assert.equal(codexActivity(codexHome, 'abc'), undefined);
+      assert.equal(codexActivity(codexHome, 'abc'), 'busy');
       fs.appendFileSync(file, event('task_started') + event('item_completed'));
       assert.equal(codexActivity(codexHome, 'abc'), 'busy');
       fs.appendFileSync(file, 'not json\n' + event('task_complete'));
@@ -237,6 +237,12 @@ describe('ListAgents rows', () => {
       fs.appendFileSync(file, '{"type":"event_msg","payload":{"type":"task_sta');
       assert.equal(codexActivity(codexHome, 'abc'), 'idle', 'a half-written last line is skipped');
       assert.equal(codexActivity(codexHome, 'other'), 'busy');
+      // A long thread goes on in a segment file named after the thread plus a segment id; the newest one counts.
+      fs.writeFileSync(path.join(newer, 'rollout-2026-09-02T10-00-00-abc_seg1.jsonl'), event('task_started'));
+      assert.equal(codexActivity(codexHome, 'abc'), 'busy');
+      fs.writeFileSync(path.join(newer, 'rollout-2026-09-02T11-00-00-abc_seg2.jsonl'), event('turn_aborted'));
+      assert.equal(codexActivity(codexHome, 'abc'), 'interrupted');
+      assert.equal(codexActivity(codexHome, 'ab'), undefined, 'a thread id that is only a prefix does not match');
     } finally {
       fs.rmSync(codexHome, { recursive: true, force: true });
     }

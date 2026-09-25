@@ -28143,7 +28143,7 @@ function formatForReading(msg) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.5.0" : "0.0.0-dev";
+var VERSION = true ? "0.5.1" : "0.0.0-dev";
 
 // src/core/codex-queue.ts
 var execFileAsync = promisify(execFile);
@@ -28269,10 +28269,10 @@ import path8 from "node:path";
 // src/core/codex-activity.ts
 import fs5 from "node:fs";
 import path7 from "node:path";
-var TAIL_BYTES = 1024 * 1024;
+var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
 function findRollout(codexHome, threadId) {
-  const suffix = `-${threadId}.jsonl`;
+  const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
   const sorted = (dir) => {
     try {
       return fs5.readdirSync(dir).sort().reverse();
@@ -28285,41 +28285,49 @@ function findRollout(codexHome, threadId) {
     for (const month of sorted(path7.join(root, year))) {
       for (const day of sorted(path7.join(root, year, month))) {
         const dir = path7.join(root, year, month, day);
-        const file2 = sorted(dir).find((f) => f.startsWith("rollout-") && f.endsWith(suffix));
+        const file2 = sorted(dir).find(isRollout);
         if (file2) return path7.join(dir, file2);
       }
     }
   }
   return void 0;
 }
-function readTail(file2) {
+function readTail(file2, bytes) {
   const fd = fs5.openSync(file2, "r");
   try {
     const { size } = fs5.fstatSync(fd);
-    const start = Math.max(0, size - TAIL_BYTES);
+    const start = Math.max(0, size - bytes);
     const buf = Buffer.alloc(size - start);
     fs5.readSync(fd, buf, 0, buf.length, start);
     const text2 = buf.toString("utf8");
-    return start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2;
+    return { text: start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2, whole: start === 0 };
   } finally {
     fs5.closeSync(fd);
   }
+}
+function lastTurnEvent(text2) {
+  const lines = text2.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"event_msg"')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
+    if (state) return state;
+  }
+  return void 0;
 }
 function codexActivity(codexHome, threadId) {
   try {
     const file2 = findRollout(codexHome, threadId);
     if (!file2) return void 0;
-    const lines = readTail(file2).split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"event_msg"')) continue;
-      let entry;
-      try {
-        entry = JSON.parse(lines[i]);
-      } catch {
-        continue;
-      }
-      const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
-      if (state) return state;
+    for (const bytes of TAIL_STEPS) {
+      const { text: text2, whole } = readTail(file2, bytes);
+      const state = lastTurnEvent(text2);
+      if (state || whole) return state;
     }
   } catch {
   }

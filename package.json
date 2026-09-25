@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Telepathy for your coding agents: Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and Kilo Code sessions on one machine message each other.",
   "private": true,
   "type": "module",
