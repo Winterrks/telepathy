@@ -12,7 +12,7 @@ const pluginDir = path.join(root, 'plugin');
 fs.rmSync(path.join(pluginDir, 'dist'), { recursive: true, force: true });
 
 await build({
-  entryPoints: ['server', 'hook', 'monitor', 'opencode'].map((name) => path.join(root, 'src', `${name}.ts`)),
+  entryPoints: ['server', 'hook', 'monitor', 'opencode', 'update-all'].map((name) => path.join(root, 'src', `${name}.ts`)),
   outdir: path.join(pluginDir, 'dist'),
   outExtension: { '.js': '.mjs' },
   bundle: true,

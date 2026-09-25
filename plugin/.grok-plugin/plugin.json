@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Telepathy for your coding agents: Grok, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other.",
   "author": {
     "name": "Winterrks"

@@ -1,5 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { agentLabel } from './agents.ts';
+import { findInstalls, isNewer } from './installs.ts';
 import { defaultCodexHome, listPeers, type Peer } from './peers.ts';
 import { VERSION } from './version.ts';
 
@@ -31,15 +34,8 @@ export function unapprovedCodexHooks(codexHome: string): string[] | undefined {
     .map((key) => CODEX_HOOKS[key]);
 }
 
-const versionParts = (v: string) => v.split('.').map((n) => Number.parseInt(n, 10) || 0);
-
-function newer(a: string, b: string): boolean {
-  const [x, y] = [versionParts(a), versionParts(b)];
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
-  }
-  return false;
-}
+/** `node "<dist>/update-all.mjs"`, next to the bundle this runs from. */
+const updateAllCommand = () => `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'update-all.mjs')}"`;
 
 const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
 
@@ -63,14 +59,30 @@ export function setupNotes(self: Peer): string[] {
       );
     }
   }
-  const newest = listPeers()
-    .map((p) => p.version)
-    .filter((v): v is string => !!v)
-    .reduce<string | undefined>((best, v) => (!best || newer(v, best) ? v : best), undefined);
-  if (newest && newer(newest, VERSION)) {
+  const installs = findInstalls();
+  const newestOf = (versions: (string | undefined)[]) =>
+    versions.filter((v): v is string => !!v).reduce<string | undefined>((best, v) => (!best || isNewer(v, best) ? v : best), undefined);
+  const newest = newestOf([VERSION, ...listPeers().map((p) => p.version), ...installs.map((i) => i.version)]);
+  const ownInstalled = newestOf(installs.filter((i) => i.agent === self.agent).map((i) => i.version));
+  if (ownInstalled && isNewer(ownInstalled, VERSION)) {
     notes.push(
-      `[telepathy setup] This session runs telepathy ${VERSION}, but another session already runs ${newest}, so ` +
-        'messages may not reach this session as they should. Tell your user to restart this session to load the update.',
+      `[telepathy setup] This session runs telepathy ${VERSION}, but ${ownInstalled} is installed, so messages may ` +
+        'not reach this session as they should. Tell your user to restart this session to load the update.',
+    );
+  } else if (!ownInstalled && newest && isNewer(newest, VERSION)) {
+    // Grok and Cursor load the copy installed in Claude Code.
+    const where = self.agent === 'grok' || self.agent === 'cursor' ? "Claude Code's copy of telepathy" : 'telepathy in this agent';
+    notes.push(
+      `[telepathy setup] This session runs telepathy ${VERSION}, but another session runs ${newest}, so messages may ` +
+        `not reach this session as they should. Tell your user to update ${where} and restart this session.`,
+    );
+  }
+  const stale = installs.filter((i) => newest && isNewer(newest, i.version));
+  if (newest && stale.length) {
+    notes.push(
+      `[telepathy setup] Some agents have an older telepathy installed than ${newest}: ` +
+        `${stale.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}. Tell your user; with their OK, you can ` +
+        `update them all with: ${updateAllCommand()}`,
     );
   }
   return notes;

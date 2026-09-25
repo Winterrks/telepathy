@@ -34,6 +34,10 @@ export function makeSandbox(): Sandbox {
     FAKE_CODEX_LOG: codexLog,
     CODEX_HOME: codexHome,
     CLAUDE_CONFIG_DIR: path.join(base, 'claude-config'),
+    // Other agents' installs are found under the home folder; keep the real ones out of the tests.
+    HOME: path.join(base, 'home'),
+    XDG_CACHE_HOME: path.join(base, 'home', '.cache'),
+    XDG_DATA_HOME: path.join(base, 'home', '.local', 'share'),
   };
   delete env.TELEPATHY_AGENT_PID;
   delete env.TELEPATHY_DEBUG;

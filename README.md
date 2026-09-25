@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-6d28d9">
+  <img alt="version 0.7.0" src="https://img.shields.io/badge/version-0.7.0-6d28d9">
   <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -50,6 +50,7 @@ you (in Claude Code) › ask the codex session working on the API whether the au
    - [Antigravity](#antigravity)
    - [Cursor](#cursor)
    - [Kimi Code](#kimi-code)
+   - [Updating every agent](#updating-every-agent)
 - [Use](#use)
 - [Under the hood](#under-the-hood)
 - [Good to know](#good-to-know)
@@ -125,8 +126,9 @@ Each agent installs telepathy its own way. If you use several agents, install it
 claude plugin marketplace add Winterrks/telepathy && claude plugin install telepathy@telepathy
 ```
 
-Update: `claude plugin marketplace update telepathy && claude plugin update telepathy@telepathy`. Tested with Claude
-Code 2.1.281.
+Update: `claude plugin marketplace update telepathy && claude plugin update telepathy@telepathy`. To update
+automatically, open `/plugin`, go to Marketplaces, select telepathy and choose Enable auto-update (it's off by default
+for third-party marketplaces). Tested with Claude Code 2.1.281.
 
 ### Codex
 
@@ -137,8 +139,9 @@ codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@t
 Then open `/hooks` in a Codex session and approve telepathy's three hooks (press `t` to trust all). SessionStart makes
 the session reachable; without it, a session becomes reachable only once it has called a telepathy tool. PostToolUse
 and UserPromptSubmit hand messages over during a turn and with your next prompt; without them, a busy Codex gets a
-message only when its turn ends. Update: `codex plugin marketplace upgrade telepathy`. Needs Codex
-CLI 0.149 or newer (tested with 0.156.1).
+message only when its turn ends. Update: `codex plugin marketplace upgrade telepathy`, then restart running Codex
+sessions: the upgrade replaces the folder their hooks run from, so until they restart, Codex shows "Hook failed" after
+tool calls and messages wait for the turn to end. Needs Codex CLI 0.149 or newer (tested with 0.156.1).
 
 ### OpenCode
 
@@ -174,18 +177,18 @@ runs for the first time, telepathy's included.
 ### Gemini CLI
 
 ```sh
-gemini extensions install https://github.com/Winterrks/telepathy
+gemini extensions install https://github.com/Winterrks/telepathy --auto-update
 ```
 
-Update: `gemini extensions update telepathy`. Gemini only starts extension MCP servers in trusted folders.
+With `--auto-update`, Gemini updates telepathy on its own. Otherwise: `gemini extensions update telepathy`. Gemini only starts extension MCP servers in trusted folders.
 
 ### Qwen Code
 
 ```sh
-qwen extensions install https://github.com/Winterrks/telepathy/archive/refs/heads/main.tar.gz
+qwen extensions install https://github.com/Winterrks/telepathy/archive/refs/heads/main.tar.gz --auto-update
 ```
 
-Update: `qwen extensions update telepathy`. Tested with Qwen Code 0.24.4. Install from the archive: given the
+Update: `qwen extensions update telepathy` (or let `--auto-update` do it). Tested with Qwen Code 0.24.4. Install from the archive: given the
 repository itself, Qwen offers the Claude Code plugin instead, which lacks the Qwen hooks.
 
 ### Grok Build CLI
@@ -239,6 +242,21 @@ In a Kimi Code session:
 ```
 
 Then start a new session with `/new`. Update from `/plugins`.
+
+### Updating every agent
+
+Each agent keeps its own copy of telepathy, so an update in one doesn't reach the others. Every copy ships a script
+that updates all of them with each agent's own update command:
+
+```sh
+node ~/.claude/plugins/cache/telepathy/telepathy/<version>/dist/update-all.mjs
+```
+
+Any installed copy's `dist/update-all.mjs` works the same; add `--dry-run` to see what it would run. It needs the
+network (the agents fetch from GitHub), answers yes to Gemini's and Qwen's update confirmation, and reinstalls OpenCode
+and Kilo Code by clearing their package cache. Restart running sessions afterwards to load the new version. Grok and
+Cursor load Claude Code's copy, so they follow Claude Code. When an agent's copy is older than the newest one on this
+machine, telepathy's tools say so in a `[telepathy setup]` note that includes this command.
 
 ## Use
 
@@ -320,8 +338,9 @@ are removed automatically; unread messages wait an hour first, in case the sessi
   new process, so it gets a new address, but it picks up the messages its previous process hadn't read yet, for up to
   an hour. A new conversation in the same folder doesn't get them.
 - **Setup notes.** When something only the user can fix keeps messages from arriving on time, telepathy's tools add a
-  `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, or a session still
-  running an older telepathy than another one (restart it to load the update). If messages seem missing, the agent
+  `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, a session running
+  an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
+  [update-all](#updating-every-agent) command). If messages seem missing, the agent
   can call `read_messages`, which always shows these notes.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
   dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
@@ -337,10 +356,13 @@ are removed automatically; unread messages wait an hour first, in case the sessi
 
 - **Nothing leaves your machine.** telepathy makes no network calls and has no telemetry. Messages are JSON files in
   `~/.telepathy` (created with mode 700), readable by anything running as your OS user, the same boundary as Claude
-  Code's own cross-session sockets.
+  Code's own cross-session sockets. The one exception is [update-all](#updating-every-agent), which runs only when you
+  run it and has the agents fetch the new version from GitHub.
 - **What it reads:** Claude Code's session name (`~/.claude/sessions/<pid>.json`), Codex's thread titles
   (`~/.codex/session_index.jsonl`), and the last turn marker at the end of a Codex session log
-  (`~/.codex/sessions/…`) to show busy/idle. It never reads message content from those logs, and stores none of it.
+  (`~/.codex/sessions/…`) to show busy/idle; the names of telepathy's hook-approval tables in `~/.codex/config.toml`;
+  and the version of each agent's installed copy of telepathy. It never reads message content from those logs, and
+  stores none of it.
 - **What runs:** the MCP server while a session is open; in Claude Code, a background monitor and five hooks
   (SessionStart; PostToolUse/PreToolUse matched to ListAgents and SendMessage only; UserPromptSubmit and Stop, which
   act only when no monitor or waiter is running: they hand over waiting messages and, in the Claude app, remind Claude

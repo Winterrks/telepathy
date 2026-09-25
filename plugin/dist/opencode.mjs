@@ -166,7 +166,7 @@ var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
 // src/core/version.ts
-var VERSION = true ? "0.6.0" : "0.0.0-dev";
+var VERSION = true ? "0.7.0" : "0.0.0-dev";
 
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";

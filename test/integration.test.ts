@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../src/core/agents.ts';
@@ -339,11 +339,71 @@ describe('telepathy plugin', () => {
       fs.writeFileSync(presence, JSON.stringify({ ...JSON.parse(fs.readFileSync(presence, 'utf8')), version: '99.0.0' }));
       assert.match(
         toolText(await call(codex, 'read_messages')),
-        /\[telepathy setup\] This session runs telepathy \d+\.\d+\.\d+, but another session already runs 99\.0\.0, so messages may not reach this session as they should\. Tell your user to restart this session to load the update\.$/,
+        /\[telepathy setup\] This session runs telepathy \d+\.\d+\.\d+, but another session runs 99\.0\.0, so messages may not reach this session as they should\. Tell your user to update telepathy in this agent and restart this session\.$/,
       );
+      fs.writeFileSync(presence, JSON.stringify({ ...JSON.parse(fs.readFileSync(presence, 'utf8')), version: undefined }));
+
+      // A newer copy installed for this agent: a restart loads it. Older copies elsewhere: update-all fixes them.
+      fs.mkdirSync(path.join(sb.codexHome, 'plugins', 'cache', 'telepathy', 'telepathy', '99.1.0'), { recursive: true });
+      const gemini = path.join(sb.env.HOME, '.gemini', 'extensions', 'telepathy');
+      fs.mkdirSync(gemini, { recursive: true });
+      fs.writeFileSync(path.join(gemini, 'gemini-extension.json'), JSON.stringify({ name: 'telepathy', version: '0.1.0' }));
+      const notes = toolText(await call(codex, 'read_messages')).split('\n').filter((l) => l.startsWith('[telepathy setup]'));
+      assert.deepEqual(notes, [
+        `[telepathy setup] This session runs telepathy ${notes[0].match(/runs telepathy ([\d.]+)/)?.[1]}, but 99.1.0 is installed, so messages may not reach this session as they should. Tell your user to restart this session to load the update.`,
+        `[telepathy setup] Some agents have an older telepathy installed than 99.1.0: Gemini CLI 0.1.0. Tell your user; with their OK, you can update them all with: node "${path.join(DIST, 'update-all.mjs')}"`,
+      ]);
     } finally {
       fs.rmSync(config, { force: true });
       fs.rmSync(path.join(sb.codexHome, 'sessions'), { recursive: true, force: true });
+      fs.rmSync(path.join(sb.codexHome, 'plugins'), { recursive: true, force: true });
+      fs.rmSync(sb.env.HOME, { recursive: true, force: true });
+    }
+  });
+
+  test('update-all updates each installed copy with its agent\'s own command and reports what changed', () => {
+    const home = sb.env.HOME;
+    const bin = path.join(path.dirname(sb.home), 'fake-bin');
+    const write = (file: string, content: string) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content);
+    };
+    const manifest = (version: string) => JSON.stringify({ name: 'telepathy', version });
+    const geminiManifest = path.join(home, '.gemini', 'extensions', 'telepathy', 'gemini-extension.json');
+    const opencodePkg = path.join(home, '.cache', 'opencode', 'packages', 'telepathy@git+https:', 'github.com', 'Winterrks', 'telepathy.git', 'node_modules', 'telepathy', 'package.json');
+    const kiloPkg = path.join(home, '.cache', 'kilo', 'packages', 'git', 'git_github.com_Winterrks_telepathy-abc', 'package.json');
+    write(geminiManifest, manifest('0.4.4'));
+    write(opencodePkg, manifest('0.2.0'));
+    write(kiloPkg, manifest('0.1.0'));
+    write(path.join(home, '.local', 'share', 'devin', 'cli', 'plugins', 'cache', 'github.com_Winterrks_telepathy_plugin-1', '0.4.1', '.devin-plugin', 'plugin.json'), manifest('0.4.1'));
+    // Gemini updates only once its confirmation prompt gets a "y"; OpenCode reinstalls into its emptied cache;
+    // Kilo's config load doesn't reinstall anything; Devin isn't on PATH.
+    const script = (body: string) => `#!/usr/bin/env node\nconst fs = require('node:fs');\n${body}\n`;
+    write(path.join(bin, 'gemini'), script(`let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => { process.stdout.write('Do you want to continue? [Y/n]: '); if (input.startsWith('y')) fs.writeFileSync(${JSON.stringify(geminiManifest)}, ${JSON.stringify(manifest('0.6.0'))}); });`));
+    write(path.join(bin, 'opencode'), script(`fs.mkdirSync(${JSON.stringify(path.dirname(opencodePkg))}, { recursive: true }); fs.writeFileSync(${JSON.stringify(opencodePkg)}, ${JSON.stringify(manifest('0.6.0'))});`));
+    write(path.join(bin, 'kilo'), script(''));
+    for (const f of fs.readdirSync(bin)) fs.chmodSync(path.join(bin, f), 0o755);
+    const env = { ...sb.env, PATH: `${bin}:${path.dirname(process.execPath)}` };
+    try {
+      const dry = spawnSync(process.execPath, [path.join(DIST, 'update-all.mjs'), '--dry-run'], { env, encoding: 'utf8' });
+      assert.equal(dry.status, 0, dry.stderr);
+      assert.match(dry.stdout, /^telepathy is installed in: Gemini CLI 0\.4\.4, Devin CLI 0\.4\.1, OpenCode 0\.2\.0, Kilo Code 0\.1\.0\.\n/);
+      assert.match(dry.stdout, /- Gemini CLI: `gemini extensions update telepathy`\n/);
+      assert.match(dry.stdout, /- OpenCode: clear its package cache and run `opencode debug config` to reinstall\n/);
+      assert.equal(fs.readFileSync(geminiManifest, 'utf8'), manifest('0.4.4'), 'a dry run changes nothing');
+
+      const res = spawnSync(process.execPath, [path.join(DIST, 'update-all.mjs')], { env, encoding: 'utf8' });
+      assert.equal(res.status, 1, 'Kilo and Devin were not updated');
+      assert.match(res.stdout, /Updating Gemini CLI… done\n/);
+      assert.match(res.stdout, /Updating Devin CLI… failed: `devin` is not on PATH\n/);
+      assert.match(res.stdout, /Updating Kilo Code… failed: it didn't reinstall telepathy, so the old copy was kept\./);
+      assert.match(res.stdout, /Installed versions:\n- Gemini CLI: 0\.4\.4 → 0\.6\.0\n- Devin CLI: 0\.4\.1\n- OpenCode: 0\.2\.0 → 0\.6\.0\n- Kilo Code: 0\.1\.0\n/);
+      assert.match(res.stdout, /Not updated: Devin CLI, Kilo Code\./);
+      assert.equal(fs.readFileSync(kiloPkg, 'utf8'), manifest('0.1.0'));
+      assert.deepEqual(fs.readdirSync(path.join(home, '.cache', 'opencode', 'packages')), ['telepathy@git+https:'], 'the old OpenCode copy is removed');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(bin, { recursive: true, force: true });
     }
   });
 

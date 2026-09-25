@@ -5,6 +5,7 @@ import os from 'node:os';
 import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
+import { findInstalls, isNewer } from '../src/core/installs.ts';
 import { formatAgo } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
 import { peerDir } from '../src/core/paths.ts';
@@ -245,6 +246,62 @@ describe('ListAgents rows', () => {
       assert.equal(codexActivity(codexHome, 'ab'), undefined, 'a thread id that is only a prefix does not match');
     } finally {
       fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('installed copies', () => {
+  test('each agent\'s install is found where that agent keeps it, with its version', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-installs-'));
+    const saved = Object.fromEntries(['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'].map((k) => [k, process.env[k]]));
+    const write = (file: string, content: string) => {
+      fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
+      fs.writeFileSync(path.join(base, file), content);
+    };
+    const manifest = (version: string) => JSON.stringify({ name: 'telepathy', version });
+    try {
+      Object.assign(process.env, {
+        HOME: base,
+        XDG_CACHE_HOME: path.join(base, '.cache'),
+        XDG_DATA_HOME: path.join(base, '.local', 'share'),
+        CLAUDE_CONFIG_DIR: path.join(base, '.claude'),
+        CODEX_HOME: path.join(base, '.codex'),
+      });
+      assert.deepEqual(findInstalls(), []);
+      write(
+        '.claude/plugins/installed_plugins.json',
+        JSON.stringify({ version: 2, plugins: { 'telepathy@telepathy': [{ version: '0.6.0', installPath: '/c/0.6.0' }], 'other@x': [{ version: '9.9.9', installPath: '/o' }] } }),
+      );
+      write('.codex/plugins/cache/telepathy/telepathy/0.5.1/x', '');
+      write('.codex/plugins/cache/telepathy/telepathy/0.10.0/x', '');
+      write('.gemini/extensions/telepathy/gemini-extension.json', manifest('0.4.4'));
+      write('.qwen/extensions/telepathy/qwen-extension.json', manifest('0.4.3'));
+      write('.copilot/installed-plugins/telepathy/telepathy/.github/plugin/plugin.json', manifest('0.4.2'));
+      write('.local/share/devin/cli/plugins/cache/github.com_Winterrks_telepathy_plugin-1/0.4.1/.devin-plugin/plugin.json', manifest('0.4.1'));
+      write('.gemini/config/plugins/telepathy/dist/server.mjs', 'var x = 1;\nvar VERSION = true ? "0.3.0" : "0.0.0-dev";\n');
+      write('.cache/opencode/packages/telepathy@git+https:/github.com/Winterrks/telepathy.git/node_modules/telepathy/package.json', manifest('0.2.0'));
+      write('.cache/kilo/packages/git/git_github.com_Winterrks_telepathy-abc/package.json', manifest('0.1.0'));
+      write('.cache/kilo/packages/git/git_github.com_Winterrks_telepathy-abc.json', '{}');
+
+      const found = Object.fromEntries(findInstalls().map((i) => [i.agent, `${i.version}${i.marketplace ? `@${i.marketplace}` : ''}`]));
+      assert.deepEqual(found, {
+        claude: '0.6.0@telepathy',
+        codex: '0.10.0@telepathy', // the newest folder, compared as versions, not text
+        gemini: '0.4.4',
+        qwen: '0.4.3',
+        copilot: '0.4.2@telepathy',
+        devin: '0.4.1',
+        antigravity: '0.3.0',
+        opencode: '0.2.0',
+        kilo: '0.1.0',
+      });
+      assert.ok(isNewer('0.10.0', '0.9.9') && !isNewer('0.6.0', '0.6.0') && isNewer('1.0.0', '0.99.0'));
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fs.rmSync(base, { recursive: true, force: true });
     }
   });
 });
