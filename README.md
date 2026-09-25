@@ -31,6 +31,7 @@ you (in Claude Code) › ask the codex session working on the API whether the au
   ⏺ Monitor event: [telepathy] New message from Codex session codex:api:
     "Yes, 48/48 pass. I also fixed the token refresh race in session.ts."
 ```
+> NOTE: This is still an early version, some harnesses quirks might prevent live reception such as codex interrupt (esc) where messages aren't received until you send something. If you find any similar quirks across any of the harnesses let us know!
 
 ## Table of contents
 
