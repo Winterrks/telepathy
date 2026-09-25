@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path9 from "node:path";
+import path10 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path10) {
-  if (!path10)
+function getElementAtPath(obj, path11) {
+  if (!path11)
     return obj;
-  return path10.reduce((acc, key) => acc?.[key], obj);
+  return path11.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path10, issues) {
+function prefixIssues(path11, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path10);
+    iss.path.unshift(path11);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path10 = []) => {
+  const processError = (error63, path11 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path10 = []) => {
+  const processError = (error63, path11 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path11, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path11, ...issue2.path]);
       } else {
-        const fullpath = [...path10, ...issue2.path];
+        const fullpath = [...path11, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path10) {
+  const path11 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path11) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path10 = ref.slice(1).split("/").filter(Boolean);
-  if (path10.length === 0) {
+  const path11 = ref.slice(1).split("/").filter(Boolean);
+  if (path11.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path10[0] === defsKey) {
-    const key = path10[1] === void 0 ? void 0 : decodeJSONPointerSegment(path10[1]);
+  if (path11[0] === defsKey) {
+    const key = path11[1] === void 0 ? void 0 : decodeJSONPointerSegment(path11[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path10 = issue2.path.map(String);
-      const key = path10.length > 0 ? path10.join(".") : "_meta";
-      if (path10.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path11 = issue2.path.map(String);
+      const key = path11.length > 0 ? path11.join(".") : "_meta";
+      if (path11.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path10, reachable) => {
+  const visit2 = (node2, path11, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path10.length === 0) return `${pathName(path10)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path11.length === 0) return `${pathName(path11)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path10)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path10)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path11)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path11)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path10)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path11)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path10,
+        path: path11,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path10, key], reachable);
+      const fault$1 = visit2(child, [...path11, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path10, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path11, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path10) {
-  return path10.length === 0 ? "<root>" : path10.join(".");
+function pathName(path11) {
+  return path11.length === 0 ? "<root>" : path11.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path10, vendor, unsupported) {
+function walkProperty(node2, path11, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path10, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path10}.${key}`);
-  } else unsupported.push(`${path10}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path11}.${key}`);
+  } else unsupported.push(`${path11}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path10 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path10}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path11 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path11}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path10 ? `${path10}.${key}` : key;
+    const childPath = path11 ? `${path11}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -27816,6 +27816,9 @@ function isAgentProcess(agent2, comm, args, kernelName = () => void 0) {
   return false;
 }
 
+// src/core/version.ts
+var VERSION = true ? "0.6.0" : "0.0.0-dev";
+
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
 var cache;
@@ -27916,7 +27919,42 @@ function registerSession(agent2, pid, fields) {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "session.json"), record2);
+  if (fields.sessionId) adoptHeldMessages(agent2, pid, fields.sessionId);
   return record2;
+}
+var HOLD_MS = 60 * 6e4;
+function holdsUnread(id, now = Date.now()) {
+  try {
+    return fs3.readdirSync(inboxDir(id)).some((f) => now - fs3.statSync(path4.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+  } catch {
+    return false;
+  }
+}
+function adoptHeldMessages(agent2, pid, sessionId) {
+  const selfId2 = peerId(agent2, pid);
+  let names;
+  try {
+    names = fs3.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId2 || !name.startsWith(`${agent2}-`)) continue;
+    const old = readJson(path4.join(peerDir(name), "session.json"));
+    if (old?.agent !== agent2 || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
+    let files = [];
+    try {
+      files = fs3.readdirSync(inboxDir(name));
+    } catch {
+    }
+    for (const file2 of files) {
+      try {
+        fs3.renameSync(path4.join(inboxDir(name), file2), path4.join(ensureDir(inboxDir(selfId2)), file2));
+      } catch {
+      }
+    }
+    fs3.rmSync(peerDir(name), { recursive: true, force: true });
+  }
 }
 function registerPresence(agent2, pid, fields = {}) {
   const record2 = {
@@ -27927,7 +27965,7 @@ function registerPresence(agent2, pid, fields = {}) {
     ...fields,
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "presence.json"), record2);
+  writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "presence.json"), { ...record2, version: VERSION });
 }
 function readSession(id) {
   return readJson(path4.join(peerDir(id), "session.json"));
@@ -27988,6 +28026,7 @@ function readPeer(id) {
     address: `${agent2}:${slugify2(name) || id}`,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
+    version: presence?.version,
     hookRan: session?.source === "hook",
     toolHookRan: fs3.existsSync(path4.join(dir, "tool-hook.json")),
     aliases: folderSlug && folderSlug !== slugify2(name) ? [folderSlug] : []
@@ -28008,7 +28047,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (!isSameProcess(pid, peer?.procStart)) {
-      fs3.rmSync(peerDir(name), { recursive: true, force: true });
+      if (!holdsUnread(name)) fs3.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
@@ -28142,9 +28181,6 @@ function formatForReading(msg) {
   ].join("\n");
 }
 
-// src/core/version.ts
-var VERSION = true ? "0.5.1" : "0.0.0-dev";
-
 // src/core/codex-queue.ts
 var execFileAsync = promisify(execFile);
 function codexCandidates() {
@@ -28222,19 +28258,79 @@ function appServerDeletes(bin, threadId, queueIds, codexHome) {
   });
 }
 async function withdrawFromCodexQueue(selfId2, threadId, codexHome) {
-  const queued = pendingMessages(selfId2).filter((m) => m.codexQueueId);
-  const results = await deleteFromCodexQueue(
-    threadId,
-    queued.map((m) => m.codexQueueId),
-    codexHome
+  const byThread = /* @__PURE__ */ new Map();
+  for (const msg of pendingMessages(selfId2)) {
+    if (!msg.codexQueueId) continue;
+    const thread = msg.codexThreadId ?? threadId;
+    byThread.set(thread, [...byThread.get(thread) ?? [], msg]);
+  }
+  for (const [thread, queued] of byThread) {
+    const results = await deleteFromCodexQueue(
+      thread,
+      queued.map((m) => m.codexQueueId),
+      codexHome
+    );
+    if (!results) {
+      debugLog("codex-queue", `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
+      continue;
+    }
+    for (const msg of queued) {
+      if (results.get(msg.codexQueueId) === false) archivePending(selfId2, msg.id);
+    }
+  }
+}
+
+// src/core/setup.ts
+import fs5 from "node:fs";
+import path7 from "node:path";
+var CODEX_HOOKS = {
+  session_start: "SessionStart",
+  post_tool_use: "PostToolUse",
+  user_prompt_submit: "UserPromptSubmit"
+};
+function unapprovedCodexHooks(codexHome) {
+  let config2;
+  try {
+    config2 = fs5.readFileSync(path7.join(codexHome, "config.toml"), "utf8");
+  } catch {
+    return void 0;
+  }
+  const approved = new Set(
+    [...config2.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
   );
-  if (!results) {
-    debugLog("codex-queue", `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
-    return;
+  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
+}
+var versionParts = (v) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
+function newer(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
   }
-  for (const msg of queued) {
-    if (results.get(msg.codexQueueId) === false) archivePending(selfId2, msg.id);
+  return false;
+}
+var listed = (names) => names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
+function setupNotes(self2) {
+  const notes = [];
+  if (self2.agent === "codex") {
+    const missing = unapprovedCodexHooks(self2.codexHome ?? defaultCodexHome());
+    if (missing?.length) {
+      const effects = [
+        missing.includes("SessionStart") && "other sessions can't reach this one until it calls a telepathy tool",
+        missing.includes("PostToolUse") && "messages sent while you work reach you only when your turn ends",
+        missing.includes("UserPromptSubmit") && "after an interrupted turn, messages wait for a later turn"
+      ].filter(Boolean);
+      notes.push(
+        `[telepathy setup] Codex hasn't approved telepathy's ${listed(missing)} hook${missing.length > 1 ? "s" : ""}, so ${effects.join("; ")}. Tell your user: open /hooks in this session and trust them (press t).`
+      );
+    }
   }
+  const newest = listPeers().map((p) => p.version).filter((v) => !!v).reduce((best, v) => !best || newer(v, best) ? v : best, void 0);
+  if (newest && newer(newest, VERSION)) {
+    notes.push(
+      `[telepathy setup] This session runs telepathy ${VERSION}, but another session already runs ${newest}, so messages may not reach this session as they should. Tell your user to restart this session to load the update.`
+    );
+  }
+  return notes;
 }
 
 // src/core/guide.ts
@@ -28264,45 +28360,45 @@ var guideText = (agent2, opts = {}) => guideLines(agent2, opts).join("\n");
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
-import path8 from "node:path";
+import path9 from "node:path";
 
 // src/core/codex-activity.ts
-import fs5 from "node:fs";
-import path7 from "node:path";
+import fs6 from "node:fs";
+import path8 from "node:path";
 var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
 function findRollout(codexHome, threadId) {
   const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
   const sorted = (dir) => {
     try {
-      return fs5.readdirSync(dir).sort().reverse();
+      return fs6.readdirSync(dir).sort().reverse();
     } catch {
       return [];
     }
   };
-  const root = path7.join(codexHome, "sessions");
+  const root = path8.join(codexHome, "sessions");
   for (const year of sorted(root)) {
-    for (const month of sorted(path7.join(root, year))) {
-      for (const day of sorted(path7.join(root, year, month))) {
-        const dir = path7.join(root, year, month, day);
+    for (const month of sorted(path8.join(root, year))) {
+      for (const day of sorted(path8.join(root, year, month))) {
+        const dir = path8.join(root, year, month, day);
         const file2 = sorted(dir).find(isRollout);
-        if (file2) return path7.join(dir, file2);
+        if (file2) return path8.join(dir, file2);
       }
     }
   }
   return void 0;
 }
 function readTail(file2, bytes) {
-  const fd = fs5.openSync(file2, "r");
+  const fd = fs6.openSync(file2, "r");
   try {
-    const { size } = fs5.fstatSync(fd);
+    const { size } = fs6.fstatSync(fd);
     const start = Math.max(0, size - bytes);
     const buf = Buffer.alloc(size - start);
-    fs5.readSync(fd, buf, 0, buf.length, start);
+    fs6.readSync(fd, buf, 0, buf.length, start);
     const text2 = buf.toString("utf8");
     return { text: start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2, whole: start === 0 };
   } finally {
-    fs5.closeSync(fd);
+    fs6.closeSync(fd);
   }
 }
 function lastTurnEvent(text2) {
@@ -28338,7 +28434,7 @@ function codexActivity(codexHome, threadId) {
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId2) => path8.join(peerDir(selfId2), "sent-log.json");
+var sentLogFile = (selfId2) => path9.join(peerDir(selfId2), "sent-log.json");
 function checkRate(selfId2, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -28397,7 +28493,7 @@ async function sendMessage(self2, to, body) {
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${err.message}` };
     }
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
     else archiveMessage(message);
     recordSent(self2.id, recipient.id, body);
     return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
@@ -28409,11 +28505,17 @@ async function sendMessage(self2, to, body) {
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
-    return recipient.toolHookRan ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.` : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+    if (recipient.toolHookRan) {
+      return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
+    }
+    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
   if (activity === "interrupted") {
-    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`;
+    const withPrompt = unapproved && !unapproved.includes("UserPromptSubmit") ? ", and it gets the message with that prompt" : "";
+    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -28510,15 +28612,15 @@ var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent")
 var selfId = peerId(agent, agentPid);
 function sessionCwd() {
   const cwd = process.cwd();
-  const pluginRoot = path9.dirname(path9.dirname(fileURLToPath(import.meta.url)));
-  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path9.resolve(value));
-  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path9.sep) || declaredRoots.includes(cwd)) {
+  const pluginRoot = path10.dirname(path10.dirname(fileURLToPath(import.meta.url)));
+  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path10.resolve(value));
+  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path10.sep) || declaredRoots.includes(cwd)) {
     return void 0;
   }
   return cwd;
 }
 function monitorCommand() {
-  const monitor = path9.join(path9.dirname(fileURLToPath(import.meta.url)), "monitor.mjs");
+  const monitor = path10.join(path10.dirname(fileURLToPath(import.meta.url)), "monitor.mjs");
   return `node "${monitor}" --agent ${agent}`;
 }
 function claudeWithoutMonitor() {
@@ -28551,6 +28653,16 @@ var server = new McpServer(
   }
 );
 var text = ({ text: text2, isError }) => ({ content: [{ type: "text", text: text2 }], ...isError ? { isError } : {} });
+var NOTE_EVERY_MS = 10 * 6e4;
+var noteShownAt = /* @__PURE__ */ new Map();
+function withSetupNotes(result, always = false) {
+  const now = Date.now();
+  const notes = setupNotes(selfPeer(agent, agentPid)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
+  for (const note of notes) noteShownAt.set(note, now);
+  return notes.length ? { ...result, text: `${result.text}
+
+${notes.join("\n")}` } : result;
+}
 server.registerTool(
   "list_peers",
   {
@@ -28561,7 +28673,7 @@ server.registerTool(
   },
   async (_args, ctx) => {
     learnCodexThread(ctx.mcpReq._meta);
-    return text(listPeersTool(selfPeer(agent, agentPid)));
+    return text(withSetupNotes(listPeersTool(selfPeer(agent, agentPid))));
   }
 );
 server.registerTool(
@@ -28574,7 +28686,7 @@ server.registerTool(
   },
   async ({ to, message }, ctx) => {
     learnCodexThread(ctx.mcpReq._meta);
-    return text(await sendMessageTool(selfPeer(agent, agentPid), to, message));
+    return text(withSetupNotes(await sendMessageTool(selfPeer(agent, agentPid), to, message)));
   }
 );
 server.registerTool(
@@ -28591,7 +28703,7 @@ server.registerTool(
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(readMessagesTool(selfId, { id, limit }));
+    return text(withSetupNotes(readMessagesTool(selfId, { id, limit }), true));
   }
 );
 await server.connect(new StdioServerTransport());

@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.5.1" src="https://img.shields.io/badge/version-0.5.1-6d28d9">
+  <img alt="version 0.6.0" src="https://img.shields.io/badge/version-0.6.0-6d28d9">
   <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -297,7 +297,7 @@ Each agent gets its own manifest, so none of them runs another's hooks: `plugin/
 `.grok-plugin`, `.github/plugin` (Copilot), `.cursor-plugin` and `.devin-plugin`; `gemini-extension.json`,
 `qwen-extension.json` and `.kimi-plugin` at the repository root; `antigravity/` for Antigravity; and the root
 `package.json` for OpenCode and Kilo Code. Registrations of exited sessions (checked by pid plus process start time)
-are removed automatically.
+are removed automatically; unread messages wait an hour first, in case the session is resumed.
 
 ## Good to know
 
@@ -316,6 +316,13 @@ are removed automatically.
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
   message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
   runs, the hooks hand messages over at the next prompt or when a turn ends.
+- **Unread messages survive a restart for an hour.** A resumed session (`claude --resume`, `codex resume`) runs in a
+  new process, so it gets a new address, but it picks up the messages its previous process hadn't read yet, for up to
+  an hour. A new conversation in the same folder doesn't get them.
+- **Setup notes.** When something only the user can fix keeps messages from arriving on time, telepathy's tools add a
+  `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, or a session still
+  running an older telepathy than another one (restart it to load the update). If messages seem missing, the agent
+  can call `read_messages`, which always shows these notes.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
   dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
   whichever chat runs its hooks next.
@@ -362,7 +369,8 @@ are removed automatically.
 
 A few best-effort lookups use files that aren't documented interfaces; if the files change, telepathy falls back
 gracefully: display names come from Claude's and Codex's session files, falling back to the folder name; a Codex
-row's busy/idle status comes from the end of its thread log; `codex queue` and `thread/queue/delete` are marked
+row's busy/idle status comes from the end of its thread log; whether Codex approved telepathy's hooks comes from the
+`[hooks.state."telepathy@…"]` table names in Codex's `config.toml` (only those names are used); `codex queue` and `thread/queue/delete` are marked
 experimental in Codex's app-server protocol, and plugin monitors are an experimental Claude Code plugin component.
 
 ## Develop

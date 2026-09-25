@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
-import { peerDir, peersDir, readJson, writeJsonAtomic } from './paths.ts';
+import { ensureDir, inboxDir, peerDir, peersDir, readJson, writeJsonAtomic } from './paths.ts';
+import { VERSION } from './version.ts';
 import { isSameProcess, procStart } from './proc.ts';
 
 export { agentLabel };
@@ -34,6 +35,8 @@ export interface PresenceRecord {
   serverPid: number;
   cwd?: string;
   codexHome?: string;
+  /** The telepathy version the server runs, so a session on an older one can be told to restart. */
+  version?: string;
   startedAt: string;
 }
 
@@ -58,6 +61,8 @@ export interface Peer {
   address: string;
   hasListener: boolean;
   hasServer: boolean;
+  /** The telepathy version its server runs, when it says. */
+  version?: string;
   /** Its session was registered by a hook, so the agent runs telepathy's hooks. */
   hookRan?: boolean;
   /** Its after-tool-call hook has run, so it gets messages mid-turn (Codex, where that hook needs its own approval). */
@@ -101,7 +106,53 @@ export function registerSession(
     updatedAt: new Date().toISOString(),
   };
   writeJsonAtomic(path.join(peerDir(peerId(agent, pid)), 'session.json'), record);
+  if (fields.sessionId) adoptHeldMessages(agent, pid, fields.sessionId);
   return record;
+}
+
+/** How long unread messages of a session that exited wait for the session to be resumed. */
+const HOLD_MS = 60 * 60_000;
+
+/** Whether an exited session's inbox still holds a message younger than HOLD_MS. */
+function holdsUnread(id: string, now = Date.now()): boolean {
+  try {
+    return fs.readdirSync(inboxDir(id)).some((f) => now - fs.statSync(path.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A resumed session (`claude --resume`, `codex resume`) runs in a new process, so it gets a new `<agent>-<pid>`
+ * id. Unread messages left in the inbox of an exited process that ran the same session move to the new one.
+ */
+function adoptHeldMessages(agent: Agent, pid: number, sessionId: string): void {
+  const selfId = peerId(agent, pid);
+  let names: string[];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const old = readJson<SessionRecord>(path.join(peerDir(name), 'session.json'));
+    if (old?.agent !== agent || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(inboxDir(name));
+    } catch {
+      // no inbox
+    }
+    for (const file of files) {
+      try {
+        fs.renameSync(path.join(inboxDir(name), file), path.join(ensureDir(inboxDir(selfId)), file));
+      } catch {
+        // taken by another consumer
+      }
+    }
+    fs.rmSync(peerDir(name), { recursive: true, force: true });
+  }
 }
 
 export function registerPresence(agent: Agent, pid: number, fields: { cwd?: string; codexHome?: string } = {}): void {
@@ -113,7 +164,7 @@ export function registerPresence(agent: Agent, pid: number, fields: { cwd?: stri
     ...fields,
     startedAt: new Date().toISOString(),
   };
-  writeJsonAtomic(path.join(peerDir(peerId(agent, pid)), 'presence.json'), record);
+  writeJsonAtomic(path.join(peerDir(peerId(agent, pid)), 'presence.json'), { ...record, version: VERSION });
 }
 
 export function registerListener(agent: Agent, pid: number): void {
@@ -198,6 +249,7 @@ export function readPeer(id: string): Peer | undefined {
     address: `${agent}:${slugify(name) || id}`,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, undefined),
+    version: presence?.version,
     hookRan: session?.source === 'hook',
     toolHookRan: fs.existsSync(path.join(dir, 'tool-hook.json')),
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : [],
@@ -220,8 +272,8 @@ export function listPeers(): Peer[] {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : undefined);
     if (pid === undefined) continue; // not registered yet
     if (!isSameProcess(pid, peer?.procStart)) {
-      // The session is gone (or its pid was reused); nothing can be delivered to it anymore.
-      fs.rmSync(peerDir(name), { recursive: true, force: true });
+      // The session is gone (or its pid was reused). Unread messages wait an hour for it to be resumed.
+      if (!holdsUnread(name)) fs.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     // A live process whose hook/server hasn't registered yet isn't reachable, but its files stay.

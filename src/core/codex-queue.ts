@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { debugLog } from './debug.ts';
-import { archivePending, pendingMessages } from './messages.ts';
+import { archivePending, type Message, pendingMessages } from './messages.ts';
 import { VERSION } from './version.ts';
 
 const execFileAsync = promisify(execFile);
@@ -113,19 +113,27 @@ function appServerDeletes(
  * Before read_messages in a Codex session: takes the unread messages back out of Codex's queue, so each
  * reaches the model once. A message whose queue item is gone was already delivered as a turn, so it's archived
  * instead of shown again. If the app server can't be asked, nothing changes and the queue delivers them too.
+ * Each message names the thread it was queued on, which is this session's unless it came from before a restart.
  */
 export async function withdrawFromCodexQueue(selfId: string, threadId: string, codexHome: string | undefined): Promise<void> {
-  const queued = pendingMessages(selfId).filter((m) => m.codexQueueId);
-  const results = await deleteFromCodexQueue(
-    threadId,
-    queued.map((m) => m.codexQueueId as string),
-    codexHome,
-  );
-  if (!results) {
-    debugLog('codex-queue', `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
-    return;
+  const byThread = new Map<string, Message[]>();
+  for (const msg of pendingMessages(selfId)) {
+    if (!msg.codexQueueId) continue;
+    const thread = msg.codexThreadId ?? threadId;
+    byThread.set(thread, [...(byThread.get(thread) ?? []), msg]);
   }
-  for (const msg of queued) {
-    if (results.get(msg.codexQueueId as string) === false) archivePending(selfId, msg.id);
+  for (const [thread, queued] of byThread) {
+    const results = await deleteFromCodexQueue(
+      thread,
+      queued.map((m) => m.codexQueueId as string),
+      codexHome,
+    );
+    if (!results) {
+      debugLog('codex-queue', `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
+      continue;
+    }
+    for (const msg of queued) {
+      if (results.get(msg.codexQueueId as string) === false) archivePending(selfId, msg.id);
+    }
   }
 }

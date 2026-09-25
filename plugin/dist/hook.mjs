@@ -1,7 +1,7 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/hook.ts
-import path9 from "node:path";
+import path10 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/codex-queue.ts
@@ -163,6 +163,9 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
   return false;
 }
 
+// src/core/version.ts
+var VERSION = true ? "0.6.0" : "0.0.0-dev";
+
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
 var cache;
@@ -267,7 +270,42 @@ function registerSession(agent, pid, fields) {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeJsonAtomic(path4.join(peerDir(peerId(agent, pid)), "session.json"), record);
+  if (fields.sessionId) adoptHeldMessages(agent, pid, fields.sessionId);
   return record;
+}
+var HOLD_MS = 60 * 6e4;
+function holdsUnread(id, now = Date.now()) {
+  try {
+    return fs3.readdirSync(inboxDir(id)).some((f) => now - fs3.statSync(path4.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+  } catch {
+    return false;
+  }
+}
+function adoptHeldMessages(agent, pid, sessionId) {
+  const selfId = peerId(agent, pid);
+  let names;
+  try {
+    names = fs3.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const old = readJson(path4.join(peerDir(name), "session.json"));
+    if (old?.agent !== agent || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
+    let files = [];
+    try {
+      files = fs3.readdirSync(inboxDir(name));
+    } catch {
+    }
+    for (const file of files) {
+      try {
+        fs3.renameSync(path4.join(inboxDir(name), file), path4.join(ensureDir(inboxDir(selfId)), file));
+      } catch {
+      }
+    }
+    fs3.rmSync(peerDir(name), { recursive: true, force: true });
+  }
 }
 function readSession(id) {
   return readJson(path4.join(peerDir(id), "session.json"));
@@ -328,6 +366,7 @@ function readPeer(id) {
     address: `${agent}:${slugify(name) || id}`,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
+    version: presence?.version,
     hookRan: session?.source === "hook",
     toolHookRan: fs3.existsSync(path4.join(dir, "tool-hook.json")),
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : []
@@ -348,7 +387,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (!isSameProcess(pid, peer?.procStart)) {
-      fs3.rmSync(peerDir(name), { recursive: true, force: true });
+      if (!holdsUnread(name)) fs3.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
@@ -478,9 +517,6 @@ function formatForContext(messages, { lead: withLead = true, inlineLimit = 4e3 }
 ${bodies}` : bodies;
 }
 
-// src/core/version.ts
-var VERSION = true ? "0.5.1" : "0.0.0-dev";
-
 // src/core/codex-queue.ts
 var execFileAsync = promisify(execFile);
 function codexCandidates() {
@@ -558,24 +594,31 @@ function appServerDeletes(bin, threadId, queueIds, codexHome) {
   });
 }
 async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
-  const queued = pendingMessages(selfId).filter((m) => m.codexQueueId);
-  const results = await deleteFromCodexQueue(
-    threadId,
-    queued.map((m) => m.codexQueueId),
-    codexHome
-  );
-  if (!results) {
-    debugLog("codex-queue", `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
-    return;
+  const byThread = /* @__PURE__ */ new Map();
+  for (const msg of pendingMessages(selfId)) {
+    if (!msg.codexQueueId) continue;
+    const thread = msg.codexThreadId ?? threadId;
+    byThread.set(thread, [...byThread.get(thread) ?? [], msg]);
   }
-  for (const msg of queued) {
-    if (results.get(msg.codexQueueId) === false) archivePending(selfId, msg.id);
+  for (const [thread, queued] of byThread) {
+    const results = await deleteFromCodexQueue(
+      thread,
+      queued.map((m) => m.codexQueueId),
+      codexHome
+    );
+    if (!results) {
+      debugLog("codex-queue", `couldn't reach codex app-server; ${queued.length} message(s) stay queued as well`);
+      continue;
+    }
+    for (const msg of queued) {
+      if (results.get(msg.codexQueueId) === false) archivePending(selfId, msg.id);
+    }
   }
 }
 
 // src/core/deliver.ts
 import crypto2 from "node:crypto";
-import path8 from "node:path";
+import path9 from "node:path";
 
 // src/core/codex-activity.ts
 import fs5 from "node:fs";
@@ -645,11 +688,32 @@ function codexActivity(codexHome, threadId) {
   return void 0;
 }
 
+// src/core/setup.ts
+import fs6 from "node:fs";
+import path8 from "node:path";
+var CODEX_HOOKS = {
+  session_start: "SessionStart",
+  post_tool_use: "PostToolUse",
+  user_prompt_submit: "UserPromptSubmit"
+};
+function unapprovedCodexHooks(codexHome) {
+  let config;
+  try {
+    config = fs6.readFileSync(path8.join(codexHome, "config.toml"), "utf8");
+  } catch {
+    return void 0;
+  }
+  const approved = new Set(
+    [...config.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
+  );
+  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
+}
+
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId) => path8.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path9.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -708,7 +772,7 @@ async function sendMessage(self, to, body) {
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${err.message}` };
     }
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
     else archiveMessage(message);
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
@@ -720,11 +784,17 @@ async function sendMessage(self, to, body) {
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
-    return recipient.toolHookRan ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.` : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+    if (recipient.toolHookRan) {
+      return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
+    }
+    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
   if (activity === "interrupted") {
-    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`;
+    const withPrompt = unapproved && !unapproved.includes("UserPromptSubmit") ? ", and it gets the message with that prompt" : "";
+    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -869,7 +939,7 @@ function refreshSession(agent, agentPid, input) {
 var hasListener = (agent, agentPid) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
-  const waiter = `node "${path9.join(path9.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path10.join(path10.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }
 async function inbox(agent, agentPid, input, event) {

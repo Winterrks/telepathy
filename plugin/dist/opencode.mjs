@@ -6,8 +6,8 @@ var __export = (target, all) => {
 };
 
 // src/opencode.ts
-import fs6 from "node:fs";
-import path8 from "node:path";
+import fs7 from "node:fs";
+import path9 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/debug.ts
@@ -165,6 +165,9 @@ var agentSpec = (agent) => SPECS[agent];
 var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
+// src/core/version.ts
+var VERSION = true ? "0.6.0" : "0.0.0-dev";
+
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
 var cache;
@@ -225,7 +228,42 @@ function registerSession(agent, pid, fields) {
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeJsonAtomic(path3.join(peerDir(peerId(agent, pid)), "session.json"), record2);
+  if (fields.sessionId) adoptHeldMessages(agent, pid, fields.sessionId);
   return record2;
+}
+var HOLD_MS = 60 * 6e4;
+function holdsUnread(id, now = Date.now()) {
+  try {
+    return fs3.readdirSync(inboxDir(id)).some((f) => now - fs3.statSync(path3.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+  } catch {
+    return false;
+  }
+}
+function adoptHeldMessages(agent, pid, sessionId) {
+  const selfId = peerId(agent, pid);
+  let names;
+  try {
+    names = fs3.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const old = readJson(path3.join(peerDir(name), "session.json"));
+    if (old?.agent !== agent || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
+    let files = [];
+    try {
+      files = fs3.readdirSync(inboxDir(name));
+    } catch {
+    }
+    for (const file2 of files) {
+      try {
+        fs3.renameSync(path3.join(inboxDir(name), file2), path3.join(ensureDir(inboxDir(selfId)), file2));
+      } catch {
+      }
+    }
+    fs3.rmSync(peerDir(name), { recursive: true, force: true });
+  }
 }
 function registerPresence(agent, pid, fields = {}) {
   const record2 = {
@@ -236,7 +274,7 @@ function registerPresence(agent, pid, fields = {}) {
     ...fields,
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  writeJsonAtomic(path3.join(peerDir(peerId(agent, pid)), "presence.json"), record2);
+  writeJsonAtomic(path3.join(peerDir(peerId(agent, pid)), "presence.json"), { ...record2, version: VERSION });
 }
 function registerListener(agent, pid) {
   const record2 = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
@@ -298,6 +336,7 @@ function readPeer(id) {
     address: `${agent}:${slugify(name) || id}`,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
+    version: presence?.version,
     hookRan: session?.source === "hook",
     toolHookRan: fs3.existsSync(path3.join(dir, "tool-hook.json")),
     aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : []
@@ -318,7 +357,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (!isSameProcess(pid, peer?.procStart)) {
-      fs3.rmSync(peerDir(name), { recursive: true, force: true });
+      if (!holdsUnread(name)) fs3.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
@@ -1269,10 +1308,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path9) {
-  if (!path9)
+function getElementAtPath(obj, path10) {
+  if (!path10)
     return obj;
-  return path9.reduce((acc, key) => acc?.[key], obj);
+  return path10.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1612,11 +1651,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path9, issues) {
+function prefixIssues(path10, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path9);
+    iss.path.unshift(path10);
     return iss;
   });
 }
@@ -2066,16 +2105,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path9 = []) => {
+  const processError = (error63, path10 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -2114,17 +2153,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path9 = []) => {
+  const processError = (error63, path10 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path9, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path10, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path9, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path10, ...issue2.path]);
       } else {
-        const fullpath = [...path9, ...issue2.path];
+        const fullpath = [...path10, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -2163,8 +2202,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path9 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path9) {
+  const path10 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path10) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -19266,13 +19305,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path9 = ref.slice(1).split("/").filter(Boolean);
-  if (path9.length === 0) {
+  const path10 = ref.slice(1).split("/").filter(Boolean);
+  if (path10.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path9[0] === defsKey) {
-    const key = path9[1] === void 0 ? void 0 : decodeJSONPointerSegment(path9[1]);
+  if (path10[0] === defsKey) {
+    const key = path10[1] === void 0 ? void 0 : decodeJSONPointerSegment(path10[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -20123,7 +20162,7 @@ function date4(params) {
 
 // src/core/deliver.ts
 import crypto2 from "node:crypto";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/core/codex-activity.ts
 import fs5 from "node:fs";
@@ -20224,11 +20263,32 @@ async function queueIntoCodex(threadId, text, codexHome) {
   throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
 }
 
+// src/core/setup.ts
+import fs6 from "node:fs";
+import path7 from "node:path";
+var CODEX_HOOKS = {
+  session_start: "SessionStart",
+  post_tool_use: "PostToolUse",
+  user_prompt_submit: "UserPromptSubmit"
+};
+function unapprovedCodexHooks(codexHome) {
+  let config2;
+  try {
+    config2 = fs6.readFileSync(path7.join(codexHome, "config.toml"), "utf8");
+  } catch {
+    return void 0;
+  }
+  const approved = new Set(
+    [...config2.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
+  );
+  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
+}
+
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId) => path7.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path8.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -20287,7 +20347,7 @@ async function sendMessage(self, to, body) {
     } catch (err) {
       return { ok: false, error: `Could not deliver to ${who}: ${err.message}` };
     }
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
     else archiveMessage(message);
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
@@ -20299,11 +20359,17 @@ async function sendMessage(self, to, body) {
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
-    return recipient.toolHookRan ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.` : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+    if (recipient.toolHookRan) {
+      return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
+    }
+    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
   if (activity === "interrupted") {
-    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`;
+    const withPrompt = unapproved && !unapproved.includes("UserPromptSubmit") ? ", and it gets the message with that prompt" : "";
+    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -20395,10 +20461,10 @@ function readMessagesTool(selfId, { id, limit }) {
 }
 
 // src/opencode.ts
-var skillsDir = path8.join(path8.dirname(path8.dirname(fileURLToPath(import.meta.url))), "skills");
+var skillsDir = path9.join(path9.dirname(path9.dirname(fileURLToPath(import.meta.url))), "skills");
 var out = (r) => r.isError ? `Error: ${r.text}` : r.text;
 var TelepathyPlugin = async ({ client, directory }) => {
-  const agent = /kilo/i.test(path8.basename(process.execPath)) ? "kilo" : "opencode";
+  const agent = /kilo/i.test(path9.basename(process.execPath)) ? "kilo" : "opencode";
   const pid = process.pid;
   const id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
@@ -20432,7 +20498,7 @@ var TelepathyPlugin = async ({ client, directory }) => {
   const watch = () => {
     if (watcher) return;
     try {
-      watcher = fs6.watch(ensureDir(inboxDir(id)), () => void deliver());
+      watcher = fs7.watch(ensureDir(inboxDir(id)), () => void deliver());
       watcher.on("error", () => {
         watcher?.close();
         watcher = void 0;

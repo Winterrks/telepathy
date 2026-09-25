@@ -18,8 +18,9 @@ export interface Message {
   to: Party;
   body: string;
   sentAt: string;
-  /** For a message to Codex: its item in Codex's own queue, which delivers it as a turn. */
+  /** For a message to Codex: its item in Codex's own queue, which delivers it as a turn, and that queue's thread. */
   codexQueueId?: string;
+  codexThreadId?: string;
 }
 
 export const MAX_MESSAGE_CHARS = 100_000;

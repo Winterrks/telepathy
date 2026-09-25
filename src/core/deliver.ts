@@ -3,6 +3,7 @@ import path from 'node:path';
 import { agentSpec } from './agents.ts';
 import { codexActivity } from './codex-activity.ts';
 import { queueIntoCodex } from './codex-queue.ts';
+import { unapprovedCodexHooks } from './setup.ts';
 import {
   archiveMessage,
   formatAsUserTurn,
@@ -100,7 +101,7 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
       return { ok: false, error: `Could not deliver to ${who}: ${(err as Error).message}` };
     }
     // Also in the inbox, so read_messages can hand it over mid-turn and take it back out of Codex's queue.
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId });
+    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
     else archiveMessage(message);
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
@@ -116,15 +117,22 @@ function codexQueueStatus(recipient: Peer): string {
   const ref = peerRef(recipient);
   const activity =
     recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : undefined;
+  // Which of telepathy's hooks Codex hasn't approved; undefined when that can't be told.
+  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : undefined;
   if (activity === 'busy') {
-    return recipient.toolHookRan
-      ? `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`
-      : `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
+    if (recipient.toolHookRan) {
+      return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
+    }
+    const why = unapproved?.includes('PostToolUse')
+      ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)"
+      : '';
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
   if (activity === 'interrupted') {
+    const withPrompt = unapproved && !unapproved.includes('UserPromptSubmit') ? ', and it gets the message with that prompt' : '';
     return (
       `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
-      `queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`
+      `queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`
     );
   }
   return `Message queued for delivery to ${ref}.`;

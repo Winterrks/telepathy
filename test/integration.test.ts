@@ -253,6 +253,100 @@ describe('telepathy plugin', () => {
     }
   });
 
+  test('unread messages of an exited session wait an hour for the session to be resumed', async () => {
+    const senderAgent = spawnAgent();
+    runHook(sb, 'codex', senderAgent.pid, 'session-start', { session_id: 't-send', cwd: '/w/sender' });
+    const sender = await connect('codex', senderAgent.pid);
+    const first = spawnAgent();
+    runHook(sb, 'claude', first.pid, 'session-start', { session_id: 'claude-sess', cwd: '/w/app' });
+    assert.equal((await call(sender, 'send_message', { to: 'claude:app', message: 'kept for the resume' })).isError, undefined);
+    await killAndWait(first);
+
+    // Listing drops the exited session but keeps its unread mail.
+    assert.doesNotMatch(toolText(await call(sender, 'list_peers')), new RegExp(`claude-${first.pid}`));
+    assert.equal(fs.readdirSync(path.join(sb.home, 'peers', `claude-${first.pid}`, 'inbox')).length, 1);
+    // A new session in the same folder is a different conversation: it doesn't get it.
+    const fresh = spawnAgent();
+    runHook(sb, 'claude', fresh.pid, 'session-start', { session_id: 'new-sess', cwd: '/w/app' });
+    assert.equal(runHook(sb, 'claude', fresh.pid, 'inbox', { session_id: 'new-sess' }, 'UserPromptSubmit').stdout, '');
+    // The resumed session does.
+    const resumed = spawnAgent();
+    runHook(sb, 'claude', resumed.pid, 'session-start', { session_id: 'claude-sess', cwd: '/w/app' });
+    assert.ok(!fs.existsSync(path.join(sb.home, 'peers', `claude-${first.pid}`)));
+    const res = runHook(sb, 'claude', resumed.pid, 'inbox', { session_id: 'claude-sess' }, 'UserPromptSubmit');
+    assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /kept for the resume$/);
+
+    // After an hour, unread mail of an exited session is dropped with it.
+    const gone = spawnAgent();
+    runHook(sb, 'claude', gone.pid, 'session-start', { session_id: 'old', cwd: '/w/old' });
+    await call(sender, 'send_message', { to: 'claude:old', message: 'stale' });
+    await killAndWait(gone);
+    const inbox = path.join(sb.home, 'peers', `claude-${gone.pid}`, 'inbox');
+    const hourAgo = new Date(Date.now() - 61 * 60_000);
+    for (const f of fs.readdirSync(inbox)) fs.utimesSync(path.join(inbox, f), hourAgo, hourAgo);
+    await call(sender, 'list_peers');
+    assert.ok(!fs.existsSync(path.join(sb.home, 'peers', `claude-${gone.pid}`)));
+  });
+
+  test('a resumed Codex gets what was sent before the restart once, and it leaves the old queue item', async () => {
+    const claudeAgent = spawnAgent();
+    runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/api' });
+    const claude = await connect('claude', claudeAgent.pid);
+    const beforeRestart = spawnAgent();
+    runHook(sb, 'codex', beforeRestart.pid, 'session-start', { session_id: 'thread-r', cwd: '/w/cx' });
+    assert.equal((await call(claude, 'send_message', { to: 'codex:cx', message: 'while you restart' })).isError, undefined);
+    await killAndWait(beforeRestart);
+
+    const afterRestart = spawnAgent();
+    runHook(sb, 'codex', afterRestart.pid, 'session-start', { session_id: 'thread-r', cwd: '/w/cx' });
+    const res = runHook(sb, 'codex', afterRestart.pid, 'inbox', { session_id: 'thread-r' }, 'UserPromptSubmit');
+    assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /while you restart$/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(`${sb.codexLog}.queue.json`, 'utf8')), []);
+  });
+
+  test('setup notes tell the agent what its user has to fix: unapproved Codex hooks, an outdated session', async () => {
+    const codexAgent = spawnAgent();
+    runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't-n', cwd: '/w/n' });
+    const config = path.join(sb.codexHome, 'config.toml');
+    const approve = (event: string) => `[hooks.state."telepathy@telepathy:hooks/codex-hooks.json:${event}:0:0"]\ntrusted_hash = "x"\n\n`;
+    fs.writeFileSync(config, `model = "m"\n\n[hooks.state]\n\n${approve('session_start')}`);
+    try {
+      const codex = await connect('codex', codexAgent.pid);
+      assert.match(
+        toolText(await call(codex, 'list_peers')),
+        /\n\n\[telepathy setup\] Codex hasn't approved telepathy's PostToolUse and UserPromptSubmit hooks, so messages sent while you work reach you only when your turn ends; after an interrupted turn, messages wait for a later turn\. Tell your user: open \/hooks in this session and trust them \(press t\)\.$/,
+      );
+      assert.doesNotMatch(toolText(await call(codex, 'list_peers')), /telepathy setup/, 'not again for ten minutes');
+      assert.match(toolText(await call(codex, 'read_messages')), /telepathy setup/, 'read_messages always says it');
+
+      // A sender learns why a busy Codex gets the message late.
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/me' });
+      const claude = await connect('claude', claudeAgent.pid);
+      const day = path.join(sb.codexHome, 'sessions', '2026', '09', '25');
+      fs.mkdirSync(day, { recursive: true });
+      fs.writeFileSync(path.join(day, 'rollout-2026-09-25T11-00-00-t-n.jsonl'), JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }) + '\n');
+      assert.match(
+        toolText(await call(claude, 'send_message', { to: 'codex:n', message: 'x' })),
+        /only after that turn ends \(telepathy's PostToolUse hook isn't approved there; its user can trust it with \/hooks in that session\)\.$/,
+      );
+
+      fs.appendFileSync(config, approve('post_tool_use') + approve('user_prompt_submit'));
+      assert.doesNotMatch(toolText(await call(codex, 'read_messages')), /telepathy setup/);
+
+      // Another session on a newer telepathy means this one still runs an old build.
+      const presence = path.join(sb.home, 'peers', `claude-${claudeAgent.pid}`, 'presence.json');
+      fs.writeFileSync(presence, JSON.stringify({ ...JSON.parse(fs.readFileSync(presence, 'utf8')), version: '99.0.0' }));
+      assert.match(
+        toolText(await call(codex, 'read_messages')),
+        /\[telepathy setup\] This session runs telepathy \d+\.\d+\.\d+, but another session already runs 99\.0\.0, so messages may not reach this session as they should\. Tell your user to restart this session to load the update\.$/,
+      );
+    } finally {
+      fs.rmSync(config, { force: true });
+      fs.rmSync(path.join(sb.codexHome, 'sessions'), { recursive: true, force: true });
+    }
+  });
+
   describe('Claude Code hooks', () => {
     test('ListAgents gets other agents\' sessions added to its listing, as rows in its own shape', () => {
       const claudeAgent = spawnAgent();

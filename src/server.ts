@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
+import { setupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
 import { defaultCodexHome, peerId, readSession, registerPresence, registerSession, selfPeer } from './core/peers.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
@@ -84,6 +85,21 @@ const server = new McpServer(
 
 const text = ({ text, isError }: ToolResult) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
 
+const NOTE_EVERY_MS = 10 * 60_000;
+const noteShownAt = new Map<string, number>();
+
+/**
+ * Adds `[telepathy setup]` notes: things the user has to fix before messages reach this session on time.
+ * read_messages always shows them (an agent calls it when messages seem not to arrive); the other tools at most
+ * every ten minutes per note.
+ */
+function withSetupNotes(result: ToolResult, always = false): ToolResult {
+  const now = Date.now();
+  const notes = setupNotes(selfPeer(agent, agentPid)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
+  for (const note of notes) noteShownAt.set(note, now);
+  return notes.length ? { ...result, text: `${result.text}\n\n${notes.join('\n')}` } : result;
+}
+
 server.registerTool(
   'list_peers',
   {
@@ -94,7 +110,7 @@ server.registerTool(
   },
   async (_args, ctx) => {
     learnCodexThread(ctx.mcpReq._meta);
-    return text(listPeersTool(selfPeer(agent, agentPid)));
+    return text(withSetupNotes(listPeersTool(selfPeer(agent, agentPid))));
   },
 );
 
@@ -108,7 +124,7 @@ server.registerTool(
   },
   async ({ to, message }, ctx) => {
     learnCodexThread(ctx.mcpReq._meta);
-    return text(await sendMessageTool(selfPeer(agent, agentPid), to, message));
+    return text(withSetupNotes(await sendMessageTool(selfPeer(agent, agentPid), to, message)));
   },
 );
 
@@ -126,7 +142,7 @@ server.registerTool(
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(readMessagesTool(selfId, { id, limit }));
+    return text(withSetupNotes(readMessagesTool(selfId, { id, limit }), true));
   },
 );
 
