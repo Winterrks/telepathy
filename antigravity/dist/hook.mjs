@@ -1,7 +1,7 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/hook.ts
-import path10 from "node:path";
+import path12 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/codex-queue.ts
@@ -61,6 +61,7 @@ import fs4 from "node:fs";
 import path5 from "node:path";
 
 // src/core/peers.ts
+import { createHash } from "node:crypto";
 import fs3 from "node:fs";
 import os2 from "node:os";
 import path4 from "node:path";
@@ -164,7 +165,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.7.0" : "0.0.0-dev";
+var VERSION = true ? "0.8.0" : "0.0.0-dev";
 
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
@@ -293,12 +294,12 @@ function adoptHeldMessages(agent, pid, sessionId) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
     const old = readJson(path4.join(peerDir(name), "session.json"));
     if (old?.agent !== agent || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
-    let files = [];
+    let files2 = [];
     try {
-      files = fs3.readdirSync(inboxDir(name));
+      files2 = fs3.readdirSync(inboxDir(name));
     } catch {
     }
-    for (const file of files) {
+    for (const file of files2) {
       try {
         fs3.renameSync(path4.join(inboxDir(name), file), path4.join(ensureDir(inboxDir(selfId)), file));
       } catch {
@@ -336,9 +337,11 @@ function codexThreadName(codexHome, sessionId) {
   }
   return name;
 }
-function displayName(agent, pid, cwd, sessionId, codexHome) {
-  const fromAgent = agent === "claude" ? claudeSessionName(pid) : agent === "codex" ? codexThreadName(codexHome, sessionId) : void 0;
-  return fromAgent || (cwd ? path4.basename(cwd) : "") || `session-${pid}`;
+var nameSuffix = (agent, pid) => agent[0] + createHash("sha1").update(String(pid)).digest("hex").slice(0, 2);
+function displayName(agent, pid, cwd) {
+  const folder = cwd ? slugify(path4.basename(cwd)) : "";
+  if (agent === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
+  return folder ? `${folder}-${nameSuffix(agent, pid)}` : `session-${pid}`;
 }
 function readPeer(id) {
   const m = PEER_DIR_RE.exec(id);
@@ -352,8 +355,8 @@ function readPeer(id) {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent, pid, cwd, session?.sessionId, codexHome);
-  const folderSlug = cwd ? slugify(path4.basename(cwd)) : "";
+  const name = displayName(agent, pid, cwd);
+  const aliases = [cwd ? slugify(path4.basename(cwd)) : "", agent === "codex" ? slugify(codexThreadName(codexHome, session?.sessionId) ?? "") : ""];
   return {
     id,
     agent,
@@ -369,7 +372,7 @@ function readPeer(id) {
     version: presence?.version,
     hookRan: session?.source === "hook",
     toolHookRan: fs3.existsSync(path4.join(dir, "tool-hook.json")),
-    aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : []
+    aliases: [...new Set(aliases)].filter((a) => a && a !== slugify(name))
   };
 }
 function listPeers() {
@@ -447,14 +450,14 @@ function archiveMessage(msg) {
   pruneArchive(msg.to.id);
 }
 function claimInbox(peerId2) {
-  let files;
+  let files2;
   try {
-    files = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files2 = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
   const claimed = [];
-  for (const file of files) {
+  for (const file of files2) {
     const target = path5.join(ensureDir(archiveDir(peerId2)), file);
     try {
       fs4.renameSync(path5.join(inboxDir(peerId2), file), target);
@@ -468,13 +471,13 @@ function claimInbox(peerId2) {
   return claimed;
 }
 function pendingMessages(peerId2) {
-  let files;
+  let files2;
   try {
-    files = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files2 = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
-  return files.map((f) => readJson(path5.join(inboxDir(peerId2), f))).filter((m) => !!m);
+  return files2.map((f) => readJson(path5.join(inboxDir(peerId2), f))).filter((m) => !!m);
 }
 function archivePending(peerId2, id) {
   try {
@@ -484,8 +487,8 @@ function archivePending(peerId2, id) {
 }
 function pruneArchive(peerId2) {
   try {
-    const files = fs4.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
-    for (const f of files.slice(0, Math.max(0, files.length - ARCHIVE_KEEP))) {
+    const files2 = fs4.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    for (const f of files2.slice(0, Math.max(0, files2.length - ARCHIVE_KEEP))) {
       fs4.rmSync(path5.join(archiveDir(peerId2), f), { force: true });
     }
   } catch {
@@ -616,9 +619,13 @@ async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
   }
 }
 
-// src/core/deliver.ts
-import crypto2 from "node:crypto";
+// src/core/edits.ts
+import { createHash as createHash2 } from "node:crypto";
+import fs6 from "node:fs";
 import path9 from "node:path";
+
+// src/core/status.ts
+import path8 from "node:path";
 
 // src/core/codex-activity.ts
 import fs5 from "node:fs";
@@ -687,10 +694,249 @@ function codexActivity(codexHome, threadId) {
   }
   return void 0;
 }
+function codexLastResponse(codexHome, threadId) {
+  try {
+    const file = findRollout(codexHome, threadId);
+    if (!file) return void 0;
+    const lines = readTail(file, 256 * 1024).text.trimEnd().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"response_item"')) continue;
+      try {
+        const entry = JSON.parse(lines[i]);
+        const at = Date.parse(entry.timestamp ?? "");
+        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+
+// src/core/status.ts
+var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
+var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
+var statusFile = (id) => path8.join(peerDir(id), "status.json");
+function writeStatus(id, status, now = Date.now()) {
+  writeJsonAtomic(statusFile(id), { status, at: new Date(now).toISOString() });
+}
+function recorded(id) {
+  const record = readJson(statusFile(id));
+  const at = record ? Date.parse(record.at) : Number.NaN;
+  return record && typeof record.status === "string" && !Number.isNaN(at) ? { status: record.status, at } : void 0;
+}
+var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
+function claudeStatus(pid) {
+  const record = readJson(path8.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  if (typeof record?.status !== "string" || !CLAUDE_STATUSES.includes(record.status)) return void 0;
+  return { status: record.status, at: typeof record.statusUpdatedAt === "number" ? record.statusUpdatedAt : void 0 };
+}
+function codexStatus(peer) {
+  if (!peer.codexHome || !peer.sessionId) return void 0;
+  const activity = codexActivity(peer.codexHome, peer.sessionId);
+  const hook = recorded(peer.id);
+  if (hook?.status === "waiting" && activity !== "idle" && activity !== "interrupted") {
+    const lastResponse = codexLastResponse(peer.codexHome, peer.sessionId);
+    if (lastResponse === void 0 || lastResponse <= (hook.at ?? 0)) return hook;
+  }
+  return activity ? { status: activity } : void 0;
+}
+function peerStatus(peer) {
+  if (peer.agent === "claude") return claudeStatus(peer.pid);
+  if (peer.agent === "codex") return codexStatus(peer);
+  const info = recorded(peer.id);
+  return info && { ...info, fromHooks: statusFromHooks(peer.agent) };
+}
+var STALE_MS = 15 * 6e4;
+var stale = (info, now) => info.fromHooks && info.at !== void 0 && now - info.at > STALE_MS ? `? (no activity for ${Math.round((now - info.at) / 6e4)}m)` : "";
+function statusText(info, now = Date.now()) {
+  if (!info) return void 0;
+  switch (info.status) {
+    case "waiting":
+      return `waiting on a permission prompt for its user${stale(info, now)}`;
+    case "shell":
+      return "shell (not generating, but a command it started is still running)";
+    case "interrupted":
+      return "interrupted: gets messages only after its user sends it a prompt";
+    case "busy":
+      return `busy${stale(info, now)}`;
+    default:
+      return info.status;
+  }
+}
+
+// src/core/listing.ts
+function formatAgo(ms) {
+  const s = Math.max(0, Math.floor(ms / 1e3));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+var codexUnreachable = (peer) => peer.agent === "codex" && !peer.sessionId;
+function listAgentsRow(peer, now = Date.now()) {
+  const columns = [peerRef(peer), "interactive"];
+  if (codexUnreachable(peer)) {
+    columns.push("not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)");
+  } else {
+    const status = statusText(peerStatus(peer), now);
+    if (status) columns.push(status);
+  }
+  const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
+  if (!Number.isNaN(started)) columns.push(`started ${formatAgo(now - started)}`);
+  return `  ${columns.join("  \xB7  ")}`;
+}
+
+// src/core/edits.ts
+var EDIT_WINDOW_MS = 60 * 6e4;
+var EDIT_TOOL_RE = /edit|write|patch|create|replace|insert|notebook/i;
+var READ_TOOL_RE = /read|view|grep|glob|search|list/i;
+var SHELL_TOOL_RE = /bash|shell|exec_command|run_command|terminal/i;
+var PATH_FIELDS = ["file_path", "filePath", "notebook_path", "absolute_path", "target_file", "path", "file", "dir_path"];
+var SHELL_WORD_RE = /"([^"]*)"|'([^']*)'|([^\s;&|<>()`"']+)/g;
+function shellPaths(command, cwd) {
+  const found = [];
+  for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
+    const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
+    if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
+    if (!path9.isAbsolute(word) && !cwd) continue;
+    const resolved = path9.resolve(cwd ?? "/", word);
+    if (resolved === cwd || !fs6.existsSync(resolved)) continue;
+    found.push(resolved);
+    if (found.length >= 8) break;
+  }
+  return found;
+}
+var PATCH_HEADER_RE = /^\*\*\* (?:Add|Update|Delete) File: (.+)$|^\*\*\* Move to: (.+)$/gm;
+function patchedFiles(input) {
+  const files2 = [];
+  for (const value of Object.values(input)) {
+    if (typeof value !== "string" || !value.includes("*** ")) continue;
+    for (const m of value.matchAll(PATCH_HEADER_RE)) files2.push((m[1] ?? m[2]).trim());
+  }
+  return files2;
+}
+function asObject(value) {
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return void 0;
+    }
+  }
+  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function ignored(file) {
+  const parts = file.split(path9.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path9.sep);
+}
+function touchedFiles(toolName, toolInput, cwd) {
+  const none = { edited: [], read: [] };
+  const input = asObject(toolInput);
+  if (typeof toolName !== "string" || !input) return none;
+  const kind = EDIT_TOOL_RE.test(toolName) ? "edited" : READ_TOOL_RE.test(toolName) || SHELL_TOOL_RE.test(toolName) ? "read" : void 0;
+  if (!kind) return none;
+  const named = PATH_FIELDS.map((f) => input[f]).filter((v) => typeof v === "string" && v.trim() !== "");
+  const command = [input.command, input.cmd].find((v) => typeof v === "string");
+  const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
+  const files2 = [
+    ...new Set(
+      raw.map((f) => f.trim()).filter((f) => path9.isAbsolute(f) || cwd).map((f) => path9.resolve(cwd ?? "/", f))
+    )
+  ].filter((f) => !ignored(f));
+  return { ...none, [kind]: files2 };
+}
+var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
+var editsDir = (id) => path9.join(peerDir(id), "edits");
+function recordEdits(selfId, files2, now = Date.now()) {
+  for (const file of files2) {
+    writeJsonAtomic(path9.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
+  }
+}
+function othersRecentEdits(selfId, now) {
+  const found = [];
+  let ids = [];
+  try {
+    ids = fs6.readdirSync(peersDir());
+  } catch {
+    return found;
+  }
+  for (const id of ids) {
+    if (id === selfId) continue;
+    let files2 = [];
+    try {
+      files2 = fs6.readdirSync(editsDir(id));
+    } catch {
+      continue;
+    }
+    for (const name of files2) {
+      const edit = readJson(path9.join(editsDir(id), name));
+      const at = edit ? Date.parse(edit.at) : Number.NaN;
+      if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
+    }
+  }
+  return found;
+}
+var SEND_HINT = {
+  claude: "SendMessage or send_message",
+  opencode: "telepathy_send_message",
+  kilo: "telepathy_send_message"
+};
+var isDirectory = (p) => {
+  try {
+    return fs6.statSync(p).isDirectory();
+  } catch {
+    return false;
+  }
+};
+function overlapNote(self, files2, cwd, now = Date.now()) {
+  if (!files2.length) return void 0;
+  const recent = othersRecentEdits(self.id, now);
+  if (!recent.length) return void 0;
+  const shownDir = path9.join(peerDir(self.id), "overlaps");
+  const alive = /* @__PURE__ */ new Map();
+  const lines = [];
+  for (const file of files2) {
+    const dir = isDirectory(file) ? file : path9.dirname(file);
+    const byPeer = /* @__PURE__ */ new Map();
+    for (const r of recent) {
+      const same = r.edit.file === file;
+      if (!same && path9.dirname(r.edit.file) !== dir) continue;
+      const best = byPeer.get(r.id);
+      if (!best || same && best.edit.file !== file || same === (best.edit.file === file) && r.at > best.at) byPeer.set(r.id, r);
+    }
+    for (const [id, r] of byPeer) {
+      const marker = path9.join(shownDir, `${keyOf(`${id}
+${dir}`)}.json`);
+      if (fs6.existsSync(marker)) continue;
+      if (!alive.has(id)) {
+        const peer2 = readPeer(id);
+        alive.set(id, peer2 && isSameProcess(peer2.pid, peer2.procStart) ? peer2 : void 0);
+      }
+      const peer = alive.get(id);
+      if (!peer) continue;
+      const shown = cwd && r.edit.file.startsWith(cwd + path9.sep) ? path9.relative(cwd, r.edit.file) : r.edit.file;
+      lines.push(
+        `[telepathy note] Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? "send_message"}.`
+      );
+      writeJsonAtomic(marker, { peer: id, dir, at: new Date(now).toISOString() });
+    }
+  }
+  return lines.length ? lines.join("\n") : void 0;
+}
+function trackTouchedFiles(self, toolName, toolInput, cwd) {
+  const { edited, read } = touchedFiles(toolName, toolInput, cwd);
+  if (edited.length) recordEdits(self.id, edited);
+  return overlapNote(self, [...edited, ...read], cwd);
+}
+
+// src/core/deliver.ts
+import crypto2 from "node:crypto";
+import path11 from "node:path";
 
 // src/core/setup.ts
-import fs6 from "node:fs";
-import path8 from "node:path";
+import fs7 from "node:fs";
+import path10 from "node:path";
 var CODEX_HOOKS = {
   session_start: "SessionStart",
   post_tool_use: "PostToolUse",
@@ -699,7 +945,7 @@ var CODEX_HOOKS = {
 function unapprovedCodexHooks(codexHome) {
   let config;
   try {
-    config = fs6.readFileSync(path8.join(codexHome, "config.toml"), "utf8");
+    config = fs7.readFileSync(path10.join(codexHome, "config.toml"), "utf8");
   } catch {
     return void 0;
   }
@@ -713,7 +959,7 @@ function unapprovedCodexHooks(codexHome) {
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId) => path9.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path11.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -781,9 +1027,11 @@ async function sendMessage(self, to, body) {
   recordSent(self.id, recipient.id, body);
   return { ok: true, message, recipient, status: inboxStatus(recipient) };
 }
+var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
-  const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  const activity = peerStatus(recipient)?.status;
+  if (activity === "waiting") return waitingNote(ref, "queued for");
   const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
     if (recipient.toolHookRan) {
@@ -800,6 +1048,7 @@ function codexQueueStatus(recipient) {
 }
 function inboxStatus(recipient) {
   const ref = peerRef(recipient);
+  if (peerStatus(recipient)?.status === "waiting") return waitingNote(ref, recipient.hasListener ? "delivered to" : "stored for");
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
@@ -831,32 +1080,6 @@ function guideLines(agent, opts = {}) {
   return lines;
 }
 var guideText = (agent, opts = {}) => guideLines(agent, opts).join("\n");
-
-// src/core/listing.ts
-function formatAgo(ms) {
-  const s = Math.max(0, Math.floor(ms / 1e3));
-  if (s < 60) return `${s}s ago`;
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
-function codexStatus(peer) {
-  const status = peer.codexHome && peer.sessionId ? codexActivity(peer.codexHome, peer.sessionId) : void 0;
-  return status === "interrupted" ? "idle after an interrupted turn: gets messages only after its user sends it a prompt" : status;
-}
-var codexUnreachable = (peer) => peer.agent === "codex" && !peer.sessionId;
-function listAgentsRow(peer, now = Date.now()) {
-  const columns = [peerRef(peer), "interactive"];
-  if (codexUnreachable(peer)) {
-    columns.push("not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)");
-  } else if (peer.agent === "codex") {
-    const status = codexStatus(peer);
-    if (status) columns.push(status);
-  }
-  const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
-  if (!Number.isNaN(started)) columns.push(`started ${formatAgo(now - started)}`);
-  return `  ${columns.join("  \xB7  ")}`;
-}
 
 // src/hook.ts
 var firstString = (input, fields) => fields.map((f) => input[f]).find((v) => typeof v === "string" && v.length > 0);
@@ -923,6 +1146,7 @@ function sessionStart(agent, agentPid, input) {
     source: "hook",
     codexHome: agent === "codex" ? defaultCodexHome() : void 0
   });
+  if (statusFromHooks(agent)) writeStatus(peerId(agent, agentPid), "idle");
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 function refreshSession(agent, agentPid, input) {
@@ -939,14 +1163,37 @@ function refreshSession(agent, agentPid, input) {
 var hasListener = (agent, agentPid) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
-  const waiter = `node "${path10.join(path10.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path12.join(path12.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
+}
+function touchedFilesNote(agent, agentPid, input) {
+  const toolName = input.tool_name ?? input.toolName;
+  if (toolName === void 0) return void 0;
+  const selfId = peerId(agent, agentPid);
+  const cwd = sessionOf(agent, input).cwd ?? readSession(selfId)?.cwd;
+  try {
+    const note = trackTouchedFiles({ id: selfId, agent }, toolName, input.tool_input ?? input.toolArgs ?? input.tool_args, cwd);
+    if (note) debugLog("hook", `${agent} ${String(toolName)}: overlap note`);
+    return note;
+  } catch (err) {
+    debugLog("hook", `file tracking failed: ${err.message}`);
+    return void 0;
+  }
+}
+function files(agent, agentPid, input) {
+  const note = touchedFilesNote(agent, agentPid, input);
+  if (note) reply(hookSpecificContext(note, "PostToolUse"));
 }
 async function inbox(agent, agentPid, input, event) {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
-  if (hasListener(agent, agentPid)) return;
+  if (statusFromHooks(agent) || agent === "codex") writeStatus(peerId(agent, agentPid), "busy");
+  const overlap = touchedFilesNote(agent, agentPid, input);
+  if (hasListener(agent, agentPid)) {
+    if (overlap) reply(shape.context(overlap, event));
+    return;
+  }
   const selfId = peerId(agent, agentPid);
   if (agent === "codex") {
     if (event === "PostToolUse") markToolHook(selfId);
@@ -955,7 +1202,7 @@ async function inbox(agent, agentPid, input, event) {
   }
   const messages = claimInbox(selfId);
   if (messages.length) debugLog("hook", `${agent} ${event}: delivered ${messages.map((m) => m.id).join(", ")}`);
-  const parts = [messages.length ? formatForContext(messages) : "", waiterReminder(agent, agentPid) ?? ""].filter(Boolean);
+  const parts = [messages.length ? formatForContext(messages) : "", overlap ?? "", waiterReminder(agent, agentPid) ?? ""].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join("\n\n"), event));
 }
 function endedNormally(input) {
@@ -967,15 +1214,23 @@ function turnEnd(agent, agentPid, input) {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  const tracked = statusFromHooks(agent);
+  if (tracked) writeStatus(peerId(agent, agentPid), "idle");
   if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (messages.length) {
+    if (tracked) writeStatus(peerId(agent, agentPid), "busy");
     debugLog("hook", `${agent} turn end: delivered ${messages.map((m) => m.id).join(", ")}`);
     reply(shape.turnEnd([formatForContext(messages), waiterReminder(agent, agentPid)].filter(Boolean).join("\n\n")));
     return;
   }
   const reminder = input.stop_hook_active === true ? void 0 : waiterReminder(agent, agentPid);
   if (reminder) reply(shape.turnEnd(reminder));
+}
+function waiting(agent, agentPid, input) {
+  const type = input.notification_type;
+  if (typeof type === "string" && type !== "ToolPermission") return;
+  writeStatus(peerId(agent, agentPid), "waiting");
 }
 function listAgents(agentPid, input) {
   const selfId = peerId("claude", agentPid);
@@ -1027,6 +1282,8 @@ async function main() {
   if (action === "session-start") sessionStart(agent, agentPid, input);
   else if (action === "inbox") await inbox(agent, agentPid, input, event ?? "PostToolUse");
   else if (action === "turn-end") turnEnd(agent, agentPid, input);
+  else if (action === "files") files(agent, agentPid, input);
+  else if (action === "status" && event === "waiting") waiting(agent, agentPid, input);
   else if (action === "list-agents" && agent === "claude") listAgents(agentPid, input);
   else if (action === "send-message" && agent === "claude") await interceptSendMessage(agentPid, input);
   else throw new Error(`unknown hook action ${JSON.stringify(action)} for ${agent}`);

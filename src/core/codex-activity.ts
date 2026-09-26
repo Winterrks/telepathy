@@ -89,3 +89,30 @@ export function codexActivity(codexHome: string, threadId: string): CodexActivit
   }
   return undefined;
 }
+
+/**
+ * When Codex last recorded a response item in a thread's rollout log (a tool call's output, reasoning, a message).
+ * While a permission prompt is open Codex logs only bookkeeping (token usage, other items completing), and answering
+ * it logs the tool's output, or after a denial the model's next step, so a response item after the prompt means it is
+ * over. Undefined when the log has no timestamped response item in its last 256 KB.
+ */
+export function codexLastResponse(codexHome: string, threadId: string): number | undefined {
+  try {
+    const file = findRollout(codexHome, threadId);
+    if (!file) return undefined;
+    const lines = readTail(file, 256 * 1024).text.trimEnd().split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"response_item"')) continue;
+      try {
+        const entry = JSON.parse(lines[i]) as { type?: string; timestamp?: string };
+        const at = Date.parse(entry.timestamp ?? '');
+        if (entry.type === 'response_item' && !Number.isNaN(at)) return at;
+      } catch {
+        // a line still being written
+      }
+    }
+  } catch {
+    // unreadable file
+  }
+  return undefined;
+}

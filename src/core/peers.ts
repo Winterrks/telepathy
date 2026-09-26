@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -55,7 +56,7 @@ export interface Peer {
   sessionId?: string;
   cwd?: string;
   codexHome?: string;
-  /** Human-readable name (Claude session name, Codex thread name, or the cwd's folder name). */
+  /** Its name: Claude Code's own for a Claude session, `<folder>-<suffix>` for the others (`norma-v2-c3f`). */
   name: string;
   /** What agents type to reach it: `<agent>:<name-slug>`. */
   address: string;
@@ -68,8 +69,8 @@ export interface Peer {
   /** Its after-tool-call hook has run, so it gets messages mid-turn (Codex, where that hook needs its own approval). */
   toolHookRan?: boolean;
   /**
-   * Other names that also reach this peer. The cwd's folder name stays valid after a Codex thread gets its
-   * title (or a Claude session is renamed), so an address another agent already has keeps working.
+   * Other names that also reach this peer: the bare folder name, and for Codex its thread's title, so an address
+   * written without the suffix, or one an older version handed out, keeps working.
    */
   aliases?: string[];
 }
@@ -91,7 +92,7 @@ const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-\\d+$`);
 
 export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
-const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
+export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 export function registerSession(
   agent: Agent,
@@ -216,10 +217,22 @@ function codexThreadName(codexHome: string, sessionId: string | undefined): stri
   return name;
 }
 
-function displayName(agent: Agent, pid: number, cwd: string | undefined, sessionId: string | undefined, codexHome: string) {
-  const fromAgent =
-    agent === 'claude' ? claudeSessionName(pid) : agent === 'codex' ? codexThreadName(codexHome, sessionId) : undefined;
-  return fromAgent || (cwd ? path.basename(cwd) : '') || `session-${pid}`;
+/**
+ * What tells apart sessions working in the same folder: the agent's first letter and two hex characters (`c3f` for a
+ * Codex session). Claude Code ends its own session names with two hex characters (`norma-v2-b0`), so the two never
+ * collide. From the process, so a session keeps its name for as long as it runs.
+ */
+export const nameSuffix = (agent: Agent, pid: number) => agent[0] + createHash('sha1').update(String(pid)).digest('hex').slice(0, 2);
+
+/**
+ * A Claude Code session goes by Claude Code's own name for it, so peers see the same name as `/list-agents`. Every
+ * other session is named much like Claude Code names its own: `<folder>-<suffix>`, which says where it works.
+ */
+function displayName(agent: Agent, pid: number, cwd: string | undefined) {
+  const folder = cwd ? slugify(path.basename(cwd)) : '';
+  // A Claude session without a name of Claude Code's (before v2.1.224) goes by its folder alone.
+  if (agent === 'claude') return claudeSessionName(pid) || folder || `session-${pid}`;
+  return folder ? `${folder}-${nameSuffix(agent, pid)}` : `session-${pid}`;
 }
 
 /** Builds the view of one registered agent process, or undefined when nothing is registered for it. */
@@ -235,8 +248,9 @@ export function readPeer(id: string): Peer | undefined {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent, pid, cwd, session?.sessionId, codexHome);
-  const folderSlug = cwd ? slugify(path.basename(cwd)) : '';
+  const name = displayName(agent, pid, cwd);
+  // Other names that also reach it: the bare folder name, and a Codex thread's title (what older versions called it).
+  const aliases = [cwd ? slugify(path.basename(cwd)) : '', agent === 'codex' ? slugify(codexThreadName(codexHome, session?.sessionId) ?? '') : ''];
   return {
     id,
     agent,
@@ -252,7 +266,7 @@ export function readPeer(id: string): Peer | undefined {
     version: presence?.version,
     hookRan: session?.source === 'hook',
     toolHookRan: fs.existsSync(path.join(dir, 'tool-hook.json')),
-    aliases: folderSlug && folderSlug !== slugify(name) ? [folderSlug] : [],
+    aliases: [...new Set(aliases)].filter((a) => a && a !== slugify(name)),
   };
 }
 

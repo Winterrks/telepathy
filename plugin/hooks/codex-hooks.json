@@ -1,5 +1,5 @@
 {
-  "description": "telepathy: register this Codex thread so other agent sessions can message it, and hand their messages over after a tool call or with your next prompt instead of only between turns.",
+  "description": "telepathy: register this Codex thread so other agent sessions can message it, and hand their messages over after a tool call or with your next prompt instead of only between turns, and note when a permission prompt is waiting for you (it never answers one).",
   "hooks": {
     "SessionStart": [
       {
@@ -12,6 +12,13 @@
       {
         "hooks": [
           { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex inbox PostToolUse", "timeout": 15 }
+        ]
+      }
+    ],
+    "PermissionRequest": [
+      {
+        "hooks": [
+          { "type": "command", "command": "node \"$PLUGIN_ROOT/dist/hook.mjs\" --agent codex status waiting", "timeout": 10 }
         ]
       }
     ],

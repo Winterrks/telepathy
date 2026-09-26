@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/client';
 import { StdioClientTransport } from '@modelcontextprotocol/client/stdio';
 import type { Agent } from '../src/core/agents.ts';
+import { nameSuffix } from '../src/core/peers.ts';
 
 export const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 export const DIST = path.join(ROOT, 'plugin', 'dist');
@@ -48,6 +49,9 @@ export function codexCalls(sb: Sandbox): { argv: string[]; codexHome: string | n
   if (!fs.existsSync(sb.codexLog)) return [];
   return fs.readFileSync(sb.codexLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
+
+/** The address a non-Claude session in `folder` goes by: `codex:auth-c3f`. */
+export const named = (agent: Agent, folder: string, pid: number) => `${agent}:${folder}-${nameSuffix(agent, pid)}`;
 
 /** A live process standing in for a `claude` or `codex` agent process; its pid is the session identity. */
 export function fakeAgent(...args: string[]): ChildProcess & { pid: number } {

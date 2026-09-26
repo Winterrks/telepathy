@@ -1,6 +1,6 @@
 import { agentSpec } from './agents.ts';
-import { codexActivity } from './codex-activity.ts';
-import { agentLabel, type Peer, peerRef } from './peers.ts';
+import { type Peer, peerRef } from './peers.ts';
+import { peerStatus, statusText } from './status.ts';
 
 /** `45s ago`, `14m ago`, `10h ago`, `1d ago`: the relative times Claude Code's ListAgents shows. */
 export function formatAgo(ms: number): string {
@@ -11,27 +11,19 @@ export function formatAgo(ms: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
-/** A Codex session's busy/idle column, when its rollout log says. */
-function codexStatus(peer: Peer): string | undefined {
-  const status = peer.codexHome && peer.sessionId ? codexActivity(peer.codexHome, peer.sessionId) : undefined;
-  return status === 'interrupted'
-    ? 'idle after an interrupted turn: gets messages only after its user sends it a prompt'
-    : status;
-}
-
 /** Codex needs a thread id before `codex queue` can reach it. */
 const codexUnreachable = (peer: Peer) => peer.agent === 'codex' && !peer.sessionId;
 
 /**
- * One other agent's session as a ListAgents row: `<name> [<ref>]  ·  <type>  ·  <status>  ·  started <time ago>`.
- * The status is left out when it can't be read (only Codex's can, from its thread log).
+ * One other agent's session as a ListAgents row: `<name> [<ref>]  ·  <type>  ·  <status>  ·  started <time ago>`, like
+ * Claude Code's own rows. The status is left out when nothing reports it (see status.ts).
  */
 export function listAgentsRow(peer: Peer, now = Date.now()): string {
   const columns = [peerRef(peer), 'interactive'];
   if (codexUnreachable(peer)) {
     columns.push('not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)');
-  } else if (peer.agent === 'codex') {
-    const status = codexStatus(peer);
+  } else {
+    const status = statusText(peerStatus(peer), now);
     if (status) columns.push(status);
   }
   const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
@@ -40,21 +32,22 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
 }
 
 export function describePeer(peer: Peer): string {
-  const notes: string[] = [agentLabel(peer.agent)];
+  const notes: string[] = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   if (codexUnreachable(peer)) {
     notes.push('not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)');
-  } else if (peer.agent === 'codex') {
-    const status = codexStatus(peer);
+  } else {
+    const status = statusText(peerStatus(peer));
     if (status) notes.push(status);
-  } else if (!peer.hasListener) {
+  }
+  if (peer.agent !== 'codex' && !peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan
         ? 'sees messages at its next turn'
         : 'no listener: it reads messages only via read_messages',
     );
   }
-  return `- ${peerRef(peer)} · ${notes.join(' · ')}`;
+  return [`- ${peerRef(peer)}`, ...notes].join(' · ');
 }
 
 export function formatPeerList(self: Peer, peers: Peer[]): string {

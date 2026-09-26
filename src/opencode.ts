@@ -3,10 +3,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from './core/agents.ts';
 import { debugLog } from './core/debug.ts';
+import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
 import { ensureDir, inboxDir } from './core/paths.ts';
 import { peerId, registerListener, registerPresence, registerSession, selfPeer } from './core/peers.ts';
+import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 
 /**
@@ -39,6 +41,21 @@ interface BusEvent {
   };
 }
 
+/**
+ * The session's status from OpenCode's events: busy or idle from the primary session, waiting while any of its
+ * sessions (subagents too, since that stops the work) asks for a permission. OpenCode 1.x names the prompt event
+ * `permission.asked`; earlier versions `permission.updated`.
+ */
+function statusOf(event: BusEvent, isPrimary: (sessionID: string) => boolean): PeerStatus | undefined {
+  const sessionID = event.properties?.sessionID;
+  if (event.type === 'permission.asked' || event.type === 'permission.updated') return 'waiting';
+  if (event.type === 'permission.replied') return 'busy';
+  if (!sessionID || !isPrimary(sessionID)) return undefined;
+  if (event.type === 'session.idle') return 'idle';
+  if (event.type === 'session.status') return event.properties?.status?.type === 'idle' ? 'idle' : 'busy';
+  return undefined;
+}
+
 const skillsDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'skills');
 const out = (r: ToolResult) => (r.isError ? `Error: ${r.text}` : r.text);
 
@@ -47,6 +64,7 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   const pid = process.pid;
   const id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
+  writeStatus(id, 'idle');
   debugLog('opencode', `plugin loaded for ${id} in ${directory ?? '?'}`);
 
   let active: PromptTarget | undefined; // the primary session the user last prompted
@@ -98,6 +116,7 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   }, 2000).unref();
 
   const self = () => selfPeer(agent, pid);
+  const toolArgs = new Map<string, unknown>(); // by call id, from before a tool runs until it has run
 
   return {
     /** Lets OpenCode find the using-telepathy skill. */
@@ -121,6 +140,8 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     event: async ({ event }: { event: BusEvent }) => {
       const p = event.properties ?? {};
       if (event.type === 'session.created' && p.info?.parentID && p.info.id) children.add(p.info.id);
+      const status = statusOf(event, (sessionID) => !children.has(sessionID) && (!active || active.sessionID === sessionID));
+      if (status) writeStatus(id, status);
       if (event.type === 'session.status' && p.sessionID) {
         if (p.status?.type === 'idle') busy.delete(p.sessionID);
         else busy.add(p.sessionID);
@@ -128,6 +149,22 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
       if (event.type === 'session.idle' && p.sessionID) {
         busy.delete(p.sessionID);
         setTimeout(() => void deliver(), 0); // after OpenCode finishes going idle
+      }
+    },
+
+    'tool.execute.before': async (input: { callID: string }, output: { args: unknown }) => {
+      toolArgs.set(input.callID, output.args);
+    },
+
+    /** Records the files a tool edited, and adds a note to its result when it touched another session's area. */
+    'tool.execute.after': async (input: { tool: string; callID: string }, output: { output?: unknown }) => {
+      const args = toolArgs.get(input.callID);
+      toolArgs.delete(input.callID);
+      try {
+        const note = trackTouchedFiles({ id, agent }, input.tool, args, directory);
+        if (note && typeof output.output === 'string') output.output += `\n\n${note}`;
+      } catch (err) {
+        debugLog('opencode', `file tracking failed: ${(err as Error).message}`);
       }
     },
 

@@ -1,7 +1,6 @@
 import crypto from 'node:crypto';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
-import { codexActivity } from './codex-activity.ts';
 import { queueIntoCodex } from './codex-queue.ts';
 import { unapprovedCodexHooks } from './setup.ts';
 import {
@@ -15,6 +14,7 @@ import {
 } from './messages.ts';
 import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { agentLabel, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
+import { peerStatus } from './status.ts';
 
 export type SendResult =
   | { ok: true; message: Message; recipient: Peer; status: string }
@@ -112,11 +112,16 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   return { ok: true, message, recipient, status: inboxStatus(recipient) };
 }
 
+/** Said to the sender when the recipient is stopped on a permission prompt. */
+const waitingNote = (ref: string, verb: string) =>
+  `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only ` +
+  "after its user answers. Tell your user if it's urgent; don't resend.";
+
 /** When a queued message reaches Codex, from the state of its last turn. */
 function codexQueueStatus(recipient: Peer): string {
   const ref = peerRef(recipient);
-  const activity =
-    recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : undefined;
+  const activity = peerStatus(recipient)?.status;
+  if (activity === 'waiting') return waitingNote(ref, 'queued for');
   // Which of telepathy's hooks Codex hasn't approved; undefined when that can't be told.
   const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : undefined;
   if (activity === 'busy') {
@@ -145,6 +150,7 @@ function codexQueueStatus(recipient: Peer): string {
  */
 function inboxStatus(recipient: Peer): string {
   const ref = peerRef(recipient);
+  if (peerStatus(recipient)?.status === 'waiting') return waitingNote(ref, recipient.hasListener ? 'delivered to' : 'stored for');
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;

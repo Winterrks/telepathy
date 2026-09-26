@@ -12,6 +12,7 @@ import {
   fakeAgent,
   killAndWait,
   makeSandbox,
+  named,
   ROOT,
   runHook,
   type Sandbox,
@@ -40,6 +41,12 @@ describe('telepathy plugin', () => {
   };
   const call = async (client: Client, name: string, args: object = {}, meta?: Record<string, unknown>) =>
     client.callTool({ name, arguments: args as Record<string, unknown>, ...(meta ? { _meta: meta } : {}) });
+  /** The row ListAgents gets for `pid`, as seen from a Claude session. */
+  const rowFor = (viewer: number, pid: number) => {
+    const input = { tool_name: 'ListAgents', tool_response: { listing: 'Peer sessions (0):' } };
+    const out = JSON.parse(runHook(sb, 'claude', viewer, 'list-agents', input).stdout).hookSpecificOutput;
+    return (out.updatedToolOutput.listing as string).split('\n').find((l) => l.includes(`-${pid}]`)) ?? '';
+  };
 
   before(() => {
     sb = makeSandbox();
@@ -75,11 +82,11 @@ describe('telepathy plugin', () => {
     const claude = await connect('claude', claudeAgent.pid);
     const list = toolText(await call(claude, 'list_peers'));
     assert.match(list, new RegExp(`This session is claude:api \\[claude-${claudeAgent.pid}\\]`));
-    assert.match(list, new RegExp(`codex:auth-fix \\[codex-${codexAgent.pid}\\] · Codex · cwd /w/auth-fix`));
+    assert.match(list, new RegExp(`${named('codex', 'auth-fix', codexAgent.pid)} \\[codex-${codexAgent.pid}\\] · cwd /w/auth-fix`));
 
     const sent = await call(claude, 'send_message', { to: 'codex:auth-fix', message: 'Schema migration finished.\n--flags stay literal' });
     assert.equal(sent.isError, undefined, toolText(sent));
-    assert.equal(toolText(sent), `Message queued for delivery to codex:auth-fix [codex-${codexAgent.pid}].`);
+    assert.equal(toolText(sent), `Message queued for delivery to ${named('codex', 'auth-fix', codexAgent.pid)} [codex-${codexAgent.pid}].`);
 
     const [queued] = codexCalls(sb);
     assert.equal(queued.argv[0], 'queue');
@@ -166,13 +173,13 @@ describe('telepathy plugin', () => {
       await waitFor(() => out.includes('Ship it?'));
       const lines = out.trim().split('\n');
       assert.equal(lines.length, 2, 'one line per message');
-      assert.match(lines[1], new RegExp(`from Codex session codex:backend \\[codex-${codexAgent.pid}\\], sent by another AI agent`));
+      assert.match(lines[1], new RegExp(`from Codex session ${named('codex', 'backend', codexAgent.pid)} \\[codex-${codexAgent.pid}\\], sent by another AI agent`));
       assert.match(lines[1], /Tests pass on my side\.\\nShip it\?/);
 
       const id = /New message (m-[0-9a-z]+-[0-9a-f]+)/.exec(lines[1])![1];
       const read = toolText(await call(claude, 'read_messages', { id }));
       assert.match(read, /Tests pass on my side\.\nShip it\?/);
-      assert.match(read, /reply with send_message to: "codex:backend"/);
+      assert.match(read, new RegExp(`reply with send_message to: "${named('codex', 'backend', codexAgent.pid)}"`));
       assert.match(toolText(await call(claude, 'read_messages')), /No new messages\. Most recent received:/);
     } finally {
       await killAndWait(monitor);
@@ -427,7 +434,7 @@ describe('telepathy plugin', () => {
       const added = rewritten.slice(listing.length);
       assert.match(added, /with SendMessage or its send_message tool/);
       // No rollout log for thread "t" in this sandbox, so the status column is left out.
-      assert.match(added, new RegExp(`\\n  codex:auth \\[codex-${codexAgent.pid}\\]  ·  interactive  ·  started \\d+s ago$`));
+      assert.match(added, new RegExp(`\\n  ${named('codex', 'auth', codexAgent.pid)} \\[codex-${codexAgent.pid}\\]  ·  interactive  ·  started \\d+s ago$`));
       assert.doesNotMatch(added, /claude:me/);
     });
 
@@ -449,7 +456,7 @@ describe('telepathy plugin', () => {
       fs.appendFileSync(rollout, event('task_complete') + event('token_count'));
       assert.match(row(), /  ·  interactive  ·  idle  ·  started /);
       fs.appendFileSync(rollout, event('task_started') + event('turn_aborted'));
-      assert.match(row(), /  ·  interactive  ·  idle after an interrupted turn: gets messages only after its user sends it a prompt  ·  started /);
+      assert.match(row(), /  ·  interactive  ·  interrupted: gets messages only after its user sends it a prompt  ·  started /);
     });
 
     test('Sending to a busy or interrupted Codex says when it will see the message', async () => {
@@ -461,7 +468,7 @@ describe('telepathy plugin', () => {
       fs.mkdirSync(day, { recursive: true });
       const rollout = path.join(day, 'rollout-2026-09-25T08-51-02-thread-7.jsonl');
       const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
-      const ref = `codex:auth [codex-${codexAgent.pid}]`;
+      const ref = `${named('codex', 'auth', codexAgent.pid)} [codex-${codexAgent.pid}]`;
       const claude = await connect('claude', claudeAgent.pid);
 
       fs.writeFileSync(rollout, event('task_started'));
@@ -475,7 +482,7 @@ describe('telepathy plugin', () => {
         `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
           `queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`,
       );
-      assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · idle after an interrupted turn/);
+      assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · interrupted: gets messages only after its user sends it a prompt/);
       assert.equal(codexCalls(sb).length, 2, 'both are still queued');
     });
 
@@ -486,7 +493,7 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'claude', claudeAgent.pid, 'list-agents', { tool_name: 'ListAgents', tool_response: 'text' });
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.updatedToolOutput, undefined);
-      assert.match(out.additionalContext, new RegExp(`codex:auth \\[codex-${codexAgent.pid}\\]`));
+      assert.match(out.additionalContext, new RegExp(`${named('codex', 'auth', codexAgent.pid)} \\[codex-${codexAgent.pid}\\]`));
     });
 
     test('SendMessage to a Codex address is delivered by the hook and the call is stopped', () => {
@@ -503,7 +510,7 @@ describe('telepathy plugin', () => {
       assert.equal(out.permissionDecision, 'deny');
       assert.equal(
         out.permissionDecisionReason,
-        `Message queued for delivery to codex:auth [codex-${codexAgent.pid}]. (Sent by telepathy: SendMessage can't reach Codex, so this shows as an error. Don't resend.)`,
+        `Message queued for delivery to ${named('codex', 'auth', codexAgent.pid)} [codex-${codexAgent.pid}]. (Sent by telepathy: SendMessage can't reach Codex, so this shows as an error. Don't resend.)`,
       );
       const [queued] = codexCalls(sb);
       assert.equal(queued.argv[1], '--thread=thread-x');
@@ -550,6 +557,188 @@ describe('telepathy plugin', () => {
     });
   });
 
+  describe('statuses: busy, shell, idle, waiting on a permission prompt, interrupted', () => {
+    test('Claude sessions: from Claude Code\'s own session record, all four statuses', async () => {
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
+      const record = path.join(sb.env.CLAUDE_CONFIG_DIR, 'sessions', `${claudeAgent.pid}.json`);
+      fs.mkdirSync(path.dirname(record), { recursive: true });
+      const codexAgent = spawnAgent();
+      const codex = await connect('codex', codexAgent.pid);
+      for (const status of ['busy', 'shell', 'idle', 'waiting']) {
+        fs.writeFileSync(record, JSON.stringify({ pid: claudeAgent.pid, name: 'sdk', status, statusUpdatedAt: Date.now() }));
+        const expected = { waiting: 'waiting on a permission prompt for its user', shell: 'shell \\(not generating, but a command it started is still running\\)' }[status] ?? status;
+        assert.match(toolText(await call(codex, 'list_peers')), new RegExp(`claude:sdk \\[claude-${claudeAgent.pid}\\] · cwd /w/sdk · ${expected} · sees messages at its next turn\n`));
+      }
+      assert.match(
+        toolText(await call(codex, 'send_message', { to: 'claude:sdk', message: 'can you add the endpoint?' })),
+        /^Message stored for claude:sdk \[claude-\d+\], but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers\. Tell your user if it's urgent; don't resend\.$/,
+      );
+    });
+
+    test('Codex: waiting from its PermissionRequest hook (which prints nothing), until Codex writes again', async () => {
+      const claudeAgent = spawnAgent();
+      const codexAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
+      runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 'thread-p', cwd: '/w/ui' });
+      const day = path.join(sb.codexHome, 'sessions', '2026', '09', '26');
+      fs.mkdirSync(day, { recursive: true });
+      const rollout = path.join(day, 'rollout-2026-09-26T09-00-00-thread-p.jsonl');
+      const line = (type: string, at?: number, kind = 'event_msg') =>
+        JSON.stringify({ ...(at ? { timestamp: new Date(at).toISOString() } : {}), type: kind, payload: { type } }) + '\n';
+      fs.writeFileSync(rollout, line('task_started'));
+      assert.match(rowFor(claudeAgent.pid, codexAgent.pid), /  ·  interactive  ·  busy  ·  /);
+
+      const hook = runHook(sb, 'codex', codexAgent.pid, 'status', { session_id: 'thread-p', tool_name: 'Bash', tool_input: { command: 'rm -rf build' } }, 'waiting');
+      assert.deepEqual([hook.status, hook.stdout, hook.stderr], [0, '', ''], 'a PermissionRequest hook must never answer the prompt');
+      assert.match(rowFor(claudeAgent.pid, codexAgent.pid), /  ·  interactive  ·  waiting on a permission prompt for its user  ·  /);
+      const claude = await connect('claude', claudeAgent.pid);
+      assert.match(toolText(await call(claude, 'send_message', { to: 'codex:ui', message: 'x' })), /^Message queued for codex:ui-c[0-9a-f]{2} \[codex-\d+\], but it's waiting on a permission prompt/);
+
+      // While the prompt is open, Codex logs only bookkeeping, which doesn't end it.
+      fs.appendFileSync(rollout, line('token_count', Date.now() + 2000) + line('item_completed', Date.now() + 3000));
+      assert.match(rowFor(claudeAgent.pid, codexAgent.pid), /  ·  interactive  ·  waiting on a permission prompt for its user  ·  /);
+      // The user answers: Codex logs the tool's output (or, after a denial, the model goes on).
+      fs.appendFileSync(rollout, line('custom_tool_call_output', Date.now() + 5000, 'response_item'));
+      assert.match(rowFor(claudeAgent.pid, codexAgent.pid), /  ·  interactive  ·  busy  ·  /);
+      // A telepathy hook after the prompt (the tool call's PostToolUse) also ends it.
+      runHook(sb, 'codex', codexAgent.pid, 'status', { session_id: 'thread-p' }, 'waiting');
+      runHook(sb, 'codex', codexAgent.pid, 'inbox', { session_id: 'thread-p', hook_event_name: 'PostToolUse' }, 'PostToolUse');
+      fs.appendFileSync(rollout, line('task_complete', Date.now() + 6000));
+      assert.match(rowFor(claudeAgent.pid, codexAgent.pid), /  ·  interactive  ·  idle  ·  /);
+    });
+
+    test('hook-only agents: idle at start, busy from a prompt or tool call, waiting on Gemini\'s permission notification, idle at turn end', () => {
+      const claudeAgent = spawnAgent();
+      const gemini = spawnAgent();
+      const row = () => rowFor(claudeAgent.pid, gemini.pid);
+      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g', cwd: '/w/docs' });
+      assert.match(row(), /  ·  interactive  ·  idle  ·  /);
+      runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g' }, 'BeforeAgent');
+      assert.match(row(), /  ·  interactive  ·  busy  ·  /);
+      const notified = runHook(sb, 'gemini', gemini.pid, 'status', { session_id: 'g', notification_type: 'ToolPermission', message: 'Allow shell?' }, 'waiting');
+      assert.equal(notified.stdout, '');
+      assert.match(row(), /  ·  interactive  ·  waiting on a permission prompt for its user  ·  /);
+      runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g', tool_name: 'run_shell_command', tool_input: { command: 'ls' } }, 'AfterTool');
+      assert.match(row(), /  ·  interactive  ·  busy  ·  /);
+      runHook(sb, 'gemini', gemini.pid, 'turn-end', { session_id: 'g' });
+      assert.match(row(), /  ·  interactive  ·  idle  ·  /);
+      runHook(sb, 'gemini', gemini.pid, 'status', { session_id: 'g', notification_type: 'SomethingElse' }, 'waiting');
+      assert.match(row(), /  ·  interactive  ·  idle  ·  /, 'only permission notifications mean waiting');
+
+      // An interrupt often runs no hook, so a busy status with no hook activity for a while is shown as uncertain.
+      fs.writeFileSync(path.join(sb.home, 'peers', `gemini-${gemini.pid}`, 'status.json'), JSON.stringify({ status: 'busy', at: new Date(Date.now() - 20 * 60_000).toISOString() }));
+      assert.match(row(), /  ·  interactive  ·  busy\? \(no activity for 20m\)  ·  /);
+    });
+  });
+
+  describe('files another session is editing', () => {
+    const noteOf = (res: ReturnType<typeof runHook>) => (res.stdout ? JSON.parse(res.stdout).hookSpecificOutput.additionalContext : '');
+    const claudeEdit = (pid: number, tool: string, file: string) =>
+      runHook(sb, 'claude', pid, 'files', { session_id: 's', cwd: '/w/app', tool_name: tool, tool_input: { file_path: file } });
+    const codexPatch = (pid: number, ...files: string[]) =>
+      runHook(
+        sb,
+        'codex',
+        pid,
+        'inbox',
+        {
+          session_id: 'thread-ui',
+          cwd: '/w/app',
+          hook_event_name: 'PostToolUse',
+          tool_name: 'apply_patch',
+          tool_input: { command: ['*** Begin Patch', ...files.map((f) => `*** Update File: ${f}\n@@\n-a\n+b`), '*** End Patch'].join('\n') },
+        },
+        'PostToolUse',
+      );
+
+    test('an agent that steps into files another session is editing is told who, once per folder', () => {
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/app' });
+      assert.equal(claudeEdit(claudeAgent.pid, 'Edit', '/w/app/daemon/server.ts').stdout, '', 'nobody else is editing');
+
+      const codex = spawnAgent();
+      runHook(sb, 'codex', codex.pid, 'session-start', { session_id: 'thread-ui', cwd: '/w/app' });
+      assert.equal(codexPatch(codex.pid, 'ui/glass.swift').stdout, '', 'its own area');
+      const note = noteOf(codexPatch(codex.pid, 'daemon/server.ts'));
+      assert.match(
+        note,
+        new RegExp(
+          `^\\[telepathy note\\] Another session, claude:app \\[claude-${claudeAgent.pid}\\], edited daemon/server\\.ts \\d+s ago, so it may be working in this area\\. ` +
+            'If you need changes there, consider reaching out to it with send_message\\.$',
+        ),
+      );
+      assert.equal(codexPatch(codex.pid, 'daemon/routes.ts').stdout, '', 'the same session and folder is mentioned once');
+
+      // Claude reads a file in the folder Codex edited, before editing it: the note says how Claude reaches Codex.
+      const read = noteOf(claudeEdit(claudeAgent.pid, 'Read', '/w/app/ui/glass.swift'));
+      assert.match(read, new RegExp(`${named('codex', 'app', codex.pid)} \\[codex-${codex.pid}\\], edited ui/glass\\.swift .*\\. If you need changes there, consider reaching out to it with SendMessage or send_message\\.$`));
+    });
+
+    test('edits of a session that ended no longer count; shell commands and odd inputs touch nothing', async () => {
+      const codex = spawnAgent();
+      runHook(sb, 'codex', codex.pid, 'session-start', { session_id: 'thread-ui', cwd: '/w/app' });
+      codexPatch(codex.pid, 'daemon/server.ts');
+      await killAndWait(codex);
+      const claudeAgent = spawnAgent();
+      assert.equal(claudeEdit(claudeAgent.pid, 'Edit', '/w/app/daemon/server.ts').stdout, '');
+
+      const other = spawnAgent();
+      claudeEdit(other.pid, 'Write', '/w/app/api/a.ts');
+      for (const input of [
+        { tool_name: 'Bash', tool_input: { command: 'sed -i s/a/b/ /w/app/api/a.ts' } },
+        { tool_name: 'Edit', tool_input: 'not an object' },
+        { tool_name: 'Edit', tool_input: { file_path: 42 } },
+        { tool_name: 'Read', tool_input: { file_path: 'relative.ts' } },
+        { tool_name: 'Read' },
+      ]) {
+        const res = runHook(sb, 'claude', claudeAgent.pid, 'files', { session_id: 's', ...input });
+        assert.deepEqual([res.status, res.stdout, res.stderr], [0, '', ''], JSON.stringify(input));
+      }
+    });
+
+    test('reading through the shell or listing a folder counts too, for paths that exist', () => {
+      const proj = path.join(path.dirname(sb.home), 'proj');
+      fs.mkdirSync(path.join(proj, 'daemon'), { recursive: true });
+      fs.writeFileSync(path.join(proj, 'daemon', 'server.ts'), '');
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: proj });
+      runHook(sb, 'claude', claudeAgent.pid, 'files', { session_id: 's', cwd: proj, tool_name: 'Edit', tool_input: { file_path: path.join(proj, 'daemon', 'server.ts') } });
+
+      const codexShell = (pid: number, command: string) =>
+        runHook(sb, 'codex', pid, 'inbox', { session_id: `t-${pid}`, cwd: proj, tool_name: 'Bash', tool_input: { command } }, 'PostToolUse');
+      const reads: [string, boolean][] = [
+        ['npm test && git status', false],
+        ["rg -n 'daemon/missing.ts' src", false],
+        ["sed -n '1,80p' daemon/server.ts", true],
+        ['ls -la daemon', true],
+        [`cat "${path.join(proj, 'daemon', 'server.ts')}" | head`, true],
+      ];
+      for (const [command, noted] of reads) {
+        const codex = spawnAgent(); // a fresh session each time: a session hears about a folder once
+        runHook(sb, 'codex', codex.pid, 'session-start', { session_id: `t-${codex.pid}`, cwd: proj });
+        const note = noteOf(codexShell(codex.pid, command));
+        if (noted) assert.match(note, new RegExp(`^\\[telepathy note\\] Another session, claude:proj \\[claude-${claudeAgent.pid}\\], edited daemon/server\\.ts `), command);
+        else assert.equal(note, '', command);
+      }
+
+      const claudeReader = spawnAgent();
+      const grep = runHook(sb, 'claude', claudeReader.pid, 'files', { session_id: 'r', cwd: proj, tool_name: 'Grep', tool_input: { pattern: 'port', path: path.join(proj, 'daemon') } });
+      assert.match(noteOf(grep), /edited daemon\/server\.ts /);
+    });
+
+    test('each agent\'s own tool shapes: Copilot\'s JSON toolArgs, Gemini\'s read_file', () => {
+      const copilot = spawnAgent();
+      runHook(sb, 'copilot', copilot.pid, 'session-start', { sessionId: 'cp', cwd: '/w/app' });
+      runHook(sb, 'copilot', copilot.pid, 'inbox', { sessionId: 'cp', toolName: 'edit', toolArgs: JSON.stringify({ path: '/w/app/sdk/client.ts' }) }, 'postToolUse');
+
+      const gemini = spawnAgent();
+      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g', cwd: '/w/app' });
+      const res = runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g', tool_name: 'read_file', tool_input: { absolute_path: '/w/app/sdk/client.ts' } }, 'AfterTool');
+      assert.match(noteOf(res), new RegExp(`^\\[telepathy note\\] Another session, ${named('copilot', 'app', copilot.pid)} \\[copilot-${copilot.pid}\\], edited sdk/client\\.ts `));
+    });
+  });
+
   describe('OpenCode and Kilo Code plugin', () => {
     /** Runs the built plugin in its own process (its pid is the session identity) with a fake SDK client. */
     function startOpenCode(directory: string) {
@@ -591,7 +780,7 @@ describe('telepathy plugin', () => {
       const claudeAgent = spawnAgent();
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
       const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', { tool_input: { to: 'opencode:ui', message: 'new daemon API is in' } });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`^Message delivered to opencode:ui \\[opencode-${pid}\\]\\.`));
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`^Message delivered to ${named('opencode', 'ui', pid)} \\[opencode-${pid}\\]\\.`));
 
       await new Promise((r) => setTimeout(r, 400));
       assert.ok(!oc.lines.some((l) => 'prompt' in l), 'must not prompt a busy session');
@@ -602,6 +791,46 @@ describe('telepathy plugin', () => {
       assert.equal(prompt.body.agent, 'build');
       assert.match(prompt.body.parts[0].text, /^\[telepathy\] Message from Claude Code session claude:sdk/);
       assert.match(prompt.body.parts[0].text, /new daemon API is in$/);
+    });
+
+    test('records the files its tools edit, and adds a note to a tool result that touches another session\'s files', async () => {
+      const oc = startOpenCode('/w/app');
+      await oc.take('ready');
+      oc.send({ op: 'run', name: 'edit', args: { filePath: '/w/app/ui/glass.swift' }, sessionID: 'ses_ui' });
+      assert.equal((await oc.take('ran')).output, 'ok');
+
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/app' });
+      const res = runHook(sb, 'claude', claudeAgent.pid, 'files', { session_id: 's', cwd: '/w/app', tool_name: 'Edit', tool_input: { file_path: '/w/app/ui/glass.swift' } });
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /^\[telepathy note\] Another session, opencode:app-o[0-9a-f]{2} \[opencode-\d+\], edited ui\/glass\.swift /);
+
+      oc.send({ op: 'run', name: 'read', args: { filePath: 'ui/glass.swift' }, sessionID: 'ses_ui' });
+      assert.match(
+        (await oc.take('ran')).output,
+        new RegExp(`^ok\\n\\n\\[telepathy note\\] Another session, claude:app \\[claude-${claudeAgent.pid}\\], edited ui/glass\\.swift .* telepathy_send_message`),
+      );
+    });
+
+    test('reports busy, idle and waiting from OpenCode\'s own events', async () => {
+      const oc = startOpenCode('/w/oc-status');
+      const pid = (await oc.take('ready')).ready as number;
+      const claudeAgent = spawnAgent();
+      const row = () => rowFor(claudeAgent.pid, pid);
+      assert.match(row(), /  ·  interactive  ·  idle  ·  /);
+      oc.send({ op: 'chat', sessionID: 'ses_main' });
+      oc.send({ op: 'event', event: { type: 'session.status', properties: { sessionID: 'ses_main', status: { type: 'busy' } } } });
+      await oc.take('done');
+      await oc.take('done');
+      assert.match(row(), /  ·  interactive  ·  busy  ·  /);
+      oc.send({ op: 'event', event: { type: 'permission.asked', properties: { id: 'per_1', sessionID: 'ses_child', permission: 'bash' } } });
+      await oc.take('done');
+      assert.match(row(), /  ·  interactive  ·  waiting on a permission prompt for its user  ·  /);
+      oc.send({ op: 'event', event: { type: 'permission.replied', properties: { sessionID: 'ses_child', permissionID: 'per_1', response: 'once' } } });
+      await oc.take('done');
+      assert.match(row(), /  ·  interactive  ·  busy  ·  /);
+      oc.send({ op: 'event', event: { type: 'session.idle', properties: { sessionID: 'ses_main' } } });
+      await oc.take('done');
+      assert.match(row(), /  ·  interactive  ·  idle  ·  /);
     });
 
     test('tools and the system-prompt guide work like the MCP server\'s', async () => {
@@ -633,7 +862,7 @@ describe('telepathy plugin', () => {
       const status = sendFromClaude('gemini:docs', 'Is the API reference current?');
       assert.equal(
         status,
-        `Message stored for gemini:docs [gemini-${gemini.pid}]. It can't be woken while idle, so it will see it at its next turn. ` +
+        `Message stored for ${named('gemini', 'docs', gemini.pid)} [gemini-${gemini.pid}]. It can't be woken while idle, so it will see it at its next turn. ` +
           "(Sent by telepathy: SendMessage can't reach Gemini CLI, so this shows as an error. Don't resend.)",
       );
       const res = runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1', hook_event_name: 'AfterTool' }, 'AfterTool');
@@ -652,7 +881,7 @@ describe('telepathy plugin', () => {
       fs.mkdirSync(day, { recursive: true });
       const event = (type: string) => JSON.stringify({ type: 'event_msg', payload: { type } }) + '\n';
       fs.writeFileSync(path.join(day, 'rollout-2026-09-25T10-00-00-thread-h.jsonl'), event('task_started'));
-      const ref = `codex:cx [codex-${codex.pid}]`;
+      const ref = `${named('codex', 'cx', codex.pid)} [codex-${codex.pid}]`;
       const tail = " (Sent by telepathy: SendMessage can't reach Codex, so this shows as an error. Don't resend.)";
 
       // Until its after-tool-call hook has run (it needs approval in /hooks), a busy Codex waits for the turn to end.
@@ -788,7 +1017,7 @@ describe('telepathy plugin', () => {
       const agy = spawnAgent();
       runHook(sb, 'antigravity', agy.pid, 'inbox', { conversationId: 'conv-1', workspacePaths: ['/w/infra'] }, 'PreInvocation');
       const status = sendFromClaude('antigravity:infra', 'hi');
-      assert.match(status, new RegExp(`^Message stored for antigravity:infra \\[antigravity-${agy.pid}\\]\\. It can't be woken while idle`));
+      assert.match(status, new RegExp(`^Message stored for ${named('antigravity', 'infra', agy.pid)} \\[antigravity-${agy.pid}\\]\\. It can't be woken while idle`));
     });
 
     test('Copilot and Cursor get the guide at session start, since they don\'t show MCP instructions', () => {

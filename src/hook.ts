@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
+import { trackTouchedFiles } from './core/edits.ts';
 import { sendMessage } from './core/deliver.ts';
 import { guideText } from './core/guide.ts';
 import { listAgentsRow } from './core/listing.ts';
@@ -19,6 +20,7 @@ import {
   selfPeer,
 } from './core/peers.ts';
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
+import { statusFromHooks, writeStatus } from './core/status.ts';
 
 /**
  * Hook entry point, shared by every agent with command hooks:
@@ -27,6 +29,8 @@ import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/pr
  *   session-start   record the session so peers can address it
  *   inbox           before a prompt or after a tool call: hand pending messages to the model as context
  *   turn-end        when a turn ends: keep going with pending messages instead of stopping
+ *   files           after a tool call (Claude Code): note when it read or edited files another session is editing
+ *   status waiting  a permission prompt is waiting for the user (Codex PermissionRequest, Gemini Notification)
  *   list-agents, send-message   Claude Code's ListAgents and SendMessage
  * Reads the hook's JSON input from stdin; prints output only when there is something to say.
  */
@@ -141,6 +145,7 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
+  if (statusFromHooks(agent)) writeStatus(peerId(agent, agentPid), 'idle');
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
@@ -181,12 +186,44 @@ function waiterReminder(agent: Agent, agentPid: number): string | undefined {
   );
 }
 
-/** Before a prompt or after a tool call: pending messages go into the model's context. */
+/**
+ * After a tool call: records the files it edited, and returns a note when it read or edited files another live
+ * session edited recently. Agents name the tool and its arguments differently (`tool_name`/`tool_input`, Copilot's
+ * `toolName`/`toolArgs`); a hook input without them (a prompt, a turn end) touched no files.
+ */
+function touchedFilesNote(agent: Agent, agentPid: number, input: HookInput): string | undefined {
+  const toolName = input.tool_name ?? input.toolName;
+  if (toolName === undefined) return undefined;
+  const selfId = peerId(agent, agentPid);
+  const cwd = sessionOf(agent, input).cwd ?? readSession(selfId)?.cwd;
+  try {
+    const note = trackTouchedFiles({ id: selfId, agent }, toolName, input.tool_input ?? input.toolArgs ?? input.tool_args, cwd);
+    if (note) debugLog('hook', `${agent} ${String(toolName)}: overlap note`);
+    return note;
+  } catch (err) {
+    debugLog('hook', `file tracking failed: ${(err as Error).message}`); // never at the cost of delivering messages
+    return undefined;
+  }
+}
+
+/** Claude PostToolUse on its file, search and Bash tools: the monitor delivers Claude's messages, so this only tracks files. */
+function files(agent: Agent, agentPid: number, input: HookInput): void {
+  const note = touchedFilesNote(agent, agentPid, input);
+  if (note) reply(hookSpecificContext(note, 'PostToolUse'));
+}
+
+/** Before a prompt or after a tool call: pending messages (and a note on files another session is editing) go into the model's context. */
 async function inbox(agent: Agent, agentPid: number, input: HookInput, event: string): Promise<void> {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
-  if (hasListener(agent, agentPid)) return;
+  // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
+  if (statusFromHooks(agent) || agent === 'codex') writeStatus(peerId(agent, agentPid), 'busy');
+  const overlap = touchedFilesNote(agent, agentPid, input);
+  if (hasListener(agent, agentPid)) {
+    if (overlap) reply(shape.context(overlap, event));
+    return;
+  }
   const selfId = peerId(agent, agentPid);
   if (agent === 'codex') {
     // Senders can then say a busy Codex gets messages after its next tool call, not only at the end of the turn.
@@ -196,7 +233,7 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   }
   const messages = claimInbox(selfId);
   if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
-  const parts = [messages.length ? formatForContext(messages) : '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
+  const parts = [messages.length ? formatForContext(messages) : '', overlap ?? '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join('\n\n'), event));
 }
 
@@ -215,9 +252,12 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  const tracked = statusFromHooks(agent);
+  if (tracked) writeStatus(peerId(agent, agentPid), 'idle');
   if (!endedNormally(input) || hasListener(agent, agentPid)) return;
   const messages = claimInbox(peerId(agent, agentPid));
   if (messages.length) {
+    if (tracked) writeStatus(peerId(agent, agentPid), 'busy'); // the turn goes on with the messages
     debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);
     reply(shape.turnEnd([formatForContext(messages), waiterReminder(agent, agentPid)].filter(Boolean).join('\n\n')));
     return;
@@ -225,6 +265,17 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   // Don't go idle without the waiter, but ask only once per stop: if it can't be started, let the turn end.
   const reminder = input.stop_hook_active === true ? undefined : waiterReminder(agent, agentPid);
   if (reminder) reply(shape.turnEnd(reminder));
+}
+
+/**
+ * A permission prompt is waiting for the user: Codex's PermissionRequest hook, or Gemini's Notification hook (whose
+ * only notification type so far is ToolPermission). Prints nothing: a PermissionRequest hook's output could answer
+ * the prompt, and that is the user's call alone.
+ */
+function waiting(agent: Agent, agentPid: number, input: HookInput): void {
+  const type = input.notification_type;
+  if (typeof type === 'string' && type !== 'ToolPermission') return;
+  writeStatus(peerId(agent, agentPid), 'waiting');
 }
 
 /**
@@ -305,6 +356,8 @@ async function main(): Promise<void> {
   if (action === 'session-start') sessionStart(agent, agentPid, input);
   else if (action === 'inbox') await inbox(agent, agentPid, input, event ?? 'PostToolUse');
   else if (action === 'turn-end') turnEnd(agent, agentPid, input);
+  else if (action === 'files') files(agent, agentPid, input);
+  else if (action === 'status' && event === 'waiting') waiting(agent, agentPid, input);
   else if (action === 'list-agents' && agent === 'claude') listAgents(agentPid, input);
   else if (action === 'send-message' && agent === 'claude') await interceptSendMessage(agentPid, input);
   else throw new Error(`unknown hook action ${JSON.stringify(action)} for ${agent}`);

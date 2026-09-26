@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path11 from "node:path";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path12) {
-  if (!path12)
+function getElementAtPath(obj, path13) {
+  if (!path13)
     return obj;
-  return path12.reduce((acc, key) => acc?.[key], obj);
+  return path13.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path12, issues) {
+function prefixIssues(path13, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path12);
+    iss.path.unshift(path13);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path12 = []) => {
+  const processError = (error63, path13 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path12 = []) => {
+  const processError = (error63, path13 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path12, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path12, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
       } else {
-        const fullpath = [...path12, ...issue2.path];
+        const fullpath = [...path13, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path12 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path12) {
+  const path13 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path13) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path12 = ref.slice(1).split("/").filter(Boolean);
-  if (path12.length === 0) {
+  const path13 = ref.slice(1).split("/").filter(Boolean);
+  if (path13.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path12[0] === defsKey) {
-    const key = path12[1] === void 0 ? void 0 : decodeJSONPointerSegment(path12[1]);
+  if (path13[0] === defsKey) {
+    const key = path13[1] === void 0 ? void 0 : decodeJSONPointerSegment(path13[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path12 = issue2.path.map(String);
-      const key = path12.length > 0 ? path12.join(".") : "_meta";
-      if (path12.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path13 = issue2.path.map(String);
+      const key = path13.length > 0 ? path13.join(".") : "_meta";
+      if (path13.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path12, reachable) => {
+  const visit2 = (node2, path13, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path12.length === 0) return `${pathName(path12)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path13.length === 0) return `${pathName(path13)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path12)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path12)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path13)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path13)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path12)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path13)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path12,
+        path: path13,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path12, key], reachable);
+      const fault$1 = visit2(child, [...path13, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path12, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path13, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path12) {
-  return path12.length === 0 ? "<root>" : path12.join(".");
+function pathName(path13) {
+  return path13.length === 0 ? "<root>" : path13.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path12, vendor, unsupported) {
+function walkProperty(node2, path13, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path12, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path12}.${key}`);
-  } else unsupported.push(`${path12}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path13}.${key}`);
+  } else unsupported.push(`${path13}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path12 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path12}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path13 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path13}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path12 ? `${path12}.${key}` : key;
+    const childPath = path13 ? `${path13}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -27714,6 +27714,7 @@ import fs4 from "node:fs";
 import path5 from "node:path";
 
 // src/core/peers.ts
+import { createHash } from "node:crypto";
 import fs3 from "node:fs";
 import os2 from "node:os";
 import path4 from "node:path";
@@ -27817,7 +27818,7 @@ function isAgentProcess(agent2, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.7.0" : "0.0.0-dev";
+var VERSION = true ? "0.8.0" : "0.0.0-dev";
 
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
@@ -27996,9 +27997,11 @@ function codexThreadName(codexHome, sessionId) {
   }
   return name;
 }
-function displayName(agent2, pid, cwd, sessionId, codexHome) {
-  const fromAgent = agent2 === "claude" ? claudeSessionName(pid) : agent2 === "codex" ? codexThreadName(codexHome, sessionId) : void 0;
-  return fromAgent || (cwd ? path4.basename(cwd) : "") || `session-${pid}`;
+var nameSuffix = (agent2, pid) => agent2[0] + createHash("sha1").update(String(pid)).digest("hex").slice(0, 2);
+function displayName(agent2, pid, cwd) {
+  const folder = cwd ? slugify2(path4.basename(cwd)) : "";
+  if (agent2 === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
+  return folder ? `${folder}-${nameSuffix(agent2, pid)}` : `session-${pid}`;
 }
 function readPeer(id) {
   const m = PEER_DIR_RE.exec(id);
@@ -28012,8 +28015,8 @@ function readPeer(id) {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent2, pid, cwd, session?.sessionId, codexHome);
-  const folderSlug = cwd ? slugify2(path4.basename(cwd)) : "";
+  const name = displayName(agent2, pid, cwd);
+  const aliases = [cwd ? slugify2(path4.basename(cwd)) : "", agent2 === "codex" ? slugify2(codexThreadName(codexHome, session?.sessionId) ?? "") : ""];
   return {
     id,
     agent: agent2,
@@ -28029,7 +28032,7 @@ function readPeer(id) {
     version: presence?.version,
     hookRan: session?.source === "hook",
     toolHookRan: fs3.existsSync(path4.join(dir, "tool-hook.json")),
-    aliases: folderSlug && folderSlug !== slugify2(name) ? [folderSlug] : []
+    aliases: [...new Set(aliases)].filter((a) => a && a !== slugify2(name))
   };
 }
 function listPeers() {
@@ -28461,10 +28464,10 @@ function setupNotes(self2) {
       `[telepathy setup] This session runs telepathy ${VERSION}, but another session runs ${newest}, so messages may not reach this session as they should. Tell your user to update ${where} and restart this session.`
     );
   }
-  const stale = installs.filter((i) => newest && isNewer(newest, i.version));
-  if (newest && stale.length) {
+  const stale2 = installs.filter((i) => newest && isNewer(newest, i.version));
+  if (newest && stale2.length) {
     notes.push(
-      `[telepathy setup] Some agents have an older telepathy installed than ${newest}: ${stale.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}. Tell your user; with their OK, you can update them all with: ${updateAllCommand()}`
+      `[telepathy setup] Some agents have an older telepathy installed than ${newest}: ${stale2.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}. Tell your user; with their OK, you can update them all with: ${updateAllCommand()}`
     );
   }
   return notes;
@@ -28497,6 +28500,9 @@ var guideText = (agent2, opts = {}) => guideLines(agent2, opts).join("\n");
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
+import path11 from "node:path";
+
+// src/core/status.ts
 import path10 from "node:path";
 
 // src/core/codex-activity.ts
@@ -28566,12 +28572,79 @@ function codexActivity(codexHome, threadId) {
   }
   return void 0;
 }
+function codexLastResponse(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    const lines = readTail(file2, 256 * 1024).text.trimEnd().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"response_item"')) continue;
+      try {
+        const entry = JSON.parse(lines[i]);
+        const at = Date.parse(entry.timestamp ?? "");
+        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+
+// src/core/status.ts
+var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
+var statusFromHooks = (agent2) => !OWN_SOURCE.includes(agent2);
+var statusFile = (id) => path10.join(peerDir(id), "status.json");
+function recorded(id) {
+  const record2 = readJson(statusFile(id));
+  const at = record2 ? Date.parse(record2.at) : Number.NaN;
+  return record2 && typeof record2.status === "string" && !Number.isNaN(at) ? { status: record2.status, at } : void 0;
+}
+var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
+function claudeStatus(pid) {
+  const record2 = readJson(path10.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
+  return { status: record2.status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
+}
+function codexStatus(peer) {
+  if (!peer.codexHome || !peer.sessionId) return void 0;
+  const activity = codexActivity(peer.codexHome, peer.sessionId);
+  const hook = recorded(peer.id);
+  if (hook?.status === "waiting" && activity !== "idle" && activity !== "interrupted") {
+    const lastResponse = codexLastResponse(peer.codexHome, peer.sessionId);
+    if (lastResponse === void 0 || lastResponse <= (hook.at ?? 0)) return hook;
+  }
+  return activity ? { status: activity } : void 0;
+}
+function peerStatus(peer) {
+  if (peer.agent === "claude") return claudeStatus(peer.pid);
+  if (peer.agent === "codex") return codexStatus(peer);
+  const info = recorded(peer.id);
+  return info && { ...info, fromHooks: statusFromHooks(peer.agent) };
+}
+var STALE_MS = 15 * 6e4;
+var stale = (info, now) => info.fromHooks && info.at !== void 0 && now - info.at > STALE_MS ? `? (no activity for ${Math.round((now - info.at) / 6e4)}m)` : "";
+function statusText(info, now = Date.now()) {
+  if (!info) return void 0;
+  switch (info.status) {
+    case "waiting":
+      return `waiting on a permission prompt for its user${stale(info, now)}`;
+    case "shell":
+      return "shell (not generating, but a command it started is still running)";
+    case "interrupted":
+      return "interrupted: gets messages only after its user sends it a prompt";
+    case "busy":
+      return `busy${stale(info, now)}`;
+    default:
+      return info.status;
+  }
+}
 
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId2) => path10.join(peerDir(selfId2), "sent-log.json");
+var sentLogFile = (selfId2) => path11.join(peerDir(selfId2), "sent-log.json");
 function checkRate(selfId2, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -28639,9 +28712,11 @@ async function sendMessage(self2, to, body) {
   recordSent(self2.id, recipient.id, body);
   return { ok: true, message, recipient, status: inboxStatus(recipient) };
 }
+var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
-  const activity = recipient.codexHome && recipient.sessionId ? codexActivity(recipient.codexHome, recipient.sessionId) : void 0;
+  const activity = peerStatus(recipient)?.status;
+  if (activity === "waiting") return waitingNote(ref, "queued for");
   const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
     if (recipient.toolHookRan) {
@@ -28658,6 +28733,7 @@ function codexQueueStatus(recipient) {
 }
 function inboxStatus(recipient) {
   const ref = peerRef(recipient);
+  if (peerStatus(recipient)?.status === "waiting") return waitingNote(ref, recipient.hasListener ? "delivered to" : "stored for");
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
@@ -28666,25 +28742,22 @@ function inboxStatus(recipient) {
 }
 
 // src/core/listing.ts
-function codexStatus(peer) {
-  const status = peer.codexHome && peer.sessionId ? codexActivity(peer.codexHome, peer.sessionId) : void 0;
-  return status === "interrupted" ? "idle after an interrupted turn: gets messages only after its user sends it a prompt" : status;
-}
 var codexUnreachable = (peer) => peer.agent === "codex" && !peer.sessionId;
 function describePeer(peer) {
-  const notes = [agentLabel(peer.agent)];
+  const notes = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   if (codexUnreachable(peer)) {
     notes.push("not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)");
-  } else if (peer.agent === "codex") {
-    const status = codexStatus(peer);
+  } else {
+    const status = statusText(peerStatus(peer));
     if (status) notes.push(status);
-  } else if (!peer.hasListener) {
+  }
+  if (peer.agent !== "codex" && !peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan ? "sees messages at its next turn" : "no listener: it reads messages only via read_messages"
     );
   }
-  return `- ${peerRef(peer)} \xB7 ${notes.join(" \xB7 ")}`;
+  return [`- ${peerRef(peer)}`, ...notes].join(" \xB7 ");
 }
 function formatPeerList(self2, peers) {
   const lines = [`This session is ${peerRef(self2)}.`];
@@ -28749,15 +28822,15 @@ var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent")
 var selfId = peerId(agent, agentPid);
 function sessionCwd() {
   const cwd = process.cwd();
-  const pluginRoot = path11.dirname(path11.dirname(fileURLToPath2(import.meta.url)));
-  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path11.resolve(value));
-  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path11.sep) || declaredRoots.includes(cwd)) {
+  const pluginRoot = path12.dirname(path12.dirname(fileURLToPath2(import.meta.url)));
+  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path12.resolve(value));
+  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path12.sep) || declaredRoots.includes(cwd)) {
     return void 0;
   }
   return cwd;
 }
 function monitorCommand() {
-  const monitor = path11.join(path11.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs");
+  const monitor = path12.join(path12.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs");
   return `node "${monitor}" --agent ${agent}`;
 }
 function claudeWithoutMonitor() {

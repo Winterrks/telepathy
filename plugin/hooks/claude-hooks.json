@@ -1,5 +1,5 @@
 {
-  "description": "telepathy: register this Claude Code session, show other agents' sessions in ListAgents, deliver SendMessage calls addressed to them, and hand over messages at the next prompt or turn end in sessions without the plugin monitor (the Claude app, claude -p).",
+  "description": "telepathy: register this Claude Code session, note when it reads, searches or edits files another agent session is editing, show other agents' sessions in ListAgents, deliver SendMessage calls addressed to them, and hand over messages at the next prompt or turn end in sessions without the plugin monitor (the Claude app, claude -p).",
   "hooks": {
     "SessionStart": [
       {
@@ -12,6 +12,16 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "Read|Edit|Write|MultiEdit|NotebookEdit|Grep|Glob|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude files",
+            "timeout": 10
+          }
+        ]
+      },
       {
         "matcher": "ListAgents",
         "hooks": [

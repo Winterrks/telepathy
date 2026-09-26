@@ -10,7 +10,7 @@ import { formatAgo } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
 import { peerDir } from '../src/core/paths.ts';
 import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
-import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
+import { fakeAgent, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
   id: `${agent}-${pid}`,
@@ -168,7 +168,7 @@ describe('registry', () => {
     const peers = listPeers();
     assert.deepEqual(
       peers.map((p) => [p.id, p.address, p.sessionId]),
-      [[`codex-${live.pid}`, 'codex:alpha', 'thread-live']],
+      [[`codex-${live.pid}`, named('codex', 'alpha', live.pid), 'thread-live']],
     );
     assert.equal(fs.existsSync(peerDir(`claude-${dead.pid}`)), false);
     await killAndWait(live);
@@ -185,21 +185,24 @@ describe('registry', () => {
     await killAndWait(agent);
   });
 
-  test('names come from the Codex thread index, and the folder-name address keeps working', async () => {
+  test('a session is named after its folder, and the bare folder name and a Codex thread title reach it too', async () => {
     const agent = fakeAgent();
-    registerSession('codex', agent.pid, { sessionId: 'thread-9', cwd: '/w/repo', source: 'hook' });
-    assert.equal(listPeers()[0]?.address, 'codex:repo');
-
-    // Codex titles the thread later; an agent still holding the old address must still reach it.
-    fs.writeFileSync(
-      path.join(sb.codexHome, 'session_index.jsonl'),
-      JSON.stringify({ id: 'thread-9', thread_name: 'Refactor payments API', updated_at: 'x' }) + '\n',
-    );
-    const peers = listPeers();
-    assert.equal(peers[0]?.address, 'codex:refactor-payments-api');
-    const r = resolvePeer('codex:repo', peers);
-    assert.ok('peer' in r && r.peer.id === `codex-${agent.pid}`);
-    await killAndWait(agent);
+    try {
+      registerSession('codex', agent.pid, { sessionId: 'thread-9', cwd: '/w/repo', source: 'hook' });
+      fs.writeFileSync(
+        path.join(sb.codexHome, 'session_index.jsonl'),
+        JSON.stringify({ id: 'thread-9', thread_name: 'Refactor payments API', updated_at: 'x' }) + '\n',
+      );
+      const peers = listPeers();
+      assert.match(peers[0]?.address ?? '', /^codex:repo-c[0-9a-f]{2}$/, 'the agent\'s first letter and two hex characters');
+      assert.equal(peers[0]?.address, named('codex', 'repo', agent.pid));
+      for (const to of ['codex:repo', 'codex:refactor-payments-api', peers[0].address]) {
+        const r = resolvePeer(to, peers);
+        assert.ok('peer' in r && r.peer.id === `codex-${agent.pid}`, to);
+      }
+    } finally {
+      await killAndWait(agent);
+    }
   });
 });
 
