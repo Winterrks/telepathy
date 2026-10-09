@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path12 from "node:path";
+import path13 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path13) {
-  if (!path13)
+function getElementAtPath(obj, path14) {
+  if (!path14)
     return obj;
-  return path13.reduce((acc, key) => acc?.[key], obj);
+  return path14.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path13, issues) {
+function prefixIssues(path14, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path13);
+    iss.path.unshift(path14);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path13 = []) => {
+  const processError = (error63, path14 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path14, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else {
-        const fullpath = [...path13, ...issue2.path];
+        const fullpath = [...path14, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path13 = []) => {
+  const processError = (error63, path14 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path13, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path14, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path13, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path14, ...issue2.path]);
       } else {
-        const fullpath = [...path13, ...issue2.path];
+        const fullpath = [...path14, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path13 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path13) {
+  const path14 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path14) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path13 = ref.slice(1).split("/").filter(Boolean);
-  if (path13.length === 0) {
+  const path14 = ref.slice(1).split("/").filter(Boolean);
+  if (path14.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path13[0] === defsKey) {
-    const key = path13[1] === void 0 ? void 0 : decodeJSONPointerSegment(path13[1]);
+  if (path14[0] === defsKey) {
+    const key = path14[1] === void 0 ? void 0 : decodeJSONPointerSegment(path14[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -19519,21 +19519,21 @@ function visit(schema, fnOrHandlers) {
     const h = fnOrHandlers[node2._zod.def.type];
     return h ? h(node2, rewritten) : node2;
   };
-  const cache2 = /* @__PURE__ */ new Map();
+  const cache3 = /* @__PURE__ */ new Map();
   function run(s) {
-    const cached2 = cache2.get(s);
+    const cached2 = cache3.get(s);
     if (cached2 === RESOLVING) {
       return new $ZodLazy({
         type: "lazy",
-        getter: () => cache2.get(s)
+        getter: () => cache3.get(s)
       });
     }
     if (cached2 !== void 0)
       return cached2;
-    cache2.set(s, RESOLVING);
+    cache3.set(s, RESOLVING);
     const inner = mapInner(s);
     const mapped = fn(inner, inner !== s);
-    cache2.set(s, mapped);
+    cache3.set(s, mapped);
     return mapped;
   }
   function mapInner(s) {
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path13 = issue2.path.map(String);
-      const key = path13.length > 0 ? path13.join(".") : "_meta";
-      if (path13.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path14 = issue2.path.map(String);
+      const key = path14.length > 0 ? path14.join(".") : "_meta";
+      if (path14.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path13, reachable) => {
+  const visit2 = (node2, path14, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path13.length === 0) return `${pathName(path13)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path14.length === 0) return `${pathName(path14)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path13)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path13)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path14)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path14)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path13)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path14)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path13,
+        path: path14,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path13, key], reachable);
+      const fault$1 = visit2(child, [...path14, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path13, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path14, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path13) {
-  return path13.length === 0 ? "<root>" : path13.join(".");
+function pathName(path14) {
+  return path14.length === 0 ? "<root>" : path14.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path13, vendor, unsupported) {
+function walkProperty(node2, path14, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path13, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path13}.${key}`);
-  } else unsupported.push(`${path13}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path14}.${key}`);
+  } else unsupported.push(`${path14}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path13 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path13}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path14 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path14}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path13 ? `${path13}.${key}` : key;
+    const childPath = path14 ? `${path14}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -27660,7 +27660,7 @@ var StdioServerTransport = class {
 // src/core/codex-queue.ts
 import { execFile, spawn } from "node:child_process";
 import os3 from "node:os";
-import path6 from "node:path";
+import path7 from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 
@@ -27710,14 +27710,14 @@ function debugLog(component, line) {
 
 // src/core/messages.ts
 import crypto2 from "node:crypto";
-import fs4 from "node:fs";
-import path5 from "node:path";
+import fs5 from "node:fs";
+import path6 from "node:path";
 
 // src/core/peers.ts
 import { createHash } from "node:crypto";
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 import os2 from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // src/core/agents.ts
 import path3 from "node:path";
@@ -27818,17 +27818,63 @@ function isAgentProcess(agent2, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.8.0" : "0.0.0-dev";
+var VERSION = true ? "0.9.0" : "0.0.0-dev";
+
+// src/core/codex-threads.ts
+import { execFileSync } from "node:child_process";
+import fs3 from "node:fs";
+import path4 from "node:path";
+var locksDir = (codexHome) => path4.join(codexHome, "thread-writer-locks");
+var cache;
+function heldLocks(dir, maxAgeMs = 1e3) {
+  let files;
+  try {
+    files = fs3.readdirSync(dir).filter((f) => f.endsWith(".lock") && !f.startsWith("."));
+  } catch {
+    return void 0;
+  }
+  const key = `${dir}
+${files.sort().join("\n")}`;
+  if (cache && cache.key === key && Date.now() - cache.at < maxAgeMs) return cache.held;
+  let held;
+  try {
+    if (!files.length) {
+      held = /* @__PURE__ */ new Set();
+    } else {
+      let out;
+      try {
+        out = execFileSync("lsof", ["-F", "n", "--", ...files], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      } catch (err) {
+        const e = err;
+        if (e.code === "ENOENT" || e.status !== 1) throw err;
+        out = e.stdout ?? "";
+      }
+      held = new Set(
+        out.split("\n").filter((l) => l.startsWith("n")).map((l) => path4.basename(l.slice(1)).replace(/\.lock$/, ""))
+      );
+    }
+  } catch {
+    held = void 0;
+  }
+  cache = { at: Date.now(), key, held };
+  return held;
+}
+function codexThreadLoaded(codexHome, threadId) {
+  const dir = locksDir(codexHome);
+  if (!fs3.existsSync(dir)) return void 0;
+  if (!fs3.existsSync(path4.join(dir, `${threadId}.lock`))) return false;
+  return heldLocks(dir)?.has(threadId) ?? true;
+}
 
 // src/core/proc.ts
-import { execFileSync } from "node:child_process";
-var cache;
+import { execFileSync as execFileSync2 } from "node:child_process";
+var cache2;
 function processTable(maxAgeMs = 500) {
-  if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
+  if (cache2 && Date.now() - cache2.at < maxAgeMs) return cache2.table;
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync("ps", ["-Ao", "pid=,ppid=,lstart=,comm="], {
+    out = execFileSync2("ps", ["-Ao", "pid=,ppid=,lstart=,comm="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -27842,7 +27888,7 @@ function processTable(maxAgeMs = 500) {
     const pid = Number(m[1]);
     table.set(pid, { pid, ppid: Number(m[2]), start: m[3].replace(/\s+/g, " "), comm: m[4].trim() });
   }
-  cache = { at: Date.now(), table };
+  cache2 = { at: Date.now(), table };
   return table;
 }
 function isAlive(pid) {
@@ -27867,7 +27913,7 @@ var commandLine = (pid) => psField(pid, "args");
 var isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
 function psField(pid, field) {
   try {
-    return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync2("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }
@@ -27905,59 +27951,73 @@ function findAgent(hint) {
 }
 
 // src/core/peers.ts
-var peerId = (agent2, pid) => `${agent2}-${pid}`;
+var peerId = (agent2, key) => `${agent2}-${key}`;
+var sessionKey = (agent2, pid, sessionId) => agent2 === "codex" && sessionId ? sessionId : pid;
+var sessionPeerId = (agent2, pid, sessionId) => peerId(agent2, sessionKey(agent2, pid, sessionId));
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
-var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-\\d+$`);
-var defaultCodexHome = () => process.env.CODEX_HOME || path4.join(os2.homedir(), ".codex");
-var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path4.join(os2.homedir(), ".claude");
-function registerSession(agent2, pid, fields) {
+var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
+var defaultCodexHome = () => process.env.CODEX_HOME || path5.join(os2.homedir(), ".codex");
+var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path5.join(os2.homedir(), ".claude");
+function registerSession(agent2, pid, fields, id = sessionPeerId(agent2, pid, fields.sessionId)) {
+  const file2 = path5.join(peerDir(id), "session.json");
+  const previous = readJson(file2);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
   const record2 = {
     agent: agent2,
     pid,
     procStart: procStart(pid),
     ...fields,
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    startedAt: previous?.sessionId === fields.sessionId && previous?.startedAt || now,
+    updatedAt: now
   };
-  writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "session.json"), record2);
-  if (fields.sessionId) adoptHeldMessages(agent2, pid, fields.sessionId);
+  writeJsonAtomic(file2, record2);
+  if (fields.sessionId) adoptHeldMessages(agent2, id, fields.sessionId);
   return record2;
 }
 var HOLD_MS = 60 * 6e4;
+var SESSION_KEEP_MS = 24 * 60 * 6e4;
+var SERVICE_SESSION_ACTIVE_MS = 12 * 60 * 6e4;
+function lastActivity(id) {
+  const times = [readSession(id)?.updatedAt, readJson(path5.join(peerDir(id), "status.json"))?.at];
+  return Math.max(...times.map((t) => Date.parse(t ?? "")).filter((t) => !Number.isNaN(t)), 0);
+}
+function keepsSession(peer, now = Date.now()) {
+  return !!peer && isSessionKeyed(peer) && now - lastActivity(peer.id) < SESSION_KEEP_MS;
+}
 function holdsUnread(id, now = Date.now()) {
   try {
-    return fs3.readdirSync(inboxDir(id)).some((f) => now - fs3.statSync(path4.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+    return fs4.readdirSync(inboxDir(id)).some((f) => now - fs4.statSync(path5.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
   } catch {
     return false;
   }
 }
-function adoptHeldMessages(agent2, pid, sessionId) {
-  const selfId2 = peerId(agent2, pid);
+function adoptHeldMessages(agent2, selfId, sessionId) {
   let names;
   try {
-    names = fs3.readdirSync(peersDir());
+    names = fs4.readdirSync(peersDir());
   } catch {
     return;
   }
   for (const name of names) {
-    if (name === selfId2 || !name.startsWith(`${agent2}-`)) continue;
-    const old = readJson(path4.join(peerDir(name), "session.json"));
-    if (old?.agent !== agent2 || old.sessionId !== sessionId || isSameProcess(old.pid, old.procStart)) continue;
+    if (name === selfId || !name.startsWith(`${agent2}-`)) continue;
+    const old = readJson(path5.join(peerDir(name), "session.json"));
+    if (old?.agent !== agent2 || old.sessionId !== sessionId || isPeerAlive(readPeer(name))) continue;
     let files = [];
     try {
-      files = fs3.readdirSync(inboxDir(name));
+      files = fs4.readdirSync(inboxDir(name));
     } catch {
     }
     for (const file2 of files) {
       try {
-        fs3.renameSync(path4.join(inboxDir(name), file2), path4.join(ensureDir(inboxDir(selfId2)), file2));
+        fs4.renameSync(path5.join(inboxDir(name), file2), path5.join(ensureDir(inboxDir(selfId)), file2));
       } catch {
       }
     }
-    fs3.rmSync(peerDir(name), { recursive: true, force: true });
+    fs4.rmSync(peerDir(name), { recursive: true, force: true });
   }
 }
-function registerPresence(agent2, pid, fields = {}) {
+function registerPresence(agent2, pid, fields = {}, id = peerId(agent2, pid)) {
   const record2 = {
     agent: agent2,
     pid,
@@ -27966,23 +28026,23 @@ function registerPresence(agent2, pid, fields = {}) {
     ...fields,
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "presence.json"), { ...record2, version: VERSION });
+  writeJsonAtomic(path5.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
 }
 function readSession(id) {
-  return readJson(path4.join(peerDir(id), "session.json"));
+  return readJson(path5.join(peerDir(id), "session.json"));
 }
 function slugify2(value) {
   return value.normalize("NFKD").replace(new RegExp("(\\p{Script=Latin})\\p{M}+", "gu"), "$1").normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40).replace(/[-.]+$/g, "");
 }
 function claudeSessionName(pid) {
-  const record2 = readJson(path4.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path5.join(claudeConfigDir(), "sessions", `${pid}.json`));
   return typeof record2?.name === "string" && record2.name ? record2.name : void 0;
 }
 function codexThreadName(codexHome, sessionId) {
   if (!sessionId) return void 0;
   let text2;
   try {
-    text2 = fs3.readFileSync(path4.join(codexHome, "session_index.jsonl"), "utf8");
+    text2 = fs4.readFileSync(path5.join(codexHome, "session_index.jsonl"), "utf8");
   } catch {
     return void 0;
   }
@@ -27997,31 +28057,50 @@ function codexThreadName(codexHome, sessionId) {
   }
   return name;
 }
-var nameSuffix = (agent2, pid) => agent2[0] + createHash("sha1").update(String(pid)).digest("hex").slice(0, 2);
-function displayName(agent2, pid, cwd) {
-  const folder = cwd ? slugify2(path4.basename(cwd)) : "";
+var nameSuffix = (agent2, key) => agent2[0] + createHash("sha1").update(String(key)).digest("hex").slice(0, 2);
+function displayName(agent2, pid, key, cwd) {
+  const folder = cwd ? slugify2(path5.basename(cwd)) : "";
   if (agent2 === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
-  return folder ? `${folder}-${nameSuffix(agent2, pid)}` : `session-${pid}`;
+  const k = /^\d+$/.test(key) ? Number(key) : key;
+  return folder ? `${folder}-${nameSuffix(agent2, k)}` : `session-${key}`;
+}
+var isSessionKeyed = (peer) => !!peer.sessionId && peer.id === peerId(peer.agent, peer.sessionId);
+var isThreadKeyed = (peer) => peer.agent === "codex" && isSessionKeyed(peer);
+function isPeerAlive(peer, now = Date.now()) {
+  if (!peer) return false;
+  if (isThreadKeyed(peer)) {
+    const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId);
+    if (loaded !== void 0) return loaded;
+  }
+  if (isSessionKeyed(peer)) {
+    if (!isSameProcess(peer.pid, readSession(peer.id)?.procStart)) return false;
+    return peer.agent === "codex" || now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
+  }
+  return isSameProcess(peer.pid, peer.procStart);
 }
 function readPeer(id) {
   const m = PEER_DIR_RE.exec(id);
   if (!m) return void 0;
   const agent2 = m[1];
   const dir = peerDir(id);
-  const session = readJson(path4.join(dir, "session.json"));
-  const presence = readJson(path4.join(dir, "presence.json"));
-  const listener = readJson(path4.join(dir, "listener.json"));
+  const session = readJson(path5.join(dir, "session.json"));
+  const presence = readJson(path5.join(dir, "presence.json"));
+  const listener = readJson(path5.join(dir, "listener.json"));
   if (!session && !presence) return void 0;
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent2, pid, cwd);
-  const aliases = [cwd ? slugify2(path4.basename(cwd)) : "", agent2 === "codex" ? slugify2(codexThreadName(codexHome, session?.sessionId) ?? "") : ""];
+  const name = displayName(agent2, pid, m[2], cwd);
+  const sessionKeyed = !!session?.sessionId && m[2] === session.sessionId;
+  const aliases = [cwd ? slugify2(path5.basename(cwd)) : "", agent2 === "codex" ? slugify2(codexThreadName(codexHome, session?.sessionId) ?? "") : ""];
   return {
     id,
     agent: agent2,
     pid,
-    procStart: session?.procStart || presence?.procStart,
+    // A session keyed by its id may outlive the process that hosted it when it registered (a Codex thread), or share
+    // it with many others (an OpenCode service), so that process's start says nothing about the session.
+    procStart: sessionKeyed ? void 0 : session?.procStart || presence?.procStart,
+    startedAt: sessionKeyed ? session?.startedAt : void 0,
     sessionId: session?.sessionId,
     cwd,
     codexHome,
@@ -28031,14 +28110,14 @@ function readPeer(id) {
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     version: presence?.version,
     hookRan: session?.source === "hook",
-    toolHookRan: fs3.existsSync(path4.join(dir, "tool-hook.json")),
+    toolHookRan: fs4.existsSync(path5.join(dir, "tool-hook.json")),
     aliases: [...new Set(aliases)].filter((a) => a && a !== slugify2(name))
   };
 }
 function listPeers() {
   let names = [];
   try {
-    names = fs3.readdirSync(peersDir());
+    names = fs4.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -28049,22 +28128,32 @@ function listPeers() {
     const peer = readPeer(name);
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
-    if (!isSameProcess(pid, peer?.procStart)) {
-      if (!holdsUnread(name)) fs3.rmSync(peerDir(name), { recursive: true, force: true });
+    if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, void 0)) {
+      if (!holdsUnread(name) && !keepsSession(peer)) fs4.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
   }
-  return peers;
+  const threads = new Set(peers.filter(isThreadKeyed).map((p) => p.sessionId));
+  return peers.filter((p) => p.agent !== "codex" || isThreadKeyed(p) || !!p.sessionId && !threads.has(p.sessionId));
 }
-function selfPeer(agent2, pid) {
-  const id = peerId(agent2, pid);
+function codexThreadsOf(pid) {
+  let names = [];
+  try {
+    names = fs4.readdirSync(peersDir());
+  } catch {
+    return [];
+  }
+  return names.filter((name) => name.startsWith("codex-") && !/^codex-\d+$/.test(name)).map((name) => readSession(name)).filter((s) => s?.agent === "codex" && s.pid === pid && !!s.sessionId && isPeerAlive(readPeer(peerId("codex", s.sessionId)))).map((s) => s.sessionId);
+}
+function selfPeer(agent2, pid, id = peerId(agent2, pid)) {
+  const key = id.slice(agent2.length + 1);
   return readPeer(id) ?? {
     id,
     agent: agent2,
     pid,
-    name: `session-${pid}`,
-    address: `${agent2}:session-${pid}`,
+    name: `session-${key}`,
+    address: `${agent2}:session-${key}`,
     hasListener: false,
     hasServer: false
   };
@@ -28103,24 +28192,24 @@ function newMessageId() {
   return `m-${Date.now().toString(36).padStart(9, "0")}-${crypto2.randomBytes(3).toString("hex")}`;
 }
 function writeToInbox(msg) {
-  writeJsonAtomic(path5.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path6.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
 }
 function archiveMessage(msg) {
-  writeJsonAtomic(path5.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path6.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
   pruneArchive(msg.to.id);
 }
 function claimInbox(peerId2) {
   let files;
   try {
-    files = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs5.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
   const claimed = [];
   for (const file2 of files) {
-    const target = path5.join(ensureDir(archiveDir(peerId2)), file2);
+    const target = path6.join(ensureDir(archiveDir(peerId2)), file2);
     try {
-      fs4.renameSync(path5.join(inboxDir(peerId2), file2), target);
+      fs5.renameSync(path6.join(inboxDir(peerId2), file2), target);
     } catch {
       continue;
     }
@@ -28133,36 +28222,36 @@ function claimInbox(peerId2) {
 function pendingMessages(peerId2) {
   let files;
   try {
-    files = fs4.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs5.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
-  return files.map((f) => readJson(path5.join(inboxDir(peerId2), f))).filter((m) => !!m);
+  return files.map((f) => readJson(path6.join(inboxDir(peerId2), f))).filter((m) => !!m);
 }
 function archivePending(peerId2, id) {
   try {
-    fs4.renameSync(path5.join(inboxDir(peerId2), `${id}.json`), path5.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
+    fs5.renameSync(path6.join(inboxDir(peerId2), `${id}.json`), path6.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
   } catch {
   }
 }
 function readArchived(peerId2, id) {
   if (!/^m-[0-9a-z]+-[0-9a-f]+$/.test(id)) return void 0;
-  return readJson(path5.join(archiveDir(peerId2), `${id}.json`));
+  return readJson(path6.join(archiveDir(peerId2), `${id}.json`));
 }
 function recentArchived(peerId2, limit) {
   let files;
   try {
-    files = fs4.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs5.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
-  return files.slice(-limit).map((f) => readJson(path5.join(archiveDir(peerId2), f))).filter((m) => !!m);
+  return files.slice(-limit).map((f) => readJson(path6.join(archiveDir(peerId2), f))).filter((m) => !!m);
 }
 function pruneArchive(peerId2) {
   try {
-    const files = fs4.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    const files = fs5.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
     for (const f of files.slice(0, Math.max(0, files.length - ARCHIVE_KEEP))) {
-      fs4.rmSync(path5.join(archiveDir(peerId2), f), { force: true });
+      fs5.rmSync(path6.join(archiveDir(peerId2), f), { force: true });
     }
   } catch {
   }
@@ -28189,7 +28278,7 @@ var execFileAsync = promisify(execFile);
 function codexCandidates() {
   const configured = process.env.TELEPATHY_CODEX_BIN;
   if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path6.join(os3.homedir(), ".local", "bin", "codex")];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path7.join(os3.homedir(), ".local", "bin", "codex")];
 }
 var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
 async function queueIntoCodex(threadId, text2, codexHome) {
@@ -28260,9 +28349,9 @@ function appServerDeletes(bin, threadId, queueIds, codexHome) {
     });
   });
 }
-async function withdrawFromCodexQueue(selfId2, threadId, codexHome) {
+async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
   const byThread = /* @__PURE__ */ new Map();
-  for (const msg of pendingMessages(selfId2)) {
+  for (const msg of pendingMessages(selfId)) {
     if (!msg.codexQueueId) continue;
     const thread = msg.codexThreadId ?? threadId;
     byThread.set(thread, [...byThread.get(thread) ?? [], msg]);
@@ -28278,26 +28367,26 @@ async function withdrawFromCodexQueue(selfId2, threadId, codexHome) {
       continue;
     }
     for (const msg of queued) {
-      if (results.get(msg.codexQueueId) === false) archivePending(selfId2, msg.id);
+      if (results.get(msg.codexQueueId) === false) archivePending(selfId, msg.id);
     }
   }
 }
 
 // src/core/setup.ts
-import fs6 from "node:fs";
-import path8 from "node:path";
+import fs7 from "node:fs";
+import path9 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/installs.ts
-import fs5 from "node:fs";
+import fs6 from "node:fs";
 import os4 from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 var home = () => os4.homedir();
-var cacheHome = () => process.env.XDG_CACHE_HOME || path7.join(home(), ".cache");
-var dataHome = () => process.env.XDG_DATA_HOME || path7.join(home(), ".local", "share");
+var cacheHome = () => process.env.XDG_CACHE_HOME || path8.join(home(), ".cache");
+var dataHome = () => process.env.XDG_DATA_HOME || path8.join(home(), ".local", "share");
 function readVersion(file2) {
   try {
-    const version2 = JSON.parse(fs5.readFileSync(file2, "utf8")).version;
+    const version2 = JSON.parse(fs6.readFileSync(file2, "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -28305,14 +28394,14 @@ function readVersion(file2) {
 }
 function builtVersion(dir) {
   try {
-    return /var VERSION = (?:true \? )?"(\d+\.\d+\.\d+[^"]*)"/.exec(fs5.readFileSync(path7.join(dir, "dist", "server.mjs"), "utf8"))?.[1];
+    return /var VERSION = (?:true \? )?"(\d+\.\d+\.\d+[^"]*)"/.exec(fs6.readFileSync(path8.join(dir, "dist", "server.mjs"), "utf8"))?.[1];
   } catch {
     return void 0;
   }
 }
 var list = (dir) => {
   try {
-    return fs5.readdirSync(dir);
+    return fs6.readdirSync(dir);
   } catch {
     return [];
   }
@@ -28329,10 +28418,10 @@ function newestOf(installs) {
   return installs.reduce((best, i) => !best || isNewer(i.version, best.version) ? i : best, void 0);
 }
 function claude() {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path7.join(home(), ".claude");
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path8.join(home(), ".claude");
   let plugins = {};
   try {
-    plugins = JSON.parse(fs5.readFileSync(path7.join(configDir, "plugins", "installed_plugins.json"), "utf8")).plugins ?? {};
+    plugins = JSON.parse(fs6.readFileSync(path8.join(configDir, "plugins", "installed_plugins.json"), "utf8")).plugins ?? {};
   } catch {
     return [];
   }
@@ -28341,12 +28430,12 @@ function claude() {
   );
 }
 function codex() {
-  const cache2 = path7.join(process.env.CODEX_HOME || path7.join(home(), ".codex"), "plugins", "cache");
-  const found = list(cache2).flatMap(
-    (marketplace) => list(path7.join(cache2, marketplace, "telepathy")).map((version2) => ({
+  const cache3 = path8.join(process.env.CODEX_HOME || path8.join(home(), ".codex"), "plugins", "cache");
+  const found = list(cache3).flatMap(
+    (marketplace) => list(path8.join(cache3, marketplace, "telepathy")).map((version2) => ({
       agent: "codex",
       version: version2,
-      dir: path7.join(cache2, marketplace, "telepathy", version2),
+      dir: path8.join(cache3, marketplace, "telepathy", version2),
       marketplace
     }))
   );
@@ -28354,24 +28443,24 @@ function codex() {
   return newest ? [newest] : [];
 }
 function extension(agent2) {
-  const dir = path7.join(home(), `.${agent2}`, "extensions", "telepathy");
-  const version2 = readVersion(path7.join(dir, `${agent2}-extension.json`));
+  const dir = path8.join(home(), `.${agent2}`, "extensions", "telepathy");
+  const version2 = readVersion(path8.join(dir, `${agent2}-extension.json`));
   return version2 ? [{ agent: agent2, version: version2, dir }] : [];
 }
 function copilot() {
-  const root = path7.join(home(), ".copilot", "installed-plugins");
+  const root = path8.join(home(), ".copilot", "installed-plugins");
   return list(root).flatMap((marketplace) => {
-    const dir = path7.join(root, marketplace, "telepathy");
-    const version2 = readVersion(path7.join(dir, ".github", "plugin", "plugin.json"));
+    const dir = path8.join(root, marketplace, "telepathy");
+    const version2 = readVersion(path8.join(dir, ".github", "plugin", "plugin.json"));
     return version2 ? [{ agent: "copilot", version: version2, dir, marketplace }] : [];
   });
 }
 function devin() {
-  const cache2 = path7.join(dataHome(), "devin", "cli", "plugins", "cache");
-  const found = list(cache2).filter((name) => /telepathy/i.test(name)).flatMap(
-    (name) => list(path7.join(cache2, name)).flatMap((version2) => {
-      const dir = path7.join(cache2, name, version2);
-      const manifest = readVersion(path7.join(dir, ".devin-plugin", "plugin.json"));
+  const cache3 = path8.join(dataHome(), "devin", "cli", "plugins", "cache");
+  const found = list(cache3).filter((name) => /telepathy/i.test(name)).flatMap(
+    (name) => list(path8.join(cache3, name)).flatMap((version2) => {
+      const dir = path8.join(cache3, name, version2);
+      const manifest = readVersion(path8.join(dir, ".devin-plugin", "plugin.json"));
       return manifest ? [{ agent: "devin", version: manifest, dir }] : [];
     })
   );
@@ -28379,23 +28468,27 @@ function devin() {
   return newest ? [newest] : [];
 }
 function antigravity() {
-  const dir = path7.join(home(), ".gemini", "config", "plugins", "telepathy");
+  const dir = path8.join(home(), ".gemini", "config", "plugins", "telepathy");
   const version2 = builtVersion(dir);
   return version2 ? [{ agent: "antigravity", version: version2, dir }] : [];
 }
+function opencodeNpmCache() {
+  const npm = path8.join(cacheHome(), "opencode", "npm");
+  return list(npm).filter((name) => /telepathy/i.test(name)).flatMap((name) => list(path8.join(npm, name)).map((install) => path8.join(npm, name, install, "node_modules", "telepathy"))).filter((dir) => fs6.existsSync(path8.join(dir, "package.json")));
+}
 function packageCache(agent2) {
-  const packages = path7.join(cacheHome(), agent2, "packages");
-  const candidates = agent2 === "opencode" ? list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
+  const packages = path8.join(cacheHome(), agent2, "packages");
+  const candidates = agent2 === "opencode" ? [...opencodeNpmCache(), ...list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
     const found2 = [];
     const walk = (dir, depth) => {
-      if (fs5.existsSync(path7.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path7.join(dir, "node_modules", "telepathy"));
-      else if (depth < 4) for (const sub of list(dir)) walk(path7.join(dir, sub), depth + 1);
+      if (fs6.existsSync(path8.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path8.join(dir, "node_modules", "telepathy"));
+      else if (depth < 4) for (const sub of list(dir)) walk(path8.join(dir, sub), depth + 1);
     };
-    walk(path7.join(packages, name), 0);
+    walk(path8.join(packages, name), 0);
     return found2;
-  }) : list(path7.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path7.join(packages, "git", name));
+  })] : list(path8.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path8.join(packages, "git", name));
   const found = candidates.flatMap((dir) => {
-    const version2 = readVersion(path7.join(dir, "package.json"));
+    const version2 = readVersion(path8.join(dir, "package.json"));
     return version2 ? [{ agent: agent2, version: version2, dir }] : [];
   });
   const newest = newestOf(found);
@@ -28424,7 +28517,7 @@ var CODEX_HOOKS = {
 function unapprovedCodexHooks(codexHome) {
   let config2;
   try {
-    config2 = fs6.readFileSync(path8.join(codexHome, "config.toml"), "utf8");
+    config2 = fs7.readFileSync(path9.join(codexHome, "config.toml"), "utf8");
   } catch {
     return void 0;
   }
@@ -28433,7 +28526,7 @@ function unapprovedCodexHooks(codexHome) {
   );
   return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
 }
-var updateAllCommand = () => `node "${path8.join(path8.dirname(fileURLToPath(import.meta.url)), "update-all.mjs")}"`;
+var updateAllCommand = () => `node "${path9.join(path9.dirname(fileURLToPath(import.meta.url)), "update-all.mjs")}"`;
 var listed = (names) => names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
 function setupNotes(self2) {
   const notes = [];
@@ -28500,48 +28593,48 @@ var guideText = (agent2, opts = {}) => guideLines(agent2, opts).join("\n");
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
-import path11 from "node:path";
+import path12 from "node:path";
 
 // src/core/status.ts
-import path10 from "node:path";
+import path11 from "node:path";
 
 // src/core/codex-activity.ts
-import fs7 from "node:fs";
-import path9 from "node:path";
+import fs8 from "node:fs";
+import path10 from "node:path";
 var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
 function findRollout(codexHome, threadId) {
   const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
   const sorted = (dir) => {
     try {
-      return fs7.readdirSync(dir).sort().reverse();
+      return fs8.readdirSync(dir).sort().reverse();
     } catch {
       return [];
     }
   };
-  const root = path9.join(codexHome, "sessions");
+  const root = path10.join(codexHome, "sessions");
   for (const year of sorted(root)) {
-    for (const month of sorted(path9.join(root, year))) {
-      for (const day of sorted(path9.join(root, year, month))) {
-        const dir = path9.join(root, year, month, day);
+    for (const month of sorted(path10.join(root, year))) {
+      for (const day of sorted(path10.join(root, year, month))) {
+        const dir = path10.join(root, year, month, day);
         const file2 = sorted(dir).find(isRollout);
-        if (file2) return path9.join(dir, file2);
+        if (file2) return path10.join(dir, file2);
       }
     }
   }
   return void 0;
 }
 function readTail(file2, bytes) {
-  const fd = fs7.openSync(file2, "r");
+  const fd = fs8.openSync(file2, "r");
   try {
-    const { size } = fs7.fstatSync(fd);
+    const { size } = fs8.fstatSync(fd);
     const start = Math.max(0, size - bytes);
     const buf = Buffer.alloc(size - start);
-    fs7.readSync(fd, buf, 0, buf.length, start);
+    fs8.readSync(fd, buf, 0, buf.length, start);
     const text2 = buf.toString("utf8");
     return { text: start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2, whole: start === 0 };
   } finally {
-    fs7.closeSync(fd);
+    fs8.closeSync(fd);
   }
 }
 function lastTurnEvent(text2) {
@@ -28594,7 +28687,7 @@ function codexLastResponse(codexHome, threadId) {
 // src/core/status.ts
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent2) => !OWN_SOURCE.includes(agent2);
-var statusFile = (id) => path10.join(peerDir(id), "status.json");
+var statusFile = (id) => path11.join(peerDir(id), "status.json");
 function recorded(id) {
   const record2 = readJson(statusFile(id));
   const at = record2 ? Date.parse(record2.at) : Number.NaN;
@@ -28602,7 +28695,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record2 = readJson(path10.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path11.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   return { status: record2.status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
 }
@@ -28644,10 +28737,10 @@ function statusText(info, now = Date.now()) {
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId2) => path11.join(peerDir(selfId2), "sent-log.json");
-function checkRate(selfId2, toId, body) {
+var sentLogFile = (selfId) => path12.join(peerDir(selfId), "sent-log.json");
+function checkRate(selfId, toId, body) {
   const now = Date.now();
-  const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
+  const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   const hash2 = crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16);
   const dup = log.find((e) => e.to === toId && e.hash === hash2 && now - e.at < DUPLICATE_WINDOW_MS);
   if (dup) {
@@ -28658,11 +28751,11 @@ function checkRate(selfId2, toId, body) {
   }
   return void 0;
 }
-function recordSent(selfId2, toId, body) {
+function recordSent(selfId, toId, body) {
   const now = Date.now();
-  const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
+  const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
-  writeJsonAtomic(sentLogFile(selfId2), log);
+  writeJsonAtomic(sentLogFile(selfId), log);
 }
 async function sendMessage(self2, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
@@ -28694,7 +28787,7 @@ async function sendMessage(self2, to, body) {
     if (!recipient.sessionId) {
       return {
         ok: false,
-        error: `${who} hasn't reported its thread id yet. In that Codex session, approve the telepathy SessionStart hook with /hooks (or have it call list_peers once), then retry.`
+        error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`
       };
     }
     let codexQueueId;
@@ -28742,16 +28835,11 @@ function inboxStatus(recipient) {
 }
 
 // src/core/listing.ts
-var codexUnreachable = (peer) => peer.agent === "codex" && !peer.sessionId;
 function describePeer(peer) {
   const notes = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
-  if (codexUnreachable(peer)) {
-    notes.push("not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)");
-  } else {
-    const status = statusText(peerStatus(peer));
-    if (status) notes.push(status);
-  }
+  const status = statusText(peerStatus(peer));
+  if (status) notes.push(status);
   if (peer.agent !== "codex" && !peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan ? "sees messages at its next turn" : "no listener: it reads messages only via read_messages"
@@ -28805,50 +28893,58 @@ async function sendMessageTool(self2, to, message) {
   return result.ok ? { text: result.status } : { text: result.error, isError: true };
 }
 var render = (title, messages) => [title, ...messages.map(formatForReading)].join("\n\n");
-function readMessagesTool(selfId2, { id, limit }) {
-  const fresh = claimInbox(selfId2);
+function readMessagesTool(selfId, { id, limit }) {
+  const fresh = claimInbox(selfId);
   if (id) {
-    const msg = fresh.find((m) => m.id === id) ?? readArchived(selfId2, id);
+    const msg = fresh.find((m) => m.id === id) ?? readArchived(selfId, id);
     return msg ? { text: formatForReading(msg) } : { text: `No message with id ${id} was received by this session.`, isError: true };
   }
   if (fresh.length) return { text: render(`${fresh.length} new message(s):`, fresh) };
-  const recent = recentArchived(selfId2, limit ?? 3);
+  const recent = recentArchived(selfId, limit ?? 3);
   return { text: recent.length ? render("No new messages. Most recent received:", recent) : "No messages received yet." };
 }
 
 // src/server.ts
 var argv = process.argv.slice(2);
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
-var selfId = peerId(agent, agentPid);
 function sessionCwd() {
   const cwd = process.cwd();
-  const pluginRoot = path12.dirname(path12.dirname(fileURLToPath2(import.meta.url)));
-  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path12.resolve(value));
-  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path12.sep) || declaredRoots.includes(cwd)) {
+  const pluginRoot = path13.dirname(path13.dirname(fileURLToPath2(import.meta.url)));
+  const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path13.resolve(value));
+  if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path13.sep) || declaredRoots.includes(cwd)) {
     return void 0;
   }
   return cwd;
 }
 function monitorCommand() {
-  const monitor = path12.join(path12.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs");
+  const monitor = path13.join(path13.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs");
   return `node "${monitor}" --agent ${agent}`;
 }
 function claudeWithoutMonitor() {
   return agent === "claude" && isStreamJsonClaude(agentPid);
 }
-registerPresence(agent, agentPid, {
-  cwd: sessionCwd(),
-  codexHome: agent === "codex" ? defaultCodexHome() : void 0
-});
-debugLog("server", `started for ${selfId}`);
-function learnCodexThread(meta3) {
-  if (agent !== "codex" || !meta3) return;
-  const id = [meta3.sessionId, meta3.threadId].find((v) => typeof v === "string" && v.length > 0);
-  if (!id) return;
-  const existing = readSession(selfId);
-  if (existing?.source === "hook" || existing?.sessionId === id) return;
-  registerSession(agent, agentPid, { sessionId: id, cwd: existing?.cwd, source: "meta", codexHome: defaultCodexHome() });
-  debugLog("server", `learned codex thread ${id} from tool-call _meta (keys: ${Object.keys(meta3).join(",")})`);
+if (agent !== "codex") registerPresence(agent, agentPid, { cwd: sessionCwd() });
+debugLog("server", `started for ${peerId(agent, agentPid)}`);
+var presenceFor = /* @__PURE__ */ new Set();
+function selfIdFor(meta3) {
+  if (agent !== "codex") return peerId(agent, agentPid);
+  let thread = [meta3?.threadId, meta3?.sessionId].find((v) => typeof v === "string" && v.length > 0);
+  if (!thread) {
+    const own2 = codexThreadsOf(agentPid);
+    if (own2.length === 1) thread = own2[0];
+  }
+  const id = sessionPeerId(agent, agentPid, thread);
+  if (!thread) return id;
+  if (!presenceFor.has(id)) {
+    registerPresence(agent, agentPid, { codexHome: defaultCodexHome() }, id);
+    presenceFor.add(id);
+  }
+  const existing = readSession(id);
+  if (!existing) {
+    registerSession(agent, agentPid, { sessionId: thread, source: "meta", codexHome: defaultCodexHome() });
+    debugLog("server", `learned codex thread ${thread} from tool-call _meta (keys: ${Object.keys(meta3 ?? {}).join(",")})`);
+  }
+  return id;
 }
 var server = new McpServer(
   { name: "telepathy", version: VERSION },
@@ -28865,9 +28961,9 @@ var server = new McpServer(
 var text = ({ text: text2, isError }) => ({ content: [{ type: "text", text: text2 }], ...isError ? { isError } : {} });
 var NOTE_EVERY_MS = 10 * 6e4;
 var noteShownAt = /* @__PURE__ */ new Map();
-function withSetupNotes(result, always = false) {
+function withSetupNotes(selfId, result, always = false) {
   const now = Date.now();
-  const notes = setupNotes(selfPeer(agent, agentPid)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
+  const notes = setupNotes(selfPeer(agent, agentPid, selfId)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
   for (const note of notes) noteShownAt.set(note, now);
   return notes.length ? { ...result, text: `${result.text}
 
@@ -28882,8 +28978,8 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: false }
   },
   async (_args, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
-    return text(withSetupNotes(listPeersTool(selfPeer(agent, agentPid))));
+    const selfId = selfIdFor(ctx.mcpReq._meta);
+    return text(withSetupNotes(selfId, listPeersTool(selfPeer(agent, agentPid, selfId))));
   }
 );
 server.registerTool(
@@ -28895,8 +28991,8 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   },
   async ({ to, message }, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
-    return text(withSetupNotes(await sendMessageTool(selfPeer(agent, agentPid), to, message)));
+    const selfId = selfIdFor(ctx.mcpReq._meta);
+    return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
   }
 );
 server.registerTool(
@@ -28908,12 +29004,12 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
   },
   async ({ id, limit }, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
+    const selfId = selfIdFor(ctx.mcpReq._meta);
     if (agent === "codex") {
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(withSetupNotes(readMessagesTool(selfId, { id, limit }), true));
+    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit }), true));
   }
 );
 await server.connect(new StdioServerTransport());

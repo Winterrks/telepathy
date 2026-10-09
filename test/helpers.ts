@@ -50,8 +50,8 @@ export function codexCalls(sb: Sandbox): { argv: string[]; codexHome: string | n
   return fs.readFileSync(sb.codexLog, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l));
 }
 
-/** The address a non-Claude session in `folder` goes by: `codex:auth-c3f`. */
-export const named = (agent: Agent, folder: string, pid: number) => `${agent}:${folder}-${nameSuffix(agent, pid)}`;
+/** The address a non-Claude session in `folder` goes by: `codex:auth-c3f`. Its key is the pid, or a Codex thread id. */
+export const named = (agent: Agent, folder: string, key: number | string) => `${agent}:${folder}-${nameSuffix(agent, key)}`;
 
 /** A live process standing in for a `claude` or `codex` agent process; its pid is the session identity. */
 export function fakeAgent(...args: string[]): ChildProcess & { pid: number } {
@@ -61,6 +61,22 @@ export function fakeAgent(...args: string[]): ChildProcess & { pid: number } {
   });
   return child as ChildProcess & { pid: number };
 }
+
+/**
+ * A stand-in for a process hosting Codex threads (the app-server daemon): it holds each thread's writer lock open,
+ * as Codex does while the thread is loaded.
+ */
+export function fakeCodexHost(codexHome: string, ...threads: string[]): ChildProcess & { pid: number } {
+  const dir = path.join(codexHome, 'thread-writer-locks');
+  fs.mkdirSync(dir, { recursive: true });
+  const locks = threads.map((t) => path.join(dir, `${t}.lock`));
+  const script = `const fs = require('fs'); for (const f of ${JSON.stringify(locks)}) fs.openSync(f, 'a'); process.stdout.write('ok\\n'); setInterval(() => {}, 1 << 30)`;
+  const child = spawn(process.execPath, ['-e', script], { stdio: ['ignore', 'pipe', 'ignore'] });
+  return child as ChildProcess & { pid: number };
+}
+
+/** Resolves once a fakeCodexHost holds its locks. */
+export const hostReady = (child: ChildProcess) => new Promise<void>((resolve) => child.stdout?.once('data', () => resolve()));
 
 export async function killAndWait(child: ChildProcess): Promise<void> {
   if (child.exitCode !== null || child.signalCode !== null) return;

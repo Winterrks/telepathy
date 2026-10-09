@@ -229,14 +229,16 @@ function findAgent(hint) {
 }
 
 // src/core/peers.ts
-var peerId = (agent2, pid) => `${agent2}-${pid}`;
+var peerId = (agent2, key) => `${agent2}-${key}`;
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
-var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-\\d+$`);
+var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 var HOLD_MS = 60 * 6e4;
-function registerListener(agent2, pid) {
+var SESSION_KEEP_MS = 24 * 60 * 6e4;
+var SERVICE_SESSION_ACTIVE_MS = 12 * 60 * 6e4;
+function registerListener(agent2, pid, id2 = peerId(agent2, pid)) {
   const record = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  writeJsonAtomic(path4.join(peerDir(peerId(agent2, pid)), "listener.json"), record);
+  writeJsonAtomic(path4.join(peerDir(id2), "listener.json"), record);
 }
 var peerRef = (peer) => `${peer.address} [${peer.id}]`;
 

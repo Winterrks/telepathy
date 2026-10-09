@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
-import { findInstalls, type Install } from './core/installs.ts';
+import { findInstalls, type Install, isOpencodeNpmInstall } from './core/installs.ts';
 
 /**
  * Updates telepathy in every agent on this machine that has it installed, each with the agent's own update
@@ -42,6 +42,9 @@ function stepsFor(install: Install): Step[] | 'cache' {
       return [{ cmd: 'devin', args: ['plugins', 'update', 'telepathy'] }];
     case 'antigravity':
       return [{ cmd: 'agy', args: ['plugin', 'install', `${REPO}/tree/main/antigravity`] }];
+    case 'opencode':
+      // OpenCode 2 updates package plugins itself; 1.x reinstalls from a cleared cache.
+      return isOpencodeNpmInstall(install) ? [{ cmd: 'opencode', args: ['plugin', 'update', `telepathy@git+${REPO}.git`] }] : 'cache';
     default:
       return 'cache';
   }

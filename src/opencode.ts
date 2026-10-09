@@ -1,20 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { z } from 'zod';
 import type { Agent } from './core/agents.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
-import { ensureDir, inboxDir } from './core/paths.ts';
-import { peerId, registerListener, registerPresence, registerSession, selfPeer } from './core/peers.ts';
+import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
+import { isPeerAlive, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer } from './core/peers.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 
 /**
- * OpenCode (1.x) and Kilo Code plugin. It runs inside the agent's own process, so it registers native tools
- * (which, unlike MCP calls, know the calling session) and wakes the session itself: a message arriving while
- * the session is idle becomes a prompt through the SDK client's `session.promptAsync`, which starts a turn.
+ * OpenCode and Kilo Code plugin. It runs inside the agent's own process, so it registers native tools (which, unlike
+ * MCP calls, know the calling session) and wakes the session itself. Two plugin APIs share the default export:
+ * `server` for OpenCode 1.x and Kilo Code (see TelepathyPlugin) and `setup` for OpenCode 2 (see setupV2).
  */
 
 interface PromptTarget {
@@ -193,4 +194,272 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   };
 };
 
-export default { id: 'telepathy', server: TelepathyPlugin };
+// ---------------------------------------------------------------------------------------------------------------
+// OpenCode 2. Its background service (`opencode serve --service`) hosts the sessions of every window and project, and
+// runs `setup` once per project directory, so sessions go by their own id, `opencode-<session id>`, rather than by the
+// process. Only the parts of the API this plugin uses are typed here (from @opencode/plugin 2.0).
+
+interface V2Event {
+  type: string;
+  data?: {
+    sessionID?: string;
+    parentID?: string;
+    info?: { id?: string; parentID?: string };
+  };
+}
+
+type Disposable = Promise<{ dispose(): unknown }> | { dispose(): unknown } | void;
+
+interface V2ToolResult {
+  content?: string | { type: string; text?: string }[];
+}
+
+interface V2ToolEditor {
+  get(id: string): unknown;
+  add(tool: {
+    name: string;
+    description: string;
+    input: unknown;
+    execute: (input: unknown, context: { sessionID: string }) => Promise<V2ToolResult>;
+  }): void;
+}
+
+interface V2SkillEditor {
+  get(id: string): unknown;
+  add(skill: { id: string; name: string; description?: string; path: string; content: string }): void;
+}
+
+interface V2Context {
+  location: { directory: string };
+  event: { subscribe(options: { signal: AbortSignal }): AsyncIterable<V2Event> };
+  session: {
+    hook(name: 'prompt', fn: (event: { sessionID: string }) => unknown): Disposable;
+    hook(name: 'context', fn: (event: { sessionID: string; system: { type: 'text'; text: string }[] }) => unknown): Disposable;
+    prompt(input: { sessionID: string; text: string; delivery?: 'steer' | 'queue' }): Promise<unknown>;
+    get(input: { sessionID: string }): Promise<unknown>;
+  };
+  tool: {
+    transform(fn: (editor: V2ToolEditor) => void): Disposable;
+    hook(
+      name: 'execute.after',
+      fn: (event: { tool: string; sessionID: string; input: unknown; status: string; result?: V2ToolResult }) => unknown,
+    ): Disposable;
+  };
+  skill: { transform(fn: (editor: V2SkillEditor) => void): Disposable };
+}
+
+/** The using-telepathy skill, for OpenCode 2's skill registry (which takes the content, not a folder). */
+function readSkill(): { id: string; name: string; description?: string; path: string; content: string } | undefined {
+  const file = path.join(skillsDir, 'using-telepathy', 'SKILL.md');
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    const description = /^description:\s*(.+)$/m.exec(content)?.[1]?.trim();
+    return { id: 'using-telepathy', name: 'using-telepathy', description, path: file, content };
+  } catch {
+    return undefined;
+  }
+}
+
+const jsonSchema = (args: z.ZodRawShape) => z.toJSONSchema(z.object(args));
+
+async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
+  const agent: Agent = 'opencode';
+  const pid = process.pid;
+  const directory = ctx.location.directory;
+  const idOf = (sessionID: string) => peerId(agent, sessionID);
+  const sessions = new Set<string>(); // this directory's sessions that registered here
+  const parents = new Map<string, string>(); // subagent session → its parent: subagents are no peers of their own
+  const disposables: Disposable[] = [];
+  debugLog('opencode', `plugin set up (OpenCode 2) in pid ${pid} for ${directory}`);
+
+  const register = (sessionID: string) => {
+    if (parents.has(sessionID)) return;
+    const id = idOf(sessionID);
+    registerSession(agent, pid, { sessionId: sessionID, cwd: directory, source: 'plugin' }, id);
+    if (sessions.has(sessionID)) return;
+    sessions.add(sessionID);
+    registerPresence(agent, pid, { cwd: directory }, id);
+    registerListener(agent, pid, id); // this plugin wakes the session with its messages
+    writeStatus(id, 'idle');
+    watch(sessionID);
+  };
+
+  const delivering = new Set<string>();
+  /** Hands pending messages to the session as a prompt; `steer` starts a turn, or joins the running one. */
+  async function deliver(sessionID: string): Promise<void> {
+    if (delivering.has(sessionID)) return;
+    delivering.add(sessionID);
+    try {
+      const messages = claimInbox(idOf(sessionID));
+      if (!messages.length) return;
+      // The messages are a turn of their own here, so they need no lead-in.
+      await ctx.session.prompt({ sessionID, text: formatForContext(messages, { lead: false }), delivery: 'steer' });
+      debugLog('opencode', `delivered ${messages.map((m) => m.id).join(', ')} to session ${sessionID}`);
+    } catch (err) {
+      // The messages stay in the archive, where read_messages shows them as the most recent received.
+      debugLog('opencode', `delivery to ${sessionID} failed: ${(err as Error).message}`);
+    } finally {
+      delivering.delete(sessionID);
+    }
+  }
+
+  const watchers = new Map<string, fs.FSWatcher>();
+  function watch(sessionID: string): void {
+    if (watchers.has(sessionID)) return;
+    try {
+      const watcher = fs.watch(ensureDir(inboxDir(idOf(sessionID))), () => void deliver(sessionID));
+      watcher.on('error', () => {
+        watcher.close();
+        watchers.delete(sessionID);
+      });
+      watchers.set(sessionID, watcher);
+    } catch {
+      // the interval below still polls
+    }
+  }
+  const timer = setInterval(() => {
+    for (const sessionID of sessions) {
+      watch(sessionID);
+      void deliver(sessionID);
+    }
+  }, 2000);
+  timer.unref?.();
+
+  // A restarted service runs the sessions of this directory that the previous one had, under a new pid: take them over.
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    // no registry yet
+  }
+  for (const name of names) {
+    const session = name.startsWith(`${agent}-ses_`) ? readSession(name) : undefined;
+    if (!session?.sessionId || session.cwd !== directory || session.pid === pid || isPeerAlive(readPeer(name))) continue;
+    const sessionID = session.sessionId;
+    ctx.session.get({ sessionID }).then(
+      () => register(sessionID),
+      () => fs.rmSync(peerDir(name), { recursive: true, force: true }), // deleted meanwhile
+    );
+  }
+
+  disposables.push(ctx.session.hook('prompt', (event) => register(event.sessionID)));
+
+  /** OpenCode shows no MCP instructions for plugin tools, so the guide goes into the system prompt. */
+  disposables.push(
+    ctx.session.hook('context', (event) => {
+      if (Array.isArray(event.system)) event.system.push({ type: 'text', text: guideText(agent) });
+    }),
+  );
+
+  const skill = readSkill();
+  if (skill) {
+    disposables.push(
+      ctx.skill.transform((editor) => {
+        if (!editor.get(skill.id)) editor.add(skill);
+      }),
+    );
+  }
+
+  const self = (sessionID: string) => {
+    register(sessionID);
+    return selfPeer(agent, pid, idOf(sessionID));
+  };
+  disposables.push(
+    ctx.tool.transform((editor) => {
+      editor.add({
+        name: 'telepathy_list_peers',
+        description: TOOLS.list_peers.description,
+        input: jsonSchema(TOOLS.list_peers.args),
+        execute: async (_input, c) => ({ content: out(listPeersTool(self(c.sessionID))) }),
+      });
+      editor.add({
+        name: 'telepathy_send_message',
+        description: TOOLS.send_message.description,
+        input: jsonSchema(TOOLS.send_message.args),
+        execute: async (input, c) => {
+          const args = z.object(TOOLS.send_message.args).parse(input);
+          return { content: out(await sendMessageTool(self(c.sessionID), args.to, args.message)) };
+        },
+      });
+      editor.add({
+        name: 'telepathy_read_messages',
+        description: TOOLS.read_messages.description,
+        input: jsonSchema(TOOLS.read_messages.args),
+        execute: async (input, c) => {
+          const args = z.object(TOOLS.read_messages.args).parse(input ?? {});
+          return { content: out(readMessagesTool(self(c.sessionID).id, args)) };
+        },
+      });
+    }),
+  );
+
+  /** Records the files a tool edited, and adds a note to its result when it touched another session's area. */
+  disposables.push(
+    ctx.tool.hook('execute.after', (event) => {
+      const sessionID = parents.get(event.sessionID) ?? event.sessionID;
+      if (!sessions.has(sessionID)) return;
+      try {
+        const note = trackTouchedFiles({ id: idOf(sessionID), agent }, event.tool, event.input, directory);
+        const result = event.result;
+        if (!note || event.status !== 'completed' || !result) return;
+        if (typeof result.content === 'string') result.content += `\n\n${note}`;
+        else if (Array.isArray(result.content)) result.content.push({ type: 'text', text: note });
+      } catch (err) {
+        debugLog('opencode', `file tracking failed: ${(err as Error).message}`);
+      }
+    }),
+  );
+
+  /** Statuses from the session's events: busy while it runs, waiting while it (or a subagent of it) asks for a permission. */
+  const abort = new AbortController();
+  void (async () => {
+    for await (const event of ctx.event.subscribe({ signal: abort.signal })) {
+      const data = event.data ?? {};
+      const childID = data.info?.id ?? data.sessionID;
+      const parentID = data.parentID ?? data.info?.parentID;
+      if (event.type === 'session.created' && childID && parentID) parents.set(childID, parents.get(parentID) ?? parentID);
+      const sessionID = data.sessionID && (parents.get(data.sessionID) ?? data.sessionID);
+      if (!sessionID || !sessions.has(sessionID)) continue;
+      const id = idOf(sessionID);
+      if (event.type === 'session.deleted' && sessionID === data.sessionID) {
+        sessions.delete(sessionID);
+        watchers.get(sessionID)?.close();
+        watchers.delete(sessionID);
+        fs.rmSync(peerDir(id), { recursive: true, force: true });
+        continue;
+      }
+      const status = STATUS_EVENTS[event.type];
+      // A subagent finishing doesn't make its parent idle.
+      if (status && (status === 'waiting' || status === 'busy' || sessionID === data.sessionID)) writeStatus(id, status);
+    }
+  })().catch((err) => {
+    if (!abort.signal.aborted) debugLog('opencode', `event stream ended: ${(err as Error).message}`);
+  });
+
+  return async () => {
+    abort.abort();
+    clearInterval(timer);
+    for (const watcher of watchers.values()) watcher.close();
+    for (const d of await Promise.all(disposables)) {
+      try {
+        await d?.dispose();
+      } catch {
+        // already gone with the plugin
+      }
+    }
+  };
+}
+
+const STATUS_EVENTS: Record<string, PeerStatus> = {
+  'session.execution.started': 'busy',
+  'session.execution.succeeded': 'idle',
+  'session.execution.failed': 'idle',
+  'session.execution.interrupted': 'idle',
+  'permission.asked': 'waiting',
+  'permission.replied': 'busy',
+};
+
+/**
+ * OpenCode 2 takes `{ id, setup }` (it ignores other keys); OpenCode 1.x and Kilo Code take `{ id, server }`.
+ */
+export default { id: 'telepathy', server: TelepathyPlugin, setup: setupV2 };

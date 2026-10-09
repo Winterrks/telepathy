@@ -127,12 +127,28 @@ function antigravity(): Install[] {
   return version ? [{ agent: 'antigravity', version, dir }] : [];
 }
 
+/**
+ * OpenCode 2 installs a package plugin into `npm/<target folder>/<install time>/node_modules/<name>`, with a target
+ * folder such as `git-telepathy-1869ef84f4ac` for a GitHub install.
+ */
+function opencodeNpmCache(): string[] {
+  const npm = path.join(cacheHome(), 'opencode', 'npm');
+  return list(npm)
+    .filter((name) => /telepathy/i.test(name))
+    .flatMap((name) => list(path.join(npm, name)).map((install) => path.join(npm, name, install, 'node_modules', 'telepathy')))
+    .filter((dir) => fs.existsSync(path.join(dir, 'package.json')));
+}
+
+/** Whether an OpenCode install is OpenCode 2's, which updates with `opencode plugin update`. */
+export const isOpencodeNpmInstall = (install: Install) =>
+  install.agent === 'opencode' && install.dir.startsWith(path.join(cacheHome(), 'opencode', 'npm') + path.sep);
+
 /** OpenCode and Kilo Code install the npm package from GitHub into their package cache. */
 function packageCache(agent: 'opencode' | 'kilo'): Install[] {
   const packages = path.join(cacheHome(), agent, 'packages');
   const candidates =
     agent === 'opencode'
-      ? list(packages)
+      ? [...opencodeNpmCache(), ...list(packages)
           .filter((name) => name.startsWith('telepathy@'))
           .flatMap((name) => {
             // `telepathy@git+https:` holds nested folders mirroring the rest of the URL.
@@ -143,7 +159,7 @@ function packageCache(agent: 'opencode' | 'kilo'): Install[] {
             };
             walk(path.join(packages, name), 0);
             return found;
-          })
+          })]
       : list(path.join(packages, 'git'))
           .filter((name) => /telepathy/i.test(name) && !name.endsWith('.json'))
           .map((name) => path.join(packages, 'git', name));

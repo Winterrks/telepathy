@@ -11,22 +11,15 @@ export function formatAgo(ms: number): string {
   return `${Math.floor(s / 86_400)}d ago`;
 }
 
-/** Codex needs a thread id before `codex queue` can reach it. */
-const codexUnreachable = (peer: Peer) => peer.agent === 'codex' && !peer.sessionId;
-
 /**
  * One other agent's session as a ListAgents row: `<name> [<ref>]  ·  <type>  ·  <status>  ·  started <time ago>`, like
  * Claude Code's own rows. The status is left out when nothing reports it (see status.ts).
  */
 export function listAgentsRow(peer: Peer, now = Date.now()): string {
   const columns = [peerRef(peer), 'interactive'];
-  if (codexUnreachable(peer)) {
-    columns.push('not reachable yet (no thread: no prompt so far, or its telepathy hook is not approved in /hooks)');
-  } else {
-    const status = statusText(peerStatus(peer), now);
-    if (status) columns.push(status);
-  }
-  const started = peer.procStart ? Date.parse(peer.procStart) : Number.NaN;
+  const status = statusText(peerStatus(peer), now);
+  if (status) columns.push(status);
+  const started = Date.parse(peer.procStart ?? peer.startedAt ?? '');
   if (!Number.isNaN(started)) columns.push(`started ${formatAgo(now - started)}`);
   return `  ${columns.join('  ·  ')}`;
 }
@@ -34,12 +27,8 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
 export function describePeer(peer: Peer): string {
   const notes: string[] = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
-  if (codexUnreachable(peer)) {
-    notes.push('not reachable yet: its SessionStart hook has not run (approve it with /hooks in that session)');
-  } else {
-    const status = statusText(peerStatus(peer));
-    if (status) notes.push(status);
-  }
+  const status = statusText(peerStatus(peer));
+  if (status) notes.push(status);
   if (peer.agent !== 'codex' && !peer.hasListener) {
     notes.push(
       agentSpec(peer.agent).nextTurnHook && peer.hookRan

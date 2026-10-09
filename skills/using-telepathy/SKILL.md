@@ -9,7 +9,7 @@ Coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI, OpenCode,
 message each other.
 
 - **Find sessions** with telepathy's `list_peers`, or `ListAgents` in Claude Code. Addresses look like
-  `codex:api-c3f [codex-4242]` (a session is named after its folder); the name alone is enough unless two sessions
+  `gemini:api-g3f [gemini-4242]` (a session is named after its folder); the name alone is enough unless two sessions
   share it. Listings also say what each session is doing: busy, idle, waiting on a permission prompt (it acts on a
   message only after its user answers), or interrupted (Codex: it gets messages only after its user's next prompt).
 - **Message whenever it helps**, for example when another session works in the same repo, owns code you depend

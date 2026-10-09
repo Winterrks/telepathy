@@ -7,14 +7,22 @@ import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { setupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
-import { defaultCodexHome, peerId, readSession, registerPresence, registerSession, selfPeer } from './core/peers.ts';
+import {
+  codexThreadsOf,
+  defaultCodexHome,
+  peerId,
+  readSession,
+  registerPresence,
+  registerSession,
+  selfPeer,
+  sessionPeerId,
+} from './core/peers.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { VERSION } from './core/version.ts';
 
 const argv = process.argv.slice(2);
 const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
-const selfId = peerId(agent, agentPid);
 
 /**
  * Where the session works, if the server's cwd says so. Some agents (Codex, Kimi Code, Antigravity) start
@@ -50,24 +58,38 @@ function claudeWithoutMonitor(): boolean {
   return agent === 'claude' && isStreamJsonClaude(agentPid);
 }
 
-registerPresence(agent, agentPid, {
-  cwd: sessionCwd(),
-  codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
-});
-debugLog('server', `started for ${selfId}`);
+// A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).
+if (agent !== 'codex') registerPresence(agent, agentPid, { cwd: sessionCwd() });
+debugLog('server', `started for ${peerId(agent, agentPid)}`);
+
+const presenceFor = new Set<string>();
 
 /**
- * Codex sends the thread id in the `_meta` of every tool call. The SessionStart hook is the primary source
- * (it registers the session before any tool runs); this covers sessions where the hook isn't approved yet.
+ * The session a tool call comes from. Codex hosts many threads in one process (see sessionKey), and sends the thread
+ * id in the `_meta` of every tool call, so a Codex session is the thread named there. The SessionStart hook is the
+ * primary source of the thread's record (it registers the session before any tool runs); this covers sessions where
+ * the hook isn't approved yet.
  */
-function learnCodexThread(meta: Record<string, unknown> | undefined): void {
-  if (agent !== 'codex' || !meta) return;
-  const id = [meta.sessionId, meta.threadId].find((v): v is string => typeof v === 'string' && v.length > 0);
-  if (!id) return;
-  const existing = readSession(selfId);
-  if (existing?.source === 'hook' || existing?.sessionId === id) return;
-  registerSession(agent, agentPid, { sessionId: id, cwd: existing?.cwd, source: 'meta', codexHome: defaultCodexHome() });
-  debugLog('server', `learned codex thread ${id} from tool-call _meta (keys: ${Object.keys(meta).join(',')})`);
+function selfIdFor(meta: Record<string, unknown> | undefined): string {
+  if (agent !== 'codex') return peerId(agent, agentPid);
+  let thread = [meta?.threadId, meta?.sessionId].find((v): v is string => typeof v === 'string' && v.length > 0);
+  if (!thread) {
+    // Without one, the thread this process runs, if its hooks registered exactly one.
+    const own = codexThreadsOf(agentPid);
+    if (own.length === 1) thread = own[0];
+  }
+  const id = sessionPeerId(agent, agentPid, thread);
+  if (!thread) return id;
+  if (!presenceFor.has(id)) {
+    registerPresence(agent, agentPid, { codexHome: defaultCodexHome() }, id);
+    presenceFor.add(id);
+  }
+  const existing = readSession(id);
+  if (!existing) {
+    registerSession(agent, agentPid, { sessionId: thread, source: 'meta', codexHome: defaultCodexHome() });
+    debugLog('server', `learned codex thread ${thread} from tool-call _meta (keys: ${Object.keys(meta ?? {}).join(',')})`);
+  }
+  return id;
 }
 
 const server = new McpServer(
@@ -93,9 +115,9 @@ const noteShownAt = new Map<string, number>();
  * read_messages always shows them (an agent calls it when messages seem not to arrive); the other tools at most
  * every ten minutes per note.
  */
-function withSetupNotes(result: ToolResult, always = false): ToolResult {
+function withSetupNotes(selfId: string, result: ToolResult, always = false): ToolResult {
   const now = Date.now();
-  const notes = setupNotes(selfPeer(agent, agentPid)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
+  const notes = setupNotes(selfPeer(agent, agentPid, selfId)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
   for (const note of notes) noteShownAt.set(note, now);
   return notes.length ? { ...result, text: `${result.text}\n\n${notes.join('\n')}` } : result;
 }
@@ -109,8 +131,8 @@ server.registerTool(
     annotations: { readOnlyHint: true, openWorldHint: false },
   },
   async (_args, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
-    return text(withSetupNotes(listPeersTool(selfPeer(agent, agentPid))));
+    const selfId = selfIdFor(ctx.mcpReq._meta);
+    return text(withSetupNotes(selfId, listPeersTool(selfPeer(agent, agentPid, selfId))));
   },
 );
 
@@ -123,8 +145,8 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
   async ({ to, message }, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
-    return text(withSetupNotes(await sendMessageTool(selfPeer(agent, agentPid), to, message)));
+    const selfId = selfIdFor(ctx.mcpReq._meta);
+    return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
   },
 );
 
@@ -137,12 +159,12 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
   async ({ id, limit }, ctx) => {
-    learnCodexThread(ctx.mcpReq._meta);
+    const selfId = selfIdFor(ctx.mcpReq._meta);
     if (agent === 'codex') {
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(withSetupNotes(readMessagesTool(selfId, { id, limit }), true));
+    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit }), true));
   },
 );
 

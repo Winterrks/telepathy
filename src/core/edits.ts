@@ -4,8 +4,7 @@ import path from 'node:path';
 import type { Agent } from './agents.ts';
 import { formatAgo } from './listing.ts';
 import { peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
-import { isSameProcess } from './proc.ts';
-import { peerRef, readPeer } from './peers.ts';
+import { isPeerAlive, peerRef, readPeer } from './peers.ts';
 
 /**
  * Which files each session edits, so a session that reads or edits files another live session is changing learns
@@ -191,7 +190,7 @@ export function overlapNote(self: { id: string; agent: Agent }, files: string[],
       if (fs.existsSync(marker)) continue;
       if (!alive.has(id)) {
         const peer = readPeer(id);
-        alive.set(id, peer && isSameProcess(peer.pid, peer.procStart) ? peer : undefined);
+        alive.set(id, isPeerAlive(peer) ? peer : undefined);
       }
       const peer = alive.get(id);
       if (!peer) continue;

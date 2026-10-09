@@ -176,9 +176,14 @@ function antigravity() {
   const version = builtVersion(dir);
   return version ? [{ agent: "antigravity", version, dir }] : [];
 }
+function opencodeNpmCache() {
+  const npm = path.join(cacheHome(), "opencode", "npm");
+  return list(npm).filter((name) => /telepathy/i.test(name)).flatMap((name) => list(path.join(npm, name)).map((install) => path.join(npm, name, install, "node_modules", "telepathy"))).filter((dir) => fs.existsSync(path.join(dir, "package.json")));
+}
+var isOpencodeNpmInstall = (install) => install.agent === "opencode" && install.dir.startsWith(path.join(cacheHome(), "opencode", "npm") + path.sep);
 function packageCache(agent) {
   const packages = path.join(cacheHome(), agent, "packages");
-  const candidates = agent === "opencode" ? list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
+  const candidates = agent === "opencode" ? [...opencodeNpmCache(), ...list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
     const found2 = [];
     const walk = (dir, depth) => {
       if (fs.existsSync(path.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path.join(dir, "node_modules", "telepathy"));
@@ -186,7 +191,7 @@ function packageCache(agent) {
     };
     walk(path.join(packages, name), 0);
     return found2;
-  }) : list(path.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path.join(packages, "git", name));
+  })] : list(path.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path.join(packages, "git", name));
   const found = candidates.flatMap((dir) => {
     const version = readVersion(path.join(dir, "package.json"));
     return version ? [{ agent, version, dir }] : [];
@@ -230,6 +235,8 @@ function stepsFor(install) {
       return [{ cmd: "devin", args: ["plugins", "update", "telepathy"] }];
     case "antigravity":
       return [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }];
+    case "opencode":
+      return isOpencodeNpmInstall(install) ? [{ cmd: "opencode", args: ["plugin", "update", `telepathy@git+${REPO}.git`] }] : "cache";
     default:
       return "cache";
   }

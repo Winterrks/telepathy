@@ -10,7 +10,7 @@ import { formatAgo } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
 import { peerDir } from '../src/core/paths.ts';
 import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
-import { fakeAgent, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
+import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
   id: `${agent}-${pid}`,
@@ -161,28 +161,35 @@ describe('registry', () => {
   test('lists live sessions and removes the registrations of exited ones', async () => {
     const live = fakeAgent();
     const dead = fakeAgent();
-    registerSession('codex', live.pid, { sessionId: 'thread-live', cwd: '/work/alpha', source: 'hook' });
-    registerPresence('claude', dead.pid, { cwd: '/work/beta' });
-    await killAndWait(dead);
+    try {
+      registerSession('codex', live.pid, { sessionId: 'thread-live', cwd: '/work/alpha', source: 'hook' });
+      registerPresence('claude', dead.pid, { cwd: '/work/beta' });
+      await killAndWait(dead);
 
-    const peers = listPeers();
-    assert.deepEqual(
-      peers.map((p) => [p.id, p.address, p.sessionId]),
-      [[`codex-${live.pid}`, named('codex', 'alpha', live.pid), 'thread-live']],
-    );
-    assert.equal(fs.existsSync(peerDir(`claude-${dead.pid}`)), false);
-    await killAndWait(live);
+      const peers = listPeers();
+      assert.deepEqual(
+        peers.map((p) => [p.id, p.address, p.sessionId]),
+        [['codex-thread-live', named('codex', 'alpha', 'thread-live'), 'thread-live']],
+      );
+      assert.equal(fs.existsSync(peerDir(`claude-${dead.pid}`)), false);
+    } finally {
+      await killAndWait(live);
+    }
+    assert.equal(listPeers().length, 0, 'without writer locks, a Codex thread lives as long as its process');
   });
 
   test('a reused pid is not mistaken for the old session', async () => {
     const agent = fakeAgent();
-    registerSession('codex', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
-    const file = path.join(peerDir(`codex-${agent.pid}`), 'session.json');
-    const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-    record.procStart = 'Mon Jan  1 00:00:00 2001';
-    fs.writeFileSync(file, JSON.stringify(record));
-    assert.equal(listPeers().length, 0);
-    await killAndWait(agent);
+    try {
+      registerSession('gemini', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
+      const file = path.join(peerDir(`gemini-${agent.pid}`), 'session.json');
+      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
+      record.procStart = 'Mon Jan  1 00:00:00 2001';
+      fs.writeFileSync(file, JSON.stringify(record));
+      assert.equal(listPeers().length, 0);
+    } finally {
+      await killAndWait(agent);
+    }
   });
 
   test('a session is named after its folder, and the bare folder name and a Codex thread title reach it too', async () => {
@@ -195,13 +202,94 @@ describe('registry', () => {
       );
       const peers = listPeers();
       assert.match(peers[0]?.address ?? '', /^codex:repo-c[0-9a-f]{2}$/, 'the agent\'s first letter and two hex characters');
-      assert.equal(peers[0]?.address, named('codex', 'repo', agent.pid));
+      assert.equal(peers[0]?.address, named('codex', 'repo', 'thread-9'));
       for (const to of ['codex:repo', 'codex:refactor-payments-api', peers[0].address]) {
         const r = resolvePeer(to, peers);
-        assert.ok('peer' in r && r.peer.id === `codex-${agent.pid}`, to);
+        assert.ok('peer' in r && r.peer.id === 'codex-thread-9', to);
       }
     } finally {
       await killAndWait(agent);
+    }
+  });
+});
+
+describe('Codex threads in a shared host process', () => {
+  let sb: Sandbox;
+  before(() => {
+    sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CLAUDE_CONFIG_DIR = sb.env.CLAUDE_CONFIG_DIR;
+    process.env.CODEX_HOME = sb.codexHome;
+  });
+  after(() => sb.cleanup());
+
+  const A = '01a1176e-84cc-76c3-b84c-8e4da4d38c36';
+  const B = '01a0b3be-0955-74c0-a260-f68625685956';
+  const C = '01a11b03-f89f-7273-a33b-f530a64cc9c0';
+
+  test('each thread is its own session, and stays one when Codex replaces the daemon', async () => {
+    const daemon = fakeCodexHost(sb.codexHome, A, B);
+    let next: ReturnType<typeof fakeCodexHost> | undefined;
+    try {
+      await hostReady(daemon);
+      registerSession('codex', daemon.pid, { sessionId: A, cwd: '/w/norma v2', source: 'hook' });
+      registerSession('codex', daemon.pid, { sessionId: B, cwd: '/w/waifus', source: 'hook' });
+      assert.deepEqual(listPeers().map((p) => [p.id, p.address]).sort(), [
+        [`codex-${B}`, named('codex', 'waifus', B)],
+        [`codex-${A}`, named('codex', 'norma-v2', A)],
+      ]);
+      const r = resolvePeer(`codex-${A}`, listPeers());
+      assert.ok('peer' in r && r.peer.sessionId === A, 'a thread ref resolves');
+
+      // An update: the new daemon takes over the threads' locks, and the old one exits.
+      next = fakeCodexHost(sb.codexHome, A);
+      await hostReady(next);
+      await killAndWait(daemon);
+      fs.rmSync(path.join(sb.codexHome, 'thread-writer-locks', `${B}.lock`)); // B was not resumed
+      assert.deepEqual(listPeers().map((p) => p.id), [`codex-${A}`]);
+    } finally {
+      await killAndWait(daemon);
+      if (next) await killAndWait(next);
+    }
+    // A lock file that no process holds (Codex crashed) is no session either, once the lsof result cached for a second expires.
+    await new Promise((r) => setTimeout(r, 1100));
+    assert.equal(listPeers().length, 0);
+  });
+
+  test('a thread that no process runs is hidden but kept, and is back as soon as a process loads it', async () => {
+    const D = '01a12026-d630-7370-90eb-ec83c96df383';
+    const daemon = fakeCodexHost(sb.codexHome, D);
+    let next: ReturnType<typeof fakeCodexHost> | undefined;
+    try {
+      await hostReady(daemon);
+      registerSession('codex', daemon.pid, { sessionId: D, cwd: '/w/kept', source: 'hook' });
+      await killAndWait(daemon);
+      fs.rmSync(path.join(sb.codexHome, 'thread-writer-locks', `${D}.lock`));
+      assert.deepEqual(listPeers().map((p) => p.id), []);
+      assert.ok(fs.existsSync(path.join(peerDir(`codex-${D}`), 'session.json')), 'the record outlives the process');
+      next = fakeCodexHost(sb.codexHome, D); // a new daemon, or `codex resume`, loads it again: no hook has run yet
+      await hostReady(next);
+      assert.deepEqual(listPeers().map((p) => [p.id, p.address]), [[`codex-${D}`, named('codex', 'kept', D)]]);
+    } finally {
+      await killAndWait(daemon);
+      if (next) await killAndWait(next);
+    }
+  });
+
+  test('a registration by the daemon\'s pid is hidden when its thread registered by itself', async () => {
+    const daemon = fakeCodexHost(sb.codexHome, C);
+    try {
+      await hostReady(daemon);
+      registerSession('codex', daemon.pid, { sessionId: C, cwd: '/w/norma v2', source: 'hook' });
+      // What telepathy 0.8 wrote for the same daemon: one record for all its threads, plus a server without one.
+      fs.mkdirSync(peerDir(`codex-${daemon.pid}`), { recursive: true });
+      fs.writeFileSync(
+        path.join(peerDir(`codex-${daemon.pid}`), 'session.json'),
+        JSON.stringify({ agent: 'codex', pid: daemon.pid, sessionId: C, cwd: '/w/norma v2', source: 'hook' }),
+      );
+      assert.deepEqual(listPeers().map((p) => p.id), [`codex-${C}`]);
+    } finally {
+      await killAndWait(daemon);
     }
   });
 });

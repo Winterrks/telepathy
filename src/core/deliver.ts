@@ -89,9 +89,7 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     if (!recipient.sessionId) {
       return {
         ok: false,
-        error:
-          `${who} hasn't reported its thread id yet. In that Codex session, approve the telepathy ` +
-          `SessionStart hook with /hooks (or have it call list_peers once), then retry.`,
+        error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`,
       };
     }
     let codexQueueId: string | undefined;

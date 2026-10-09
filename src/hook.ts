@@ -18,6 +18,7 @@ import {
   readSession,
   registerSession,
   selfPeer,
+  sessionPeerId,
 } from './core/peers.ts';
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { statusFromHooks, writeStatus } from './core/status.ts';
@@ -69,6 +70,9 @@ function sessionOf(agent: Agent, input: HookInput): { sessionId?: string; cwd?: 
       (envName ? process.env[envName] : undefined),
   };
 }
+
+/** The session a hook runs for: `<agent>-<pid>`, or for Codex the thread named in the input (see sessionKey). */
+const idOf = (agent: Agent, agentPid: number, input: HookInput) => sessionPeerId(agent, agentPid, sessionOf(agent, input).sessionId);
 
 async function readStdin(): Promise<HookInput> {
   const chunks: Buffer[] = [];
@@ -145,7 +149,7 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
-  if (statusFromHooks(agent)) writeStatus(peerId(agent, agentPid), 'idle');
+  if (statusFromHooks(agent)) writeStatus(idOf(agent, agentPid, input), 'idle');
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
@@ -155,8 +159,10 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
  */
 function refreshSession(agent: Agent, agentPid: number, input: HookInput): void {
   const { sessionId, cwd } = sessionOf(agent, input);
-  const existing = readSession(peerId(agent, agentPid));
-  if (existing?.source === 'hook' && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
+  const existing = readSession(idOf(agent, agentPid, input));
+  // A Codex thread's record also names the process hosting it, which changes when Codex updates its daemon.
+  const sameHost = existing?.pid === agentPid;
+  if (existing?.source === 'hook' && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,
     cwd: cwd ?? existing?.cwd,
@@ -169,7 +175,7 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
  * Whether something else already wakes this session with its messages: Claude's plugin monitor, or the monitor Grok
  * runs with its monitor tool. Then the hooks stay out of its way.
  */
-const hasListener = (agent: Agent, agentPid: number) => readPeer(peerId(agent, agentPid))?.hasListener ?? false;
+const hasListener = (selfId: string) => readPeer(selfId)?.hasListener ?? false;
 
 /**
  * A Claude Code session driven over stream-json (the Claude app) runs no plugin monitor, so it keeps a one-shot
@@ -194,7 +200,7 @@ function waiterReminder(agent: Agent, agentPid: number): string | undefined {
 function touchedFilesNote(agent: Agent, agentPid: number, input: HookInput): string | undefined {
   const toolName = input.tool_name ?? input.toolName;
   if (toolName === undefined) return undefined;
-  const selfId = peerId(agent, agentPid);
+  const selfId = idOf(agent, agentPid, input);
   const cwd = sessionOf(agent, input).cwd ?? readSession(selfId)?.cwd;
   try {
     const note = trackTouchedFiles({ id: selfId, agent }, toolName, input.tool_input ?? input.toolArgs ?? input.tool_args, cwd);
@@ -217,14 +223,14 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  const selfId = idOf(agent, agentPid, input);
   // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
-  if (statusFromHooks(agent) || agent === 'codex') writeStatus(peerId(agent, agentPid), 'busy');
+  if (statusFromHooks(agent) || agent === 'codex') writeStatus(selfId, 'busy');
   const overlap = touchedFilesNote(agent, agentPid, input);
-  if (hasListener(agent, agentPid)) {
+  if (hasListener(selfId)) {
     if (overlap) reply(shape.context(overlap, event));
     return;
   }
-  const selfId = peerId(agent, agentPid);
   if (agent === 'codex') {
     // Senders can then say a busy Codex gets messages after its next tool call, not only at the end of the turn.
     if (event === 'PostToolUse') markToolHook(selfId);
@@ -252,12 +258,13 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   const shape = SHAPES[agent];
   if (!shape) return;
   refreshSession(agent, agentPid, input);
+  const selfId = idOf(agent, agentPid, input);
   const tracked = statusFromHooks(agent);
-  if (tracked) writeStatus(peerId(agent, agentPid), 'idle');
-  if (!endedNormally(input) || hasListener(agent, agentPid)) return;
-  const messages = claimInbox(peerId(agent, agentPid));
+  if (tracked) writeStatus(selfId, 'idle');
+  if (!endedNormally(input) || hasListener(selfId)) return;
+  const messages = claimInbox(selfId);
   if (messages.length) {
-    if (tracked) writeStatus(peerId(agent, agentPid), 'busy'); // the turn goes on with the messages
+    if (tracked) writeStatus(selfId, 'busy'); // the turn goes on with the messages
     debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);
     reply(shape.turnEnd([formatForContext(messages), waiterReminder(agent, agentPid)].filter(Boolean).join('\n\n')));
     return;
@@ -275,7 +282,7 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
 function waiting(agent: Agent, agentPid: number, input: HookInput): void {
   const type = input.notification_type;
   if (typeof type === 'string' && type !== 'ToolPermission') return;
-  writeStatus(peerId(agent, agentPid), 'waiting');
+  writeStatus(idOf(agent, agentPid, input), 'waiting');
 }
 
 /**
