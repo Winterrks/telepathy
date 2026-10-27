@@ -9,7 +9,8 @@ import { markToolHook, readPeer, registerPresence, registerSession, registerStab
 import { readMessagesTool } from '../src/core/tools.ts';
 import { recordClaudeSocket, startClaudeSocketWatcher } from '../src/core/claude-socket.ts';
 import { inboxDir } from '../src/core/paths.ts';
-import { deliveryConfigPath } from '../src/core/wake.ts';
+import { deliveryConfigPath, flushPendingWakes, probeDelivery, wakeLogPath } from '../src/core/wake.ts';
+import { runDeliveryCli } from '../src/delivery.ts';
 import { setupNotes } from '../src/core/setup.ts';
 import { formatPeerList } from '../src/core/listing.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
@@ -296,13 +297,16 @@ describe('webhook and command wake', () => {
     sb = makeSandbox();
     process.env.TELEPATHY_HOME = sb.home;
     process.env.TELEPATHY_DEBUG = '1';
+    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
     delete process.env.TELEPATHY_NAME;
     fs.mkdirSync(sb.home, { recursive: true });
   });
 
   after(async () => {
+    await flushPendingWakes();
     await Promise.all(agents.map((a) => killAndWait(a)));
     sb.cleanup();
+    delete process.env.TELEPATHY_WAKE_DEBOUNCE_MS;
   });
 
   const grok = (name: string) => {
@@ -356,11 +360,13 @@ describe('webhook and command wake', () => {
       assert.equal(result.ok, true);
       if (!result.ok) return;
       assert.equal(result.delivery.confirmed, false);
-      assert.match(result.status, /Notified grok:wake-bot \[grok-\d+\] by webhook/);
+      assert.match(result.status, /A webhook wake for grok:wake-bot \[grok-\d+\] is scheduled/);
       assert.match(result.status, /must be treated as untrusted/);
+      await flushPendingWakes();
       assert.equal(auth, 'Bearer header-secret');
-      const posted = JSON.parse(body) as { id: string; from: string; count: number; at: string; message?: string };
+      const posted = JSON.parse(body) as { id: string; ids: string[]; from: string; count: number; at: string; message?: string };
       assert.equal(posted.id, result.message.id);
+      assert.deepEqual(posted.ids, [result.message.id]);
       assert.equal(posted.from, from.address);
       assert.equal(posted.count, 1);
       assert.equal(posted.at, result.message.sentAt);
@@ -377,15 +383,24 @@ describe('webhook and command wake', () => {
   test('a failed webhook keeps the message and a loose config file is ignored', async () => {
     fs.writeFileSync(
       deliveryConfigPath(),
-      JSON.stringify({ name: 'fail-bot', webhook: { url: 'http://127.0.0.1:1/nope', timeoutMs: 200 } }),
+      JSON.stringify({
+        name: 'fail-bot',
+        webhook: { url: 'http://127.0.0.1:1/nope?key=query-secret', key: 'header-secret', timeoutMs: 200 },
+      }),
       { mode: 0o600 },
     );
     const { from, to } = grok('fail-bot');
     const failed = await sendMessage(from, to.address, 'still here');
     assert.equal(failed.ok, true);
     if (!failed.ok) return;
-    assert.match(failed.status, /webhook notification failed/);
+    assert.match(failed.status, /webhook wake for/);
+    await flushPendingWakes();
     assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${failed.message.id}.json`)), true);
+    const wakeLog = fs.readFileSync(wakeLogPath(), 'utf8');
+    assert.match(wakeLog, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+Z webhook 127\.0\.0\.1:1 failed:/m);
+    assert.equal(wakeLog.includes('still here'), false);
+    assert.equal(wakeLog.includes('header-secret'), false);
+    assert.equal(wakeLog.includes('query-secret'), false);
 
     fs.chmodSync(deliveryConfigPath(), 0o644);
     const ignored = await sendMessage(from, to.address, 'no wake');
@@ -414,9 +429,142 @@ describe('webhook and command wake', () => {
     const result = await sendMessage(from, to.address, 'ping');
     assert.equal(result.ok, true);
     if (!result.ok) return;
-    assert.match(result.status, /by delivery command/);
+    assert.match(result.status, /delivery command wake for/);
+    await flushPendingWakes();
     const wrote = JSON.parse(fs.readFileSync(out, 'utf8')) as { id: string };
     assert.equal(wrote.id, result.message.id);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${result.message.id}.json`)), true);
+  });
+
+  test('a burst of messages is one POST, and the default key is sent on both auth headers', async () => {
+    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '500';
+    const seen: { body: string; auth: string; automation: string; type: string }[] = [];
+    const server = createHttp((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        seen.push({
+          body: Buffer.concat(chunks).toString('utf8'),
+          auth: req.headers.authorization ?? '',
+          automation: String(req.headers['x-automation-key'] ?? ''),
+          type: String(req.headers['content-type'] ?? ''),
+        });
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      fs.writeFileSync(
+        deliveryConfigPath(),
+        JSON.stringify({
+          name: 'batch-bot',
+          webhook: { url: `http://127.0.0.1:${port}/hook`, key: 'bot-key', timeoutMs: 2000 },
+        }),
+        { mode: 0o600 },
+      );
+      const { from, to } = grok('batch-bot');
+      const [first, second] = await Promise.all([
+        sendMessage(from, to.address, 'one'),
+        sendMessage(from, to.address, 'two'),
+      ]);
+      assert.equal(first.ok && second.ok, true);
+      if (!first.ok || !second.ok) return;
+      await flushPendingWakes();
+      assert.equal(seen.length, 1);
+      const posted = JSON.parse(seen[0].body) as { id: string; ids: string[]; count: number; message?: string };
+      assert.equal(posted.count, 2);
+      assert.deepEqual([...posted.ids].sort(), [first.message.id, second.message.id].sort());
+      assert.equal(posted.id, posted.ids[posted.ids.length - 1]);
+      assert.equal(posted.message, undefined);
+      assert.equal(seen[0].auth, 'Bearer bot-key');
+      assert.equal(seen[0].automation, 'bot-key');
+      assert.match(seen[0].type, /application\/json/);
+      const log = fs.existsSync(path.join(sb.home, 'debug.log')) ? fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8') : '';
+      assert.equal(log.includes('bot-key'), false);
+    } finally {
+      process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
+      server.close();
+    }
+  });
+
+  test('authHeaders replaces the default pair, and a probe posts only the probe event', async () => {
+    let body = '';
+    let auth = '';
+    let automation = '';
+    let custom = '';
+    const server = createHttp((req, res) => {
+      auth = req.headers.authorization ?? '';
+      automation = String(req.headers['x-automation-key'] ?? '');
+      custom = String(req.headers['x-custom-key'] ?? '');
+      const chunks: Buffer[] = [];
+      req.on('data', (c) => chunks.push(c));
+      req.on('end', () => {
+        body = Buffer.concat(chunks).toString('utf8');
+        res.writeHead(200);
+        res.end();
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const port = (server.address() as { port: number }).port;
+    try {
+      fs.writeFileSync(
+        deliveryConfigPath(),
+        JSON.stringify({
+          name: 'probe-bot',
+          webhook: {
+            url: `http://127.0.0.1:${port}/hook?token=query-secret`,
+            key: 'probe-key',
+            authHeaders: ['X-Custom-Key'],
+            timeoutMs: 2000,
+          },
+        }),
+        { mode: 0o600 },
+      );
+      const probed = await probeDelivery();
+      assert.equal(probed.error, undefined);
+      assert.equal(probed.reports.length, 1);
+      assert.equal(probed.reports[0].ok, true);
+      assert.equal(probed.reports[0].status, 200);
+      assert.equal(probed.reports[0].target, `127.0.0.1:${port}`);
+      assert.equal(body, '{"event":"probe"}');
+      assert.equal(custom, 'probe-key');
+      assert.equal(auth, '');
+      assert.equal(automation, '');
+      const cli = await runDeliveryCli(['test', 'probe-bot']);
+      assert.equal(cli.code, 0);
+      assert.equal(cli.stdout, `webhook 127.0.0.1:${port} HTTP 200\n`);
+      assert.equal(cli.stderr, '');
+      const log = [path.join(sb.home, 'debug.log'), wakeLogPath()]
+        .filter((file) => fs.existsSync(file))
+        .map((file) => fs.readFileSync(file, 'utf8'))
+        .join('\n');
+      assert.equal(log.includes('probe-key'), false);
+      assert.equal(log.includes('query-secret'), false);
+    } finally {
+      server.close();
+    }
+  });
+
+  test('a failed command is logged without the message text', async () => {
+    fs.writeFileSync(
+      deliveryConfigPath(),
+      JSON.stringify({
+        name: 'bad-cmd',
+        command: [process.execPath, '-e', 'process.exit(2)'],
+      }),
+      { mode: 0o600 },
+    );
+    fs.chmodSync(deliveryConfigPath(), 0o600);
+    const { from, to } = grok('bad-cmd');
+    const result = await sendMessage(from, to.address, 'secret body');
+    assert.equal(result.ok, true);
+    if (!result.ok) return;
+    await flushPendingWakes();
+    const wakeLog = fs.readFileSync(wakeLogPath(), 'utf8');
+    assert.match(wakeLog, new RegExp(`command ${path.basename(process.execPath)} exited 2`));
+    assert.equal(wakeLog.includes('secret body'), false);
     assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${result.message.id}.json`)), true);
   });
 });

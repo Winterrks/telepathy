@@ -11,6 +11,9 @@ import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
 import { isPeerAlive, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer } from './core/peers.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
+import { startWakeFlusher } from './core/wake.ts';
+
+startWakeFlusher();
 
 /**
  * OpenCode and Kilo Code plugin. It runs inside the agent's own process, so it registers native tools (which, unlike

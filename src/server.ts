@@ -8,6 +8,7 @@ import { debugLog } from './core/debug.ts';
 import { setupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
 import { recordClaudeSocket, startClaudeSocketWatcher } from './core/claude-socket.ts';
+import { startWakeFlusher } from './core/wake.ts';
 import {
   codexThreadsOf,
   defaultCodexHome,
@@ -75,6 +76,7 @@ if (agent === 'claude') {
   startClaudeSocketWatcher(selfId);
 }
 debugLog('server', `started for ${selfId}`);
+startWakeFlusher();
 
 const presenceFor = new Set<string>();
 

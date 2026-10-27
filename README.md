@@ -365,11 +365,19 @@ so they are reachable again as soon as they run.
 - **A stable name.** Set `TELEPATHY_NAME` or start the server with `--name my-bot`. The address becomes
   `grok:my-bot` and stays that way across restarts, and unread messages move to the new process. Two live sessions
   with the same name are called out in `list_peers` and in `[telepathy setup]`. Use the `[ref]` to pick one.
-- **A webhook wake.** `~/.telepathy/delivery.json` (mode 600, or it is ignored) can name a peer and a `webhook` URL
-  with headers, or a `command` argv. On send, telepathy POSTs `{"id","from","count","at"}` once, with an 8 second
-  timeout and no retry. The body is a wake, not the message, and the receiver must treat it as untrusted and read
-  the inbox. The message is not removed. This is how a Grok Bot on another machine gets woken. The file's headers
-  are not logged.
+- **A webhook wake.** `~/.telepathy/delivery.json` (mode 600, or it is ignored) can name a peer and a `webhook`
+  URL, or a `command` argv. Set `key` and telepathy sends `Authorization: Bearer <key>` and `X-Automation-Key: <key>`.
+  `authHeaders` replaces those names. `headers` overrides one of them. Messages for the same URL wait 400ms after the
+  last one (at most 1.5s after the first, or `TELEPATHY_WAKE_DEBOUNCE_MS`) and go out as one POST,
+  `{"id","ids","from","count","at"}`, with an 8 second timeout and no retry. `count` is how many of those messages
+  are still in the inbox. The body has no message text. The receiver must treat it as untrusted and read the inbox.
+  The message is not removed. A failed POST is appended to `~/.telepathy/wake.log` with the time, the host, and the
+  status or error. The key and the message text are not written there.
+  `node <installed-copy>/dist/delivery.mjs test` posts `{"event":"probe"}` and prints the HTTP status, so the URL can
+  be checked without a real message. Receivers ignore probe events.
+- **A Grok Bot webhook only wakes the routine.** The POST does not carry the message, and the remote routine cannot
+  read this machine's inbox. Something on this machine still has to: a persistent local client, or the telepathy
+  server kept on a stable name with `TELEPATHY_NAME` or `--name`. There is no remote bridge.
 - **`read_messages` is also structured.** Besides the text, the tool returns `structuredContent.messages`, an array
   of `{id, from, sentAt, body}`. An empty array means there is no message. The sentence "No messages received yet."
   is not one.
@@ -413,10 +421,10 @@ so they are reachable again as soon as they run.
 
 ## Privacy and security
 
-- **Nothing leaves your machine.** telepathy makes no network calls and has no telemetry. Messages are JSON files in
+- **Messages stay on your machine.** telepathy has no telemetry. Messages are JSON files in
   `~/.telepathy` (created with mode 700), readable by anything running as your OS user, the same boundary as Claude
-  Code's own cross-session sockets. The one exception is [update-all](#updating-every-agent), which runs only when you
-  run it and has the agents fetch the new version from GitHub.
+  Code's own cross-session sockets. Two things make a network call, and only when you run them. [update-all](#updating-every-agent)
+  has the agents fetch a new version from GitHub. A webhook named in `delivery.json` POSTs a wake with no message text.
 - **What it reads:** Claude Code's session name (`~/.claude/sessions/<pid>.json`), Codex's thread titles
   (`~/.codex/session_index.jsonl`), and the last turn marker at the end of a Codex session log
   (`~/.codex/sessions/…`) to show busy/idle, and the timestamp of its last line to tell when a permission prompt was
@@ -445,6 +453,7 @@ so they are reachable again as soon as they run.
 | `TELEPATHY_DEBUG=1` | Log hook, server, monitor and plugin activity to `~/.telepathy/debug.log` |
 | `TELEPATHY_HOME` | State directory (default `~/.telepathy`) |
 | `TELEPATHY_CODEX_BIN` | Path to the `codex` binary if it isn't on `PATH` |
+| `TELEPATHY_WAKE_DEBOUNCE_MS` | How long a webhook burst waits after the last message. Default 400. The wait is also capped at 1.5 seconds after the first message |
 
 - **A session isn't listed:** it needs telepathy installed in that agent, and a restart if it was already open. With
   `TELEPATHY_DEBUG=1`, the debug log shows whether its hooks and server started.

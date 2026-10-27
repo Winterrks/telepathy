@@ -24037,12 +24037,12 @@ function sleep(ms, signal) {
       reject(signal.reason instanceof SdkError ? signal.reason : new SdkError(SdkErrorCode.RequestTimeout, String(signal.reason)));
       return;
     }
-    const timer = setTimeout(() => {
+    const timer2 = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
     const onAbort = () => {
-      clearTimeout(timer);
+      clearTimeout(timer2);
       reject(signal?.reason instanceof SdkError ? signal.reason : new SdkError(SdkErrorCode.RequestTimeout, String(signal?.reason)));
     };
     signal?.addEventListener("abort", onAbort, { once: true });
@@ -28360,12 +28360,12 @@ function appServerDeletes(bin, threadId, queueIds, codexHome) {
     const child = spawn(bin, ["app-server"], { env: codexEnv(codexHome), stdio: ["pipe", "pipe", "ignore"] });
     const results = /* @__PURE__ */ new Map();
     const finish = (err) => {
-      clearTimeout(timer);
+      clearTimeout(timer2);
       child.kill();
       if (err) reject(err);
       else resolve(results);
     };
-    const timer = setTimeout(() => finish(new Error("codex app-server timed out")), 1e4);
+    const timer2 = setTimeout(() => finish(new Error("codex app-server timed out")), 1e4);
     child.on("error", (err) => finish(err));
     const send = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
@@ -28723,12 +28723,12 @@ function postClaudeSocket(sock, content, timeoutMs = 1e4) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      clearTimeout(timer2);
       clearTimeout(replyTimer);
       socket.destroy();
       resolve({ ...result, detail: result.detail ? scrub(result.detail, sock.token) : result.detail });
     };
-    const timer = setTimeout(() => finish(reply ?? { outcome: "unconfirmed" }), timeoutMs);
+    const timer2 = setTimeout(() => finish(reply ?? { outcome: "unconfirmed" }), timeoutMs);
     let replyTimer;
     socket.on("connect", () => {
       socket.write(payload);
@@ -28811,65 +28811,423 @@ function startClaudeSocketWatcher(id) {
     }
   };
   arm();
-  const timer = setInterval(() => {
+  const timer2 = setInterval(() => {
     arm();
     void enqueue(id);
   }, 1e3);
-  timer.unref();
+  timer2.unref();
   void enqueue(id);
   return () => {
-    clearInterval(timer);
+    clearInterval(timer2);
     watcher?.close();
     if (flushImpl) flushImpl = void 0;
     clearArmed(id);
   };
 }
 
-// src/core/deliver.ts
+// src/core/wake.ts
+import { spawn as spawn2 } from "node:child_process";
 import crypto3 from "node:crypto";
+import fs9 from "node:fs";
+import path11 from "node:path";
+var WAKE_DEBOUNCE_MS = 400;
+var WAKE_DEBOUNCE_MAX_MS = 1500;
+var DEFAULT_TIMEOUT_MS = 8e3;
+var DEFAULT_AUTH_HEADERS = ["Authorization", "X-Automation-Key"];
+var deliveryConfigPath = () => path11.join(stateDir(), "delivery.json");
+var wakeLogPath = () => path11.join(stateDir(), "wake.log");
+function wakeDebounceMs() {
+  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MS);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return WAKE_DEBOUNCE_MS;
+}
+function wakeDebounceMaxMs() {
+  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MAX_MS);
+  const configured = Number.isFinite(n) && n >= 0 ? n : WAKE_DEBOUNCE_MAX_MS;
+  return Math.max(configured, wakeDebounceMs());
+}
+var wakeDir = () => path11.join(stateDir(), "wake");
+var batchPath = (key) => path11.join(wakeDir(), `${key}.json`);
+function batchKey(target) {
+  const material = JSON.stringify({ url: target.webhook?.url ?? "", command: target.command ?? [] });
+  return crypto3.createHash("sha256").update(material).digest("hex").slice(0, 32);
+}
+function readDeliveryConfig() {
+  const file2 = deliveryConfigPath();
+  let mode;
+  try {
+    mode = fs9.statSync(file2).mode & 511;
+  } catch {
+    return void 0;
+  }
+  if ((mode & 63) !== 0) {
+    debugLog("wake", `delivery.json is mode ${mode.toString(8)}, not 600; webhook config was not loaded`);
+    return void 0;
+  }
+  return readJson(file2);
+}
+function wakeForPeer(peer, config2 = readDeliveryConfig()) {
+  if (!config2) return void 0;
+  const keys = [peer.address, peer.stableName, peer.id].filter((k) => !!k);
+  for (const key of keys) {
+    const hit = config2.peers?.[key];
+    if (hit?.webhook?.url || hit?.command?.length) return hit;
+  }
+  if (!config2.webhook?.url && !config2.command?.length) return void 0;
+  const name = config2.name?.trim().toLowerCase();
+  if (!name) return void 0;
+  if (peer.stableName === name || peer.address.toLowerCase() === `${peer.agent}:${name}`) {
+    return { webhook: config2.webhook, command: config2.command };
+  }
+  return void 0;
+}
+function webhookHeaders(target) {
+  const headers = { "content-type": "application/json" };
+  const key = target.key?.trim();
+  if (key) {
+    const names = target.authHeaders?.length ? target.authHeaders : DEFAULT_AUTH_HEADERS;
+    for (const name of names) {
+      headers[name] = name.toLowerCase() === "authorization" ? `Bearer ${key}` : key;
+    }
+  }
+  for (const [name, value] of Object.entries(target.headers ?? {})) headers[name] = value;
+  return headers;
+}
+function headerSecrets(headers) {
+  return Object.values(headers ?? {}).filter((v) => v.length >= 4);
+}
+function secretValues(target) {
+  const values = headerSecrets(webhookHeaders(target ?? { url: "" }));
+  const key = target?.key?.trim();
+  if (key && key.length >= 4) values.push(key);
+  if (target?.url) {
+    try {
+      for (const value of new URL(target.url).searchParams.values()) {
+        if (value.length >= 4) values.push(value);
+      }
+    } catch {
+    }
+  }
+  return values;
+}
+var scrub2 = (text2, secrets) => {
+  let out = text2;
+  for (const secret of secrets) {
+    if (secret.length < 4) continue;
+    out = out.split(secret).join("[redacted]");
+  }
+  return out.slice(0, 200);
+};
+function hostOf(url2) {
+  try {
+    return new URL(url2).host || "webhook";
+  } catch {
+    return "webhook";
+  }
+}
+function logFailure(kind, target, detail, secrets, url2) {
+  let text2 = `${kind} ${target} ${detail}`;
+  if (url2) text2 = text2.split(url2).join(target);
+  const safe = scrub2(text2, secrets);
+  try {
+    ensureDir(stateDir());
+    fs9.appendFileSync(wakeLogPath(), `${(/* @__PURE__ */ new Date()).toISOString()} ${safe}
+`);
+    fs9.chmodSync(wakeLogPath(), 384);
+  } catch {
+  }
+  debugLog("wake", safe);
+}
+function sleepSync(ms) {
+  const until = Date.now() + ms;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    while (Date.now() < until) {
+    }
+  }
+}
+function withLockSync(fn) {
+  ensureDir(wakeDir());
+  const lock = path11.join(wakeDir(), ".lock");
+  const start = Date.now();
+  for (; ; ) {
+    try {
+      const fd = fs9.openSync(lock, "wx");
+      try {
+        return fn();
+      } finally {
+        fs9.closeSync(fd);
+        try {
+          fs9.unlinkSync(lock);
+        } catch {
+        }
+      }
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - fs9.statSync(lock).mtimeMs > 5e3) fs9.unlinkSync(lock);
+      } catch {
+      }
+      if (Date.now() - start > 2e3) throw new Error("wake lock timed out");
+      sleepSync(10);
+    }
+  }
+}
+function pendingItems(items) {
+  return items.filter((item) => {
+    try {
+      return fs9.existsSync(path11.join(inboxDir(item.peerId), `${item.id}.json`));
+    } catch {
+      return false;
+    }
+  });
+}
+function wakePayload(items) {
+  const last = items[items.length - 1];
+  return {
+    id: last?.id ?? "",
+    ids: items.map((item) => item.id),
+    from: last?.from ?? "",
+    count: items.length,
+    at: last?.at ?? ""
+  };
+}
+var refTimers = true;
+var timer;
+var flushing;
+var flusherStarted = false;
+function armTimer(ms) {
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => {
+    timer = void 0;
+    void kick();
+  }, ms);
+  if (!refTimers) timer.unref();
+}
+function scheduleFlush() {
+  armTimer(wakeDebounceMs());
+}
+async function kick() {
+  if (flushing) {
+    await flushing;
+    return;
+  }
+  flushing = flushDue().finally(() => {
+    flushing = void 0;
+  });
+  await flushing;
+}
+function startWakeFlusher() {
+  if (flusherStarted) return;
+  flusherStarted = true;
+  refTimers = true;
+  ensureDir(wakeDir());
+  const tick = () => {
+    void kick();
+  };
+  setInterval(tick, 200).unref();
+  try {
+    const watcher = fs9.watch(wakeDir(), tick);
+    watcher.unref();
+  } catch {
+  }
+}
+function listBatches() {
+  try {
+    return fs9.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path11.join(wakeDir(), name));
+  } catch {
+    return [];
+  }
+}
+function dueIn(file2) {
+  const batch = readJson(file2);
+  if (!batch) return 0;
+  const due = Math.min(batch.lastAtMs + wakeDebounceMs(), batch.firstAtMs + wakeDebounceMaxMs());
+  return Math.max(0, due - Date.now());
+}
+async function flushDue() {
+  for (const file2 of listBatches()) {
+    const peek = readJson(file2);
+    if (!peek || dueIn(file2) > 0) continue;
+    let taken;
+    withLockSync(() => {
+      const cur = readJson(file2);
+      if (!cur) return;
+      const due = Math.min(cur.lastAtMs + wakeDebounceMs(), cur.firstAtMs + wakeDebounceMaxMs());
+      if (Date.now() < due) return;
+      taken = cur;
+      try {
+        fs9.unlinkSync(file2);
+      } catch {
+        taken = void 0;
+      }
+    });
+    if (taken) await deliverBatch(taken);
+  }
+}
+async function deliverBatch(batch) {
+  const items = pendingItems(batch.items);
+  if (!items.length) return;
+  const payload = wakePayload(items);
+  const target = { webhook: batch.webhook, command: batch.command };
+  await deliver(target, payload);
+}
+async function deliver(target, payload) {
+  if (target.webhook?.url) {
+    const posted = await postWebhook(target.webhook, payload);
+    if (posted.ok || !target.command?.length) return posted;
+    const ran = await runCommand(target.command, payload, target.webhook.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (ran.ok) return ran;
+    return { ok: false, how: "webhook", detail: `${posted.detail}; command failed (${ran.detail})` };
+  }
+  if (target.command?.length) return runCommand(target.command, payload, DEFAULT_TIMEOUT_MS);
+  return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+}
+async function postWebhook(target, payload) {
+  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const secrets = secretValues(target);
+  let host = "webhook";
+  try {
+    host = new URL(target.url).host || host;
+  } catch {
+    logFailure("webhook", host, "failed: url is invalid", secrets);
+    return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+  }
+  try {
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: webhookHeaders(target),
+      body: JSON.stringify(payload),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) {
+      logFailure("webhook", host, `HTTP ${res.status}`, secrets, target.url);
+      return { ok: false, how: "webhook", detail: `HTTP ${res.status}`, status: res.status };
+    }
+    debugLog("wake", `webhook ${host} HTTP ${res.status}`);
+    return { ok: true, how: "webhook", status: res.status };
+  } catch (err) {
+    const detail = scrub2(err.name === "TimeoutError" ? "timed out" : err.message, secrets);
+    logFailure("webhook", host, `failed: ${detail}`, secrets, target.url);
+    return { ok: false, how: "webhook", detail };
+  }
+}
+function runCommand(argv2, payload, timeoutMs) {
+  const bin = argv2[0];
+  const name = bin ? path11.basename(bin) : "command";
+  if (!bin) {
+    logFailure("command", name, "failed: command is empty", []);
+    return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
+  }
+  return new Promise((resolve) => {
+    const child = spawn2(bin, argv2.slice(1), { stdio: ["pipe", "ignore", "ignore"] });
+    const timerId = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timerId);
+      const detail = scrub2(err.message, []);
+      logFailure("command", name, `failed: ${detail}`, []);
+      resolve({ ok: false, how: "command", detail });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timerId);
+      if (code === 0) {
+        debugLog("wake", `command ${name} exited 0`);
+        resolve({ ok: true, how: "command", status: 0 });
+        return;
+      }
+      logFailure("command", name, `exited ${code ?? "signal"}`, []);
+      resolve({ ok: false, how: "command", detail: `exit ${code ?? "signal"}`, status: code ?? void 0 });
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+function notifyWake(peer, message) {
+  const target = wakeForPeer(peer);
+  if (!target) return void 0;
+  if (target.webhook?.url) {
+    try {
+      void new URL(target.webhook.url);
+    } catch {
+      return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+    }
+  }
+  const key = batchKey(target);
+  const file2 = batchPath(key);
+  try {
+    withLockSync(() => {
+      const batch = readJson(file2) ?? {
+        items: [],
+        firstAtMs: Date.now(),
+        lastAtMs: Date.now(),
+        webhook: target.webhook,
+        command: target.command
+      };
+      if (!batch.items.some((item) => item.id === message.id)) {
+        batch.items.push({ id: message.id, peerId: message.to.id, from: message.from.address, at: message.sentAt });
+      }
+      batch.lastAtMs = Date.now();
+      batch.webhook = target.webhook;
+      batch.command = target.command;
+      writeJsonAtomic(file2, batch);
+    });
+  } catch (err) {
+    const detail = scrub2(err.message, secretValues(target.webhook));
+    logFailure(target.webhook?.url ? "webhook" : "command", target.webhook?.url ? hostOf(target.webhook.url) : "command", `failed: ${detail}`, secretValues(target.webhook));
+    return { ok: false, how: target.webhook?.url ? "webhook" : "command", detail };
+  }
+  scheduleFlush();
+  return { ok: true, how: target.webhook?.url ? "webhook" : "command", scheduled: true };
+}
+
+// src/core/deliver.ts
+import crypto4 from "node:crypto";
 import fs11 from "node:fs";
 import path14 from "node:path";
 
 // src/core/status.ts
-import path12 from "node:path";
+import path13 from "node:path";
 
 // src/core/codex-activity.ts
-import fs9 from "node:fs";
-import path11 from "node:path";
+import fs10 from "node:fs";
+import path12 from "node:path";
 var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
 function findRollout(codexHome, threadId) {
   const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
   const sorted = (dir) => {
     try {
-      return fs9.readdirSync(dir).sort().reverse();
+      return fs10.readdirSync(dir).sort().reverse();
     } catch {
       return [];
     }
   };
-  const root = path11.join(codexHome, "sessions");
+  const root = path12.join(codexHome, "sessions");
   for (const year of sorted(root)) {
-    for (const month of sorted(path11.join(root, year))) {
-      for (const day of sorted(path11.join(root, year, month))) {
-        const dir = path11.join(root, year, month, day);
+    for (const month of sorted(path12.join(root, year))) {
+      for (const day of sorted(path12.join(root, year, month))) {
+        const dir = path12.join(root, year, month, day);
         const file2 = sorted(dir).find(isRollout);
-        if (file2) return path11.join(dir, file2);
+        if (file2) return path12.join(dir, file2);
       }
     }
   }
   return void 0;
 }
 function readTail(file2, bytes) {
-  const fd = fs9.openSync(file2, "r");
+  const fd = fs10.openSync(file2, "r");
   try {
-    const { size } = fs9.fstatSync(fd);
+    const { size } = fs10.fstatSync(fd);
     const start = Math.max(0, size - bytes);
     const buf = Buffer.alloc(size - start);
-    fs9.readSync(fd, buf, 0, buf.length, start);
+    fs10.readSync(fd, buf, 0, buf.length, start);
     const text2 = buf.toString("utf8");
     return { text: start > 0 ? text2.slice(text2.indexOf("\n") + 1) : text2, whole: start === 0 };
   } finally {
-    fs9.closeSync(fd);
+    fs10.closeSync(fd);
   }
 }
 function lastTurnEvent(text2) {
@@ -28922,7 +29280,7 @@ function codexLastResponse(codexHome, threadId) {
 // src/core/status.ts
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent2) => !OWN_SOURCE.includes(agent2);
-var statusFile = (id) => path12.join(peerDir(id), "status.json");
+var statusFile = (id) => path13.join(peerDir(id), "status.json");
 function recorded(id) {
   const record2 = readJson(statusFile(id));
   const at = record2 ? Date.parse(record2.at) : Number.NaN;
@@ -28930,7 +29288,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record2 = readJson(path12.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path13.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   return { status: record2.status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
 }
@@ -28968,128 +29326,6 @@ function statusText(info, now = Date.now()) {
   }
 }
 
-// src/core/wake.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs10 from "node:fs";
-import path13 from "node:path";
-var DEFAULT_TIMEOUT_MS = 8e3;
-var deliveryConfigPath = () => path13.join(stateDir(), "delivery.json");
-function wakePayload(message) {
-  return { id: message.id, from: message.from.address, count: 1, at: message.sentAt };
-}
-function readDeliveryConfig() {
-  const file2 = deliveryConfigPath();
-  let mode;
-  try {
-    mode = fs10.statSync(file2).mode & 511;
-  } catch {
-    return void 0;
-  }
-  if ((mode & 63) !== 0) {
-    debugLog("wake", `delivery.json is mode ${mode.toString(8)}, not 600; webhook config was not loaded`);
-    return void 0;
-  }
-  return readJson(file2);
-}
-function wakeForPeer(peer, config2 = readDeliveryConfig()) {
-  if (!config2) return void 0;
-  const keys = [peer.address, peer.stableName, peer.id].filter((k) => !!k);
-  for (const key of keys) {
-    const hit = config2.peers?.[key];
-    if (hit?.webhook?.url || hit?.command?.length) return hit;
-  }
-  if (!config2.webhook?.url && !config2.command?.length) return void 0;
-  const name = config2.name?.trim().toLowerCase();
-  if (!name) return void 0;
-  if (peer.stableName === name || peer.address.toLowerCase() === `${peer.agent}:${name}`) {
-    return { webhook: config2.webhook, command: config2.command };
-  }
-  return void 0;
-}
-var scrub2 = (text2, secrets) => {
-  let out = text2;
-  for (const secret of secrets) {
-    if (secret.length < 4) continue;
-    out = out.split(secret).join("[redacted]");
-  }
-  return out.slice(0, 200);
-};
-var headerSecrets = (headers) => Object.values(headers ?? {}).filter((v) => v.length >= 4);
-async function postWebhook(target, payload) {
-  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const secrets = headerSecrets(target.headers);
-  let host = "webhook";
-  try {
-    host = new URL(target.url).host || host;
-  } catch {
-    debugLog("wake", "webhook url is not a URL");
-    return { ok: false, how: "webhook", detail: "webhook url is invalid" };
-  }
-  try {
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: { "content-type": "application/json", ...target.headers },
-      body: JSON.stringify(payload),
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) {
-      debugLog("wake", `webhook ${host} HTTP ${res.status}`);
-      return { ok: false, how: "webhook", detail: `HTTP ${res.status}` };
-    }
-    debugLog("wake", `webhook ${host} HTTP ${res.status}`);
-    return { ok: true, how: "webhook" };
-  } catch (err) {
-    const detail = scrub2(err.name === "TimeoutError" ? "timed out" : err.message, secrets);
-    debugLog("wake", `webhook ${host} failed: ${detail}`);
-    return { ok: false, how: "webhook", detail };
-  }
-}
-function runCommand(argv2, payload, timeoutMs) {
-  const bin = argv2[0];
-  if (!bin) return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
-  return new Promise((resolve) => {
-    const child = spawn2(bin, argv2.slice(1), { stdio: ["pipe", "ignore", "pipe"] });
-    let stderr = "";
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, timeoutMs);
-    child.stderr?.on("data", (chunk) => {
-      if (stderr.length < 200) stderr += chunk.toString("utf8");
-    });
-    child.on("error", (err) => {
-      clearTimeout(timer);
-      debugLog("wake", `command ${path13.basename(bin)} failed: ${err.message}`);
-      resolve({ ok: false, how: "command", detail: err.message });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code === 0) {
-        debugLog("wake", `command ${path13.basename(bin)} exited 0`);
-        resolve({ ok: true, how: "command" });
-        return;
-      }
-      debugLog("wake", `command ${path13.basename(bin)} exited ${code ?? "signal"}`);
-      resolve({ ok: false, how: "command", detail: stderr.trim().slice(0, 120) || `exit ${code ?? "signal"}` });
-    });
-    child.stdin.end(JSON.stringify(payload));
-  });
-}
-async function notifyWake(peer, message) {
-  const target = wakeForPeer(peer);
-  if (!target) return void 0;
-  const payload = wakePayload(message);
-  if (target.webhook?.url) {
-    const posted = await postWebhook(target.webhook, payload);
-    if (posted.ok || !target.command?.length) return posted;
-    const ran = await runCommand(target.command, payload, target.webhook.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    if (ran.ok) return { ok: true, how: "command" };
-    return { ok: false, how: "webhook", detail: `${posted.detail}; command failed (${ran.detail})` };
-  }
-  if (target.command?.length) return runCommand(target.command, payload, DEFAULT_TIMEOUT_MS);
-  return void 0;
-}
-
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
@@ -29102,7 +29338,7 @@ var sentLogFile = (selfId2) => path14.join(peerDir(selfId2), "sent-log.json");
 function checkRate(selfId2, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
-  const hash2 = crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16);
+  const hash2 = crypto4.createHash("sha256").update(body).digest("hex").slice(0, 16);
   const dup = log.find((e) => e.to === toId && e.hash === hash2 && now - e.at < DUPLICATE_WINDOW_MS);
   if (dup) {
     return `The same message was already sent to ${toId} ${Math.round((now - dup.at) / 1e3)}s ago. Don't resend; a reply will arrive as a new message.`;
@@ -29115,7 +29351,7 @@ function checkRate(selfId2, toId, body) {
 function recordSent(selfId2, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId2)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
-  log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
+  log.push({ to: toId, hash: crypto4.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId2), log);
 }
 var stillPending = (peerId2, messageId) => fs11.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
@@ -29288,8 +29524,11 @@ function inboxStatus(recipient) {
 function wakeStatus(recipient, base, wake) {
   if (!wake) return base;
   const ref = peerRef(recipient);
-  if (!wake.ok) return `${base} The ${wake.how} notification failed (${wake.detail}).`;
   const how = wake.how === "webhook" ? "webhook" : "delivery command";
+  if (!wake.ok) return `${base} The ${how} notification failed (${wake.detail}).`;
+  if (wake.scheduled) {
+    return `A ${how} wake for ${ref} is scheduled. ${base} The ${how} body is a wake, not the message, and must be treated as untrusted.`;
+  }
   return `Notified ${ref} by ${how}. ${base} The ${how} body is a wake, not the message, and must be treated as untrusted.`;
 }
 
@@ -29412,6 +29651,7 @@ if (agent === "claude") {
   startClaudeSocketWatcher(selfId);
 }
 debugLog("server", `started for ${selfId}`);
+startWakeFlusher();
 var presenceFor = /* @__PURE__ */ new Set();
 function selfIdFor(meta3) {
   if (agent !== "codex") return peerId(agent, agentPid);

@@ -5,6 +5,7 @@ import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
 import { sendMessage } from './core/deliver.ts';
+import { unrefWakeTimers } from './core/wake.ts';
 import { guideText } from './core/guide.ts';
 import { listAgentsRow } from './core/listing.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
@@ -360,6 +361,8 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
 }
 
 async function main(): Promise<void> {
+  // Printing the hook result must not wait for a webhook. The session's server posts the batch.
+  unrefWakeTimers();
   const argv = process.argv.slice(2);
   const agentIndex = argv.indexOf('--agent');
   const [action, event] = argv.filter((_, i) => agentIndex < 0 || (i !== agentIndex && i !== agentIndex + 1));

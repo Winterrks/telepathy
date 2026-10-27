@@ -243,7 +243,7 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 | Gemini CLI | `BeforeAgent` / `AfterTool` / `AfterAgent` | No | `Notification` hook is status only | While idle | `gemini --acp` only for a process we spawned |
 | Qwen Code | Same hook family | No | No | While idle | ACP sessions treat hook `ask` as deny |
 | Grok CLI | `PostToolUse` / `Stop`, after the model starts `monitor` | Yes, after that monitor starts | Monitor lines | Before the monitor, and on the next typed prompt (`UserPromptSubmit` drops stdout) | Internal ACP session actor; do not attach from outside |
-| Grok Bot MCP client | No | Webhook or command, when `delivery.json` is mode 600 and names the peer | The POST is a wake, not the message | Yes, the inbox copy | `wait_for_messages` is the other, unmerged change. This one does not add that tool |
+| Grok Bot MCP client | No | Webhook or command, when `delivery.json` is mode 600 and names the peer. One POST per burst. The remote routine still needs a local reader | The POST is a wake, not the message | Yes, the inbox copy, on a client running on this machine | `wait_for_messages` is the other, unmerged change. This one does not add that tool |
 | Devin CLI | Hook context / Stop block | No | No | While idle | Plugin hooks fail open |
 | Antigravity CLI | `injectSteps` / Stop continue | No | No | While idle | Official schema not found |
 | Cursor CLI | `postToolUse` `additional_context` | No | No | While idle, and at turn end on the build that skips plugin `stop` | `followup_message` documented, not observed on CLI 2026.09.23 |
@@ -332,7 +332,7 @@ Each rung has a time, not only a rank. A rung counts as delivery only when it co
 | Direct | Now: Claude inbox socket, or a live listener that claims the file (monitor, OpenCode plugin) | Socket: an explicit `delivered` reply, or the own-child rule below when no `crossSessionInbound` value applies. Listener: not at send time. The file stays until that process renames it. The status string still says delivered, which is the existing wording |
 | Mid-turn | After the next tool result | The hook claims the inbox. Codex `PostToolUse` does this and deletes the queue item so the turn-end copy does not also run |
 | Turn end | After the current turn completes or fails | Codex prints a queue id. That is acceptance into the queue, not the model reading it, so the inbox copy stays |
-| Idle wake | While the session is idle, or as a doorbell to a remote bot | A webhook HTTP 2xx or a command exit 0 is not confirmation. The inbox copy stays |
+| Idle wake | While the session is idle, or as a doorbell to a remote bot | A webhook HTTP 2xx or a command exit 0 is not confirmation. The sender is told the wake is scheduled. A failed POST is in `wake.log`. The inbox copy stays |
 | Next prompt | The user's next prompt, or the next hook boundary | The hook claims the inbox |
 | Poll | `read_messages` | `read_messages` claims the inbox |
 
@@ -341,7 +341,7 @@ Order for one message, continuing while nothing has confirmed:
 1. **Direct.** Claude's socket when `CLAUDE_CODE_MESSAGING_SOCKET` was recorded for that peer. Then a live listener (OpenCode/Kilo plugin, Claude monitor or waiter, Grok `monitor`).
 2. **Mid-turn hook**, for Codex, when a turn is in progress and `PostToolUse` has run at least once. This ranks above the queue. `codex queue` does not deliver after a tool call. The hook appends the message to the tool result.
 3. **Native queue**, Codex only, and only when the thread is not interrupted. App-server commit `9341b38` (13 Aug 2026) dispatches the queue after a completed or failed turn and leaves it paused after an interrupt. An interrupt does not call `codex queue` and does not call `thread/queue/start`. The message stays unclaimed for the next prompt hook or `read_messages`. A `codex queue` error is the same shape: the inbox keeps the message, and the sender is told the queue failed.
-4. **Idle wake.** Webhook or command from `delivery.json`, for a peer named there. Grok Bot. The body is `{id, from, count, at}` with no message text. The receiver treats it as untrusted and reads the inbox.
+4. **Idle wake.** Webhook or command from `delivery.json`, for a peer named there. Grok Bot. The body is `{id, ids, from, count, at}` with no message text. `from` and `at` are the last message in the burst. `id` is that message's id. `ids` lists every id still in the inbox, oldest first. Messages for the same URL wait 400ms after the last one, and at most 1.5s after the first, then one POST goes out. `TELEPATHY_WAKE_DEBOUNCE_MS` changes the 400ms. A message already claimed is left out of the POST. If none remain, nothing is posted. The receiver treats the body as untrusted and reads the inbox. A failed POST or command is appended to `~/.telepathy/wake.log` with the time, the host, and the status or error. The key, the URL path, and the message text are not logged. `node <installed-copy>/dist/delivery.mjs test` posts `{"event":"probe"}` and prints the HTTP status. Receivers ignore that event.
 5. **Next-boundary hook**, if `nextTurnHook` is set and a hook has run, or for Codex if a hook has run. The inbox stays.
 6. **Poll.** The inbox stays. Status: only `read_messages`.
 
@@ -388,6 +388,8 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 **Phase 2, still open.** Codex `turn/steer` while busy, beside the hook, with `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread.
 
 **Phase 3, split.** The webhook in this change is the Grok Bot wake. `wait_for_messages` (branch `cursor/grok-bot-delivery-bd7e`) is a long-poll on the same inbox and is not copied here. They meet at the peer id and the inbox: the webhook tells the bot to read, and that tool, once merged, is one way to read. Grok Build's monitor stays the CLI path. The webhook does not replace it. A peer with a live listener is not also sent a webhook, so the monitor is not raced.
+
+The POST only wakes the remote routine. A Grok Bot webhook trigger, such as `https://api2.cursor.sh/automations/webhook/<uuid>`, returns HTTP 200 when the routine starts, and every POST costs a turn. The body is untrusted. The routine does not have this machine's `~/.telepathy` inbox. Reading still needs a client on this machine: a persistent local session, or the server kept on a stable name with `TELEPATHY_NAME` or `--name`. This change does not bridge the remote routine to that inbox. `delivery.json` sends `Authorization: Bearer <key>` and `X-Automation-Key: <key>` when `key` is set. `authHeaders` replaces those names. `headers` overrides a single value. `node dist/delivery.mjs test` sends `{"event":"probe"}` so the URL can be checked without a real message.
 
 **Phase 4.** Hook-only harnesses stay hook-only. Fill gaps that are config, after a live retest, not before:
 
