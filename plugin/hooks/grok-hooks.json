@@ -1,5 +1,5 @@
 {
-  "description": "telepathy: register this Grok session and hand it messages from other agents after tool calls and when a turn ends.",
+  "description": "telepathy: register this Grok session and hand it messages from other agents after tool calls and when a turn ends. Grok Bot receives idle messages from wait_for_messages; these hooks cover the next tool call and the end of a turn.",
   "hooks": {
     "SessionStart": [
       { "hooks": [{ "type": "command", "command": "node \"${GROK_PLUGIN_ROOT}/dist/hook.mjs\" --agent grok session-start", "timeout": 10 }] }

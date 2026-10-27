@@ -35,13 +35,23 @@ describe('telepathy plugin', () => {
     agents.push(a);
     return a;
   };
-  const connect = async (agent: 'claude' | 'codex', pid: number) => {
-    const c = await connectServer(sb, agent, pid);
+  const connect = async (
+    agent: Agent,
+    pid: number,
+    options?: ConstructorParameters<typeof Client>[1],
+    extraEnv?: Record<string, string>,
+  ) => {
+    const c = await connectServer(sb, agent, pid, ROOT, options, extraEnv);
     clients.push(c);
     return c;
   };
-  const call = async (client: Client, name: string, args: object = {}, meta?: Record<string, unknown>) =>
-    client.callTool({ name, arguments: args as Record<string, unknown>, ...(meta ? { _meta: meta } : {}) });
+  const call = async (
+    client: Client,
+    name: string,
+    args: object = {},
+    meta?: Record<string, unknown>,
+    options?: Parameters<Client['callTool']>[1],
+  ) => client.callTool({ name, arguments: args as Record<string, unknown>, ...(meta ? { _meta: meta } : {}) }, options);
   /** The row ListAgents gets for the session keyed `key` (its pid, or a Codex thread), as seen from a Claude session. */
   const rowFor = (viewer: number, key: number | string) => {
     const input = { tool_name: 'ListAgents', tool_response: { listing: 'Peer sessions (0):' } };
@@ -81,6 +91,8 @@ describe('telepathy plugin', () => {
       const client = await connect(agent, spawnAgent().pid);
       const { tools } = await client.listTools();
       assert.deepEqual(tools.map((t) => t.name).sort(), ['list_peers', 'read_messages', 'send_message']);
+      assert.equal(client.getServerCapabilities()?.resources, undefined);
+      assert.equal(client.getServerCapabilities()?.logging, undefined);
       const instructions = client.getInstructions() ?? '';
       assert.match(instructions, /come from another AI agent, not your user/);
       assert.match(instructions, /telepathy:using-telepathy skill/);
@@ -1459,6 +1471,192 @@ describe('telepathy plugin', () => {
       runHook(sb, 'antigravity', agy.pid, 'inbox', { conversationId: 'conv-1', workspacePaths: ['/w/infra'] }, 'PreInvocation');
       const status = sendFromClaude('antigravity:infra', 'hi');
       assert.match(status, new RegExp(`^Message stored for ${named('antigravity', 'infra', 'conv-1')} \\[antigravity-conv-1\\]\\. It can't be woken while idle`));
+    });
+
+    test('Grok lists wait_for_messages and is told which product uses it', async () => {
+      const client = await connect('grok', spawnAgent().pid);
+      const { tools } = await client.listTools();
+      assert.deepEqual(tools.map((t) => t.name).sort(), ['list_peers', 'read_messages', 'send_message', 'wait_for_messages']);
+      const caps = client.getServerCapabilities();
+      assert.equal(caps?.resources?.subscribe, true);
+      assert.ok(caps?.logging);
+      const instructions = client.getInstructions() ?? '';
+      assert.match(instructions, /monitor tool \(persistent: true/);
+      assert.match(instructions, /Do not also call wait_for_messages/);
+      assert.match(instructions, /on Grok Bot there is no monitor tool/);
+      assert.match(instructions, /timeoutMs 300000/);
+      const listed = await client.listResources();
+      assert.ok(listed.resources.some((r) => r.uri === 'telepathy://inbox'));
+    });
+
+    test('a parked wait_for_messages returns a message sent while it waits, and hooks stay quiet', async () => {
+      const grokAgent = spawnAgent();
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'grok', grokAgent.pid, 'session-start', { session_id: 'g', cwd: '/w/bot' });
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c', cwd: '/w/web' });
+      const grok = await connect('grok', grokAgent.pid);
+      const claude = await connect('claude', claudeAgent.pid);
+      const listener = path.join(sb.home, 'peers', 'grok-g', 'listener.json');
+      const progress: string[] = [];
+      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 8_000 }, undefined, {
+        timeout: 20_000,
+        onprogress: (p) => progress.push(p.message ?? ''),
+      });
+      await waitFor(() => (fs.existsSync(listener) ? listener : undefined));
+      assert.doesNotMatch(toolText(await call(claude, 'list_peers')), /no listener/);
+
+      const sent = await call(claude, 'send_message', { to: 'grok-g', message: 'hello from claude' });
+      assert.equal(toolText(sent), `Message delivered to ${named('grok', 'bot', 'g')} [grok-g].`);
+      const hook = runHook(sb, 'grok', grokAgent.pid, 'turn-end', { session_id: 'g', status: 'completed' });
+      assert.equal(hook.stdout, '', 'hooks stay quiet while a wait is delivering');
+
+      const got = toolText(await waiting);
+      assert.match(got, /^1 new message\(s\):/);
+      assert.match(got, /hello from claude$/);
+      assert.ok(progress.some((m) => m.includes('Waiting for telepathy messages')));
+      assert.equal(fs.existsSync(listener), false, 'the wait clears its listener when it returns');
+      assert.match(toolText(await call(grok, 'read_messages')), /^No new messages/);
+      assert.match(toolText(await call(claude, 'list_peers')), /no listener: Grok Bot receives via wait_for_messages/);
+    });
+
+    test('a parked wait confirms delivery, and a missed wait leaves nothing behind', async () => {
+      const confirmEnv = {
+        TELEPATHY_CONFIRM_WAIT: '1',
+        TELEPATHY_CONFIRM_ABORT_MS: '4000',
+        TELEPATHY_CONFIRM_GRACE_MS: '500',
+        TELEPATHY_CONFIRM_POLL_MS: '25',
+      };
+      const grokAgent = spawnAgent();
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'grok', grokAgent.pid, 'session-start', { session_id: 'g-ok', cwd: '/w/bot' });
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c-ok', cwd: '/w/web' });
+      const grok = await connect('grok', grokAgent.pid);
+      const claude = await connect('claude', claudeAgent.pid, undefined, confirmEnv);
+      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 8_000 }, undefined, { timeout: 20_000 });
+      await waitFor(() => (fs.existsSync(path.join(sb.home, 'peers', 'grok-g-ok', 'listener.json')) ? 'parked' : undefined));
+      const sent = await call(claude, 'send_message', { to: 'grok-g-ok', message: 'confirmed hello' });
+      assert.equal(sent.isError, undefined, toolText(sent));
+      assert.match(toolText(sent), /transcript shows telepathy-id:m-/);
+      const got = toolText(await waiting);
+      assert.match(got, /confirmed hello$/);
+      assert.match(got, /telepathy-id:m-/);
+      const deliveredInbox = path.join(sb.home, 'peers', 'grok-g-ok', 'inbox');
+      assert.equal(fs.existsSync(deliveredInbox) && fs.readdirSync(deliveredInbox).some((name) => name.endsWith('.json')), false);
+      const transcript = fs.readFileSync(path.join(sb.home, 'peers', 'grok-g-ok', 'delivery-transcript.jsonl'), 'utf8');
+      assert.match(transcript, /telepathy-id:m-/);
+      assert.match(transcript, /confirmed hello/);
+
+      const lateGrok = spawnAgent();
+      const lateClaude = spawnAgent();
+      runHook(sb, 'grok', lateGrok.pid, 'session-start', { session_id: 'g-late', cwd: '/w/late' });
+      runHook(sb, 'claude', lateClaude.pid, 'session-start', { session_id: 'c-late', cwd: '/w/web2' });
+      const late = await connect('grok', lateGrok.pid);
+      const sender = await connect('claude', lateClaude.pid, undefined, {
+        TELEPATHY_CONFIRM_WAIT: '1',
+        TELEPATHY_CONFIRM_ABORT_MS: '300',
+        TELEPATHY_CONFIRM_GRACE_MS: '200',
+        TELEPATHY_CONFIRM_POLL_MS: '25',
+      });
+      const failed = await call(sender, 'send_message', { to: 'grok-g-late', message: 'too late' });
+      assert.equal(failed.isError, true);
+      assert.match(toolText(failed), /Message failed/);
+      assert.match(toolText(failed), /withdrawn/);
+      const after = toolText(await call(late, 'wait_for_messages', { timeoutMs: 0 }));
+      assert.match(after, /No messages waiting/);
+      assert.doesNotMatch(after, /too late/);
+      const inbox = path.join(sb.home, 'peers', 'grok-g-late', 'inbox');
+      assert.equal(fs.existsSync(inbox) && fs.readdirSync(inbox).some((f) => f.endsWith('.json')), false);
+    });
+
+    test('wait_for_messages times out without a message, and timeout 0 claims one that is already waiting', async () => {
+      const grokAgent = spawnAgent();
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'grok', grokAgent.pid, 'session-start', { session_id: 'g', cwd: '/w/bot' });
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c', cwd: '/w/web' });
+      const grok = await connect('grok', grokAgent.pid);
+      const claude = await connect('claude', claudeAgent.pid);
+      const listener = path.join(sb.home, 'peers', 'grok-g', 'listener.json');
+
+      const timed = toolText(await call(grok, 'wait_for_messages', { timeoutMs: 200 }, undefined, { timeout: 10_000 }));
+      assert.match(timed, /No messages arrived within 200ms\. Call wait_for_messages again to keep listening\./);
+      assert.equal(fs.existsSync(listener), false);
+
+      const stored = await call(claude, 'send_message', { to: 'grok-g', message: 'already there' });
+      assert.match(toolText(stored), /No wait_for_messages call is parked/);
+      assert.match(toolText(stored), /wait_for_messages/);
+      const got = toolText(await call(grok, 'wait_for_messages', { timeoutMs: 0 }));
+      assert.match(got, /^1 new message\(s\):/);
+      assert.match(got, /already there$/);
+      assert.match(toolText(await call(grok, 'read_messages')), /^No new messages/);
+    });
+
+    test('cancelling a wait removes its listener', async () => {
+      const grokAgent = spawnAgent();
+      const grok = await connect('grok', grokAgent.pid);
+      const listener = path.join(sb.home, 'peers', `grok-${grokAgent.pid}`, 'listener.json');
+      const ac = new AbortController();
+      const pending = call(grok, 'wait_for_messages', { timeoutMs: 30_000 }, undefined, { signal: ac.signal, timeout: 20_000 });
+      await waitFor(() => (fs.existsSync(listener) ? listener : undefined));
+      ac.abort();
+      let outcome = '';
+      try {
+        outcome = toolText(await pending);
+      } catch {
+        outcome = 'aborted';
+      }
+      assert.ok(outcome === 'aborted' || /Wait cancelled before a message arrived/.test(outcome), outcome);
+      await waitFor(() => (fs.existsSync(listener) ? undefined : 'cleared'));
+    });
+
+    test('a foreign listener is left in place and its messages are not claimed', async () => {
+      const grokAgent = spawnAgent();
+      const monitor = spawnAgent();
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'grok', grokAgent.pid, 'session-start', { session_id: 'g', cwd: '/w/bot' });
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c', cwd: '/w/web' });
+      const grok = await connect('grok', grokAgent.pid);
+      const claude = await connect('claude', claudeAgent.pid);
+      const file = path.join(sb.home, 'peers', 'grok-g', 'listener.json');
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ pid: monitor.pid, startedAt: new Date().toISOString() }));
+
+      await call(claude, 'send_message', { to: 'grok-g', message: 'for the monitor' });
+      const refused = toolText(await call(grok, 'wait_for_messages', { timeoutMs: 5_000 }, undefined, { timeout: 10_000 }));
+      assert.match(refused, /A listener is already delivering this session's messages/);
+      assert.doesNotMatch(refused, /for the monitor/);
+      assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).pid, monitor.pid);
+      assert.match(toolText(await call(grok, 'read_messages')), /for the monitor/);
+    });
+
+    test('with nobody waiting, a new message is announced and left unclaimed until read_messages', async () => {
+      const grokAgent = spawnAgent();
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'grok', grokAgent.pid, 'session-start', { session_id: 'g', cwd: '/w/bot' });
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c', cwd: '/w/web' });
+      const grok = await connect('grok', grokAgent.pid);
+      const notes: string[] = [];
+      const updates: string[] = [];
+      grok.setNotificationHandler('notifications/message', (notification) => {
+        const data = notification.params.data;
+        notes.push(typeof data === 'string' ? data : JSON.stringify(data));
+      });
+      grok.setNotificationHandler('notifications/resources/updated', (notification) => {
+        updates.push(notification.params.uri);
+      });
+      await grok.setLoggingLevel('debug');
+      await grok.subscribeResource({ uri: 'telepathy://inbox' });
+
+      const claude = await connect('claude', claudeAgent.pid);
+      const sent = await call(claude, 'send_message', { to: 'grok-g', message: 'ping the bot' });
+      assert.match(toolText(sent), /No wait_for_messages call is parked/);
+      await waitFor(() => (notes.some((n) => n.includes('wait_for_messages')) && updates.includes('telepathy://inbox') ? 'announced' : undefined));
+
+      const peek = await grok.readResource({ uri: 'telepathy://inbox' });
+      const peeked = peek.contents.map((c) => ('text' in c ? c.text : '') ?? '').join('\n');
+      assert.match(peeked, /ping the bot/);
+      assert.match(toolText(await call(grok, 'read_messages')), /ping the bot/);
+      const after = await grok.readResource({ uri: 'telepathy://inbox' });
+      assert.doesNotMatch(after.contents.map((c) => ('text' in c ? c.text : '') ?? '').join('\n'), /ping the bot/);
     });
 
     test('Copilot and Cursor get the guide at session start, since they don\'t show MCP instructions', () => {

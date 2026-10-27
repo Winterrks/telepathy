@@ -3466,6 +3466,9 @@ function inboxStatus(recipient) {
   const ref = peerRef(recipient);
   if (peerStatus(recipient)?.status === "waiting") return waitingNote(ref, recipient.hasListener ? "delivered to" : "stored for");
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
+  if (recipient.agent === "grok") {
+    return `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`;
+  }
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
@@ -3492,7 +3495,10 @@ function guideLines(agent, opts = {}) {
   ];
   if (opts.monitorCommand) {
     lines.push(
-      `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
+      `- IMPORTANT: on Grok Build, your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand} Do not also call wait_for_messages: that call would take messages the monitor prints and block the turn. If a listener is already registered, wait_for_messages returns immediately and claims nothing.`
+    );
+    lines.push(
+      "- IMPORTANT: on Grok Bot there is no monitor tool, so do not start that command. Call wait_for_messages with timeoutMs 300000 (or the longest the client allows) and, whenever it returns, handle what it found and call it again. A result that says no messages arrived only means the wait ended."
     );
   }
   if (opts.waiterCommand) {

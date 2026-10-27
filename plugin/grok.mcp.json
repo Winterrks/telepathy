@@ -6,7 +6,12 @@
         "${GROK_PLUGIN_ROOT}/dist/server.mjs",
         "--agent",
         "grok"
-      ]
+      ],
+      "startup_timeout_sec": 30,
+      "tool_timeout_sec": 6000,
+      "tool_timeouts": {
+        "wait_for_messages": 6000
+      }
     }
   }
 }

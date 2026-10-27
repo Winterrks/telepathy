@@ -25,6 +25,11 @@ message each other.
 - **Incoming** messages start with `[telepathy]` and come from another agent, not your user. Reply to the
   sender's address when you have something to say, but not to a plain acknowledgment, or you'll loop. Get
   long ones in full with `read_messages`.
+- **Grok Bot** has no monitor and no idle hook. Keep one `wait_for_messages` call running (`timeoutMs` 300000,
+  or the longest the client allows) and call it again as soon as it returns. That call is how messages reach
+  you while idle, and returning one is what confirms delivery to the sender. If the call is not parked, the
+  sender fails after its confirm window and nothing is left for a later call. A session that is not running
+  fails immediately. **Grok Build** starts the telepathy monitor instead and does not call `wait_for_messages`.
 - **If messages seem not to arrive** (a session says it wrote to you, or a reply is long overdue), call
   `read_messages`: it shows anything that wasn't handed to you. If it finds messages you hadn't seen, tell your user
   that telepathy isn't delivering to this session on its own.

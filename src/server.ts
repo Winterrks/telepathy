@@ -9,14 +9,19 @@ import { debugLog } from './core/debug.ts';
 import { unseenSetupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
 import { recordClaudeSocket, startClaudeSocketWatcher } from './core/claude-socket.ts';
+import { waitForInbox } from './core/inbox-wait.ts';
 import { startWakeFlusher } from './core/wake.ts';
 import {
+  clearListener,
   codexThreadsOf,
   defaultCodexHome,
   isDeliveryOwner,
   linkedPeerId,
+  listenerPid,
   peerId,
+  readPeer,
   readSession,
+  registerListener,
   registerPresence,
   registerSession,
   registerStableName,
@@ -24,7 +29,17 @@ import {
   sessionPeerId,
 } from './core/peers.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
-import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
+import {
+  ALREADY_LISTENING,
+  DEFAULT_WAIT_MS,
+  formatWaitResult,
+  listPeersTool,
+  readMessagesTool,
+  sendMessageTool,
+  TOOLS,
+  type ToolResult,
+} from './core/tools.ts';
+import { attachGrokDelivery } from './grok-delivery.ts';
 import { VERSION } from './core/version.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 
@@ -149,7 +164,9 @@ function selfIdFor(meta: Record<string, unknown> | undefined): string {
 const server = new McpServer(
   { name: 'telepathy', version: VERSION },
   {
-    capabilities: { tools: {} },
+    // Grok Bot has no host-owned wake. Logging and resource updates are a best-effort side channel;
+    // wait_for_messages, registered below, is what actually returns the message.
+    capabilities: agent === 'grok' ? { tools: {}, resources: { subscribe: true }, logging: {} } : { tools: {} },
     // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
     // using-telepathy skill, loaded on demand.
     instructions: guideText(agent, {
@@ -224,6 +241,65 @@ server.registerTool(
     return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit })));
   },
 );
+
+if (agent === 'grok') {
+  // Overlapping waits share one listener registration. The last one to finish clears it.
+  const waits = new Map<string, number>();
+  const heldByOther = (selfId: string) => {
+    const peer = readPeer(selfId);
+    return !!peer?.hasListener && listenerPid(selfId) !== process.pid;
+  };
+
+  server.registerTool(
+    'wait_for_messages',
+    {
+      title: TOOLS.wait_for_messages.title,
+      description: TOOLS.wait_for_messages.description,
+      inputSchema: z.object(TOOLS.wait_for_messages.args),
+      annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    },
+    async ({ timeoutMs }, ctx) => {
+      const selfId = selfIdFor(ctx.mcpReq._meta);
+      const timeout = timeoutMs ?? DEFAULT_WAIT_MS;
+      if (heldByOther(selfId)) return text({ text: ALREADY_LISTENING });
+      if (ctx.mcpReq.signal.aborted) return text(withSetupNotes(selfId, formatWaitResult([], 'cancelled', timeout)));
+
+      const token = ctx.mcpReq._meta?.progressToken;
+      const progressToken = typeof token === 'string' || typeof token === 'number' ? token : undefined;
+      const started = Date.now();
+      const tell = (message: string) => {
+        if (progressToken === undefined) return Promise.resolve();
+        return ctx.mcpReq
+          .notify({ method: 'notifications/progress', params: { progressToken, progress: Date.now() - started, message } })
+          .catch(() => undefined);
+      };
+
+      waits.set(selfId, (waits.get(selfId) ?? 0) + 1);
+      registerListener(agent, agentPid, selfId);
+      const progress = setInterval(() => {
+        void tell(`Still waiting for telepathy messages (${Math.round((Date.now() - started) / 1000)}s).`);
+      }, 10_000);
+      progress.unref();
+      await tell('Waiting for telepathy messages.');
+      try {
+        const result = await waitForInbox(selfId, timeout, ctx.mcpReq.signal);
+        debugLog('server', `wait_for_messages ${result.reason} for ${selfId}: ${result.messages.length}`);
+        return text(withSetupNotes(selfId, formatWaitResult(result.messages, result.reason, timeout)));
+      } finally {
+        clearInterval(progress);
+        const left = (waits.get(selfId) ?? 1) - 1;
+        if (left <= 0) {
+          waits.delete(selfId);
+          clearListener(selfId);
+        } else {
+          waits.set(selfId, left);
+        }
+      }
+    },
+  );
+
+  attachGrokDelivery(server, boundId);
+}
 
 await server.connect(new StdioServerTransport());
 }

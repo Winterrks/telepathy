@@ -18,8 +18,8 @@ export { agentLabel };
  * has not reported a session id yet is still keyed by its pid:
  *   session.json   SessionStart hook (or in-process plugin): session/thread id and cwd
  *   presence.json  MCP server (or in-process plugin): proves telepathy is loaded in that session
- *   listener.json  whatever wakes the session when a message arrives (Claude's monitor, an in-process
- *                  plugin): proves inbound messages reach the model without it asking
+ *   listener.json  whatever is delivering inbound messages right now (Claude's monitor, a Grok
+ *                  wait_for_messages call, an in-process plugin). Hooks stay quiet while it is live.
  */
 export interface SessionRecord {
   agent: Agent;
@@ -421,6 +421,24 @@ export function registerPresence(
 export function registerListener(agent: Agent, pid: number, id = peerId(agent, pid)): void {
   const record: ListenerRecord = { pid: process.pid, procStart: procStart(process.pid), startedAt: new Date().toISOString() };
   writeJsonAtomic(path.join(peerDir(id), 'listener.json'), record);
+}
+
+/** Pid recorded in listener.json, whether or not that process is still alive. */
+export function listenerPid(id: string): number | undefined {
+  return readJson<ListenerRecord>(path.join(peerDir(id), 'listener.json'))?.pid;
+}
+
+/**
+ * Removes listener.json when this process wrote it. A monitor in another process registers its own pid;
+ * a wait ending in this one must not delete that registration.
+ */
+export function clearListener(id: string): void {
+  const file = path.join(peerDir(id), 'listener.json');
+  try {
+    if (readJson<ListenerRecord>(file)?.pid === process.pid) fs.rmSync(file, { force: true });
+  } catch {
+    // best effort
+  }
 }
 
 /**

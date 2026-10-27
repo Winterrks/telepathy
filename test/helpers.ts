@@ -131,15 +131,22 @@ export async function killAndWait(child: ChildProcess): Promise<void> {
   });
 }
 
-export async function connectServer(sb: Sandbox, agent: Agent, agentPid: number, cwd = ROOT) {
+export async function connectServer(
+  sb: Sandbox,
+  agent: Agent,
+  agentPid: number,
+  cwd = ROOT,
+  clientOptions?: ConstructorParameters<typeof Client>[1],
+  extraEnv?: Record<string, string>,
+) {
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [path.join(DIST, 'server.mjs'), '--agent', agent],
-    env: { ...sb.env, TELEPATHY_AGENT_PID: String(agentPid) },
+    env: { ...sb.env, TELEPATHY_AGENT_PID: String(agentPid), ...extraEnv },
     cwd,
     stderr: 'pipe',
   });
-  const client = new Client({ name: `test-${agent}`, version: '1.0.0' });
+  const client = new Client({ name: `test-${agent}`, version: '1.0.0' }, clientOptions);
   await client.connect(transport);
   return client;
 }

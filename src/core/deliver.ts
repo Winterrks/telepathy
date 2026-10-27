@@ -413,6 +413,12 @@ function inboxStatus(recipient: Peer): string {
   const ref = peerRef(recipient);
   if (peerStatus(recipient)?.status === 'waiting') return waitingNote(ref, recipient.hasListener ? 'delivered to' : 'stored for');
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
+  if (recipient.agent === 'grok') {
+    return (
+      `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; ` +
+      `a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`
+    );
+  }
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }

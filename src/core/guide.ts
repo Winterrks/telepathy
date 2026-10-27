@@ -22,7 +22,10 @@ export function guideLines(agent: Agent, opts: GuideOptions = {}): string[] {
   ];
   if (opts.monitorCommand) {
     lines.push(
-      `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`,
+      `- IMPORTANT: on Grok Build, your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand} Do not also call wait_for_messages: that call would take messages the monitor prints and block the turn. If a listener is already registered, wait_for_messages returns immediately and claims nothing.`,
+    );
+    lines.push(
+      '- IMPORTANT: on Grok Bot there is no monitor tool, so do not start that command. Call wait_for_messages with timeoutMs 300000 (or the longest the client allows) and, whenever it returns, handle what it found and call it again. A result that says no messages arrived only means the wait ended.',
     );
   }
   if (opts.waiterCommand) {

@@ -6,7 +6,7 @@ Telepathy already has one bus: a file inbox under `~/.telepathy`, three tools (`
 
 This note records how delivery works in this repo today, what each harness can actually do as of the sources below, and a layered shape so the next harness is a thin adapter instead of another special case. It does not implement that shape.
 
-A concurrent change is adding push delivery for Grok Bot clients. That work owns the Grok Bot wake mechanism. This note only reserves a slot for it. See [Grok Bot](#grok-bot).
+Grok Bot's `wait_for_messages` is the long-poll on this same inbox. It is registered only for Grok. See [Grok Bot](#grok-bot).
 
 ## What delivery means
 
@@ -142,13 +142,13 @@ Grok's session actor is already ACP-shaped internally (`acp_session.rs`, leader-
 
 ### Grok Bot
 
-Grok Bot clients that only speak MCP have the three tools and no hook process. `read_messages` is the whole receive path. MCP cannot push a tool call into an idle client (see below).
+Grok Bot clients that only speak MCP have no hook process. `wait_for_messages` blocks on the MCP connection the bot already holds and returns the inbox in the same rendering as `read_messages`. Returning a message appends `telepathy-id:<id>` to `delivery-transcript.jsonl`, which is the sender's confirm proof. The same 100s abort and 10s grace apply. A failed confirm withdraws the copy, and a later wait does not return it. An offline session fails immediately and nothing is written. `read_messages` still claims whatever is in the inbox during that window. MCP cannot push a tool call into an idle client (see below); the parked tool call is the wait.
 
 The product itself can wake a Bot without MCP. Official docs, updated 22 Oct 2026, say one Bot can send an asynchronous message to another Bot, and the receiver wakes and can reply later. Routines run on a schedule or, where supported, after a Cursor account event such as Slack or GitHub. A test run does real work. Inference hooks are the wrong seam: before a governed model call, Cursor POSTs a signed `prompt` frame to an endpoint you own, and that endpoint returns allow or deny. It does not insert a message. ([Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [Message and collaborate](https://docs.x.ai/grok-bot/chat-and-collaboration), [Inference hooks](https://docs.x.ai/grok-bot/inference-hooks).) Webhook triggers with Standard Webhooks signatures are documented for Grok automations, last updated 17 Aug 2026, and the Bot routines page points at webhooks for schedules and Slack. A valid webhook returns 202 and starts work asynchronously. ([Webhook triggers](https://docs.x.ai/grok/automations/webhooks).) That is a notification-then-read ladder if the routine's first step is "call read_messages". It is not injection into an already-open MCP turn.
 
 Third-party bridges use the same doorbell shape. They are prior art, not a dependency. ([grok-bot-mcp-connector](https://glama.ai/mcp/servers/chipherndon/grok-bot-mcp-connector), retrieved 27 Oct 2026.)
 
-Push delivery for MCP clients is in progress on a separate cloud agent, ["Push delivery of incoming messages for Grok Bot clients"](https://cursor.com/agents/bc-5fc4e04e-258b-59c3-8a1e-61969582bd7e). This design does not choose its transport, its session id, or its code layout. The contract it should satisfy is in [Adapter contract](#adapter-contract). Do not also call Bot webhooks from the core bus. Two wakes for one inbox file is the double-delivery bug.
+`wait_for_messages` is that receive path. It uses the peer id and the inbox. It does not add a second queue. Do not also call Bot webhooks from the core bus for a peer that already has a listener. Two wakes for one inbox file is the double-delivery bug. A logging notification and `notifications/resources/updated` on `telepathy://inbox` are a side channel: they do not claim the message and they are not confirmation.
 
 ### Antigravity
 
@@ -266,7 +266,7 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 | Antigravity IDE | Same hooks, if the IDE loads the plugin | TBD | No | While idle | No sidecar |
 | Qwen Code | Same hook family | No | No | While idle | ACP sessions treat hook `ask` as deny |
 | Grok CLI | `PostToolUse` / `Stop`, after the model starts `monitor` | Yes, after that monitor starts | Monitor lines | Before the monitor, and on the next typed prompt (`UserPromptSubmit` drops stdout) | Internal ACP session actor; do not attach from outside |
-| Grok Bot MCP client | No | Webhook or command, when `delivery.json` is mode 600 and names the peer. One POST per burst. The remote routine still needs a local reader | The POST is a wake, not the message | Yes, the inbox copy, on a client running on this machine | `wait_for_messages` is the other, unmerged change. This one does not add that tool |
+| Grok Bot MCP client | `wait_for_messages` returns the message and records `telepathy-id` in `delivery-transcript.jsonl` | While that call is parked. A webhook or command from `delivery.json` is still only a doorbell | The POST, and a logging or resource notice, are not the message | If no wait is parked, the confirm window ends and the copy is withdrawn | The tool does not queue for an offline peer |
 | Devin CLI | Hook context / Stop block | No | No | While idle | Plugin hooks fail open |
 | Cursor CLI | `postToolUse` `additional_context` | No | No | While idle, and at turn end on the build that skips plugin `stop` | `followup_message` documented, not observed on CLI 2026.09.23 |
 | Kimi Code | Prompt stdout / Stop exit 2 | No | No | While idle, and between tools (no PostToolUse) | Vendor page not found; retest |
@@ -375,7 +375,7 @@ A listener that is alive stops the walk, because that process will claim the fil
 
 - A telepathy ACP proxy in front of every CLI.
 - MCP resource subscriptions, sampling, or elicitation as the wake signal.
-- A long-polling MCP tool that holds the model's turn open. It burns the tool timeout and blocks the session the message is supposed to interrupt.
+- A long-polling MCP tool on a harness that already has a monitor, a queue, or a hook wake. Grok Bot is the exception: it has none of those, so `wait_for_messages` is its receive path. It is not registered for any other agent, and it does not leave mail for an offline peer.
 - Per-harness copies of the rate limit, the archive, or the `[telepathy]` header.
 - Writing `AI!` comments, fake user prompts on disk, or clipboard keystrokes. The accessibility bridge some people use to drive the Grok Bot desktop app is a different product and is out of scope here.
 
@@ -409,7 +409,7 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 
 **Phase 2, still open.** Codex `turn/steer` while busy, beside the hook, with `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread.
 
-**Phase 3, split.** The webhook in this change is the Grok Bot wake. `wait_for_messages` (branch `cursor/grok-bot-delivery-bd7e`) is a long-poll on the same inbox and is not copied here. They meet at the peer id and the inbox: the webhook tells the bot to read, and that tool, once merged, is one way to read. Grok Build's monitor stays the CLI path. The webhook does not replace it. A peer with a live listener is not also sent a webhook, so the monitor is not raced.
+**Phase 3.** The webhook is a Grok Bot doorbell. `wait_for_messages` is the long-poll on the same inbox: it claims the file and writes the delivery transcript, so `send_message` can confirm. They meet at the peer id and the inbox. Grok Build's monitor stays the CLI path. The webhook does not replace it. A peer with a live listener (the monitor, or a parked wait) is not also sent a webhook, so the two are not raced. A failed confirm withdraws the copy. A later wait does not return it, and an offline peer is not written at all.
 
 The POST only wakes the remote routine. A Grok Bot webhook trigger, such as `https://api2.cursor.sh/automations/webhook/<uuid>`, returns HTTP 200 when the routine starts, and every POST costs a turn. The body is untrusted. The routine does not have this machine's `~/.telepathy` inbox. Reading still needs a client on this machine: a persistent local session, or the server kept on a stable name with `TELEPATHY_NAME` or `--name`. This change does not bridge the remote routine to that inbox. `delivery.json` sends `Authorization: Bearer <key>` and `X-Automation-Key: <key>` when `key` is set. `authHeaders` replaces those names. `headers` overrides a single value. `node dist/delivery.mjs test` sends `{"event":"probe"}` so the URL can be checked without a real message.
 
