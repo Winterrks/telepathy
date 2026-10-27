@@ -1,6 +1,6 @@
 # Unified delivery across harnesses
 
-Status: design only. No behavior change, no version bump. Retrieved 27 October 2026 (Europe/Lisbon).
+Status: design only. No behavior change, no version bump. First pass and a second source pass, both 27 October 2026 (Europe/Lisbon). The second pass is called out inline where it changes a conclusion.
 
 Telepathy already has one bus: a file inbox under `~/.telepathy`, three tools (`list_peers`, `send_message`, `read_messages`), and a pile of per-harness listeners. What it does not have is one delivery contract. Each harness grew its own way of getting a message into a session, and several of those ways only work when the receiver happens to be mid-turn, or when the model remembers to start a watcher.
 
@@ -59,6 +59,12 @@ Plugin monitors are the idle-wake path telepathy uses. A monitor is a long-runni
 
 Claude's own cross-session tools are the prior art telepathy already bridges. `ListAgents` and `SendMessage` deliver plain text between Claude sessions; an idle session starts a turn; a busy session sees the message between tool calls; `crossSessionInbound` can accept, hold, or refuse. Telepathy's `PreToolUse` on `SendMessage` delivers other agents' addresses and then denies the native call, so Claude's UI shows an error even when the inbox write succeeded. Native Claude-to-Claude traffic is not intercepted. ([Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), retrieved 27 Oct 2026; `src/hook.ts`.)
 
+The same page documents a direct inject telepathy does not use yet. Since v2.1.224 (macOS, Linux, WSL 2) and v2.1.234 (native Windows), each session with messaging enabled binds an inbox socket. Hooks and Bash see `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`. A script may connect and send `{"type":"auth","token":...}` as the first line (optional on macOS and Linux, required on native Windows). Messages on that socket go through the same inbound controls as `SendMessage`. The exception is an own-child post: when no `crossSessionInbound` value applies, Claude delivers a message it can verify came from the session's own child. If it cannot verify that, a bypass-permissions session holds the message. `refuse` drops every socket message and still binds the socket. Bare mode does not bind one. `claude -p` does. ([Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [v2.1.224 release notes](https://github.com/anthropics/claude-code/releases/tag/v2.1.224).)
+
+The page excerpt retrieved here shows the auth line and the trust rules. It does not quote the following line that carries the message body. Do not invent that payload from another project's README. Read the current page, then test, before any adapter writes the socket. Until then the monitor remains the Claude path this repo actually runs.
+
+This is also the answer to the open question about `crossSessionInbound`. A socket write participates in accept, hold, and refuse. The monitor path does not. Prefer the socket for Claude-to-Claude once the payload is confirmed, and keep the monitor for hosts that do not bind a socket. A message from Codex or OpenCode into Claude is not an own-child post, so hold and refuse apply. That is the trust behavior to copy, not to bypass.
+
 The Agent SDK can `query()` a session the SDK itself spawned, including a follow-up on a resumed session. That is not a handle on someone else's already-open TUI. ([Agent SDK sessions](https://code.claude.com/docs/en/agent-sdk/sessions), [Python SDK reference](https://code.claude.com/docs/en/agent-sdk/python), retrieved 27 Oct 2026.)
 
 ### Codex
@@ -97,6 +103,8 @@ The `notification` hook can return `additionalContext` and "inject it as a prepe
 
 So Copilot stays next-boundary. A block on `agentStop` covers "a message landed while the turn was ending". A message that lands after the session is already idle waits for the next prompt or tool call.
 
+`copilot --acp` is a real ACP server (stdio, or `--port`). `session/load` has been able to resume a session stored on disk since 0.0.410 (14 Feb 2026). A maintainer comment on 7 Apr 2026 says v1.0.19 lets `session/list` and `session/load` see sessions another process created, and that two processes still cannot edit one live session at the same time. Loading is a sequential resume, not a poke into the TUI the user already has open. ([ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server), [changelog 0.0.410](https://github.com/github/copilot-cli/blob/f774d4ad/changelog.md), [copilot-cli#1767](https://github.com/github/copilot-cli/issues/1767).)
+
 ### Cursor
 
 Official hooks include `sessionStart` (`additional_context` into the initial system context), `postToolUse` (`additional_context` after the tool result), `beforeSubmitPrompt`, and `stop`. A non-empty `followup_message` from `stop` is submitted as the next user message. Default loop cap is 5 per script; `loop_limit: null` removes it. Claude-shaped `decision: "block"` on `Stop` is accepted as a follow-up. ([Hooks](https://cursor.com/docs/hooks), [third-party hooks](https://cursor.com/docs/reference/third-party-hooks), retrieved 27 Oct 2026.)
@@ -125,9 +133,13 @@ Grok's session actor is already ACP-shaped internally (`acp_session.rs`, leader-
 
 ### Grok Bot
 
-Grok Bot clients that only speak MCP have the three tools and no hook process. `read_messages` is the whole receive path. MCP cannot push a tool call into an idle client (see below). Webhook routines can wake a bot, which then polls a mailbox; that pattern shows up in third-party bridges, and it is a notification-then-read ladder, not injection. ([grok-bot-mcp-connector](https://glama.ai/mcp/servers/chipherndon/grok-bot-mcp-connector), retrieved 27 Oct 2026; the pattern is prior art, not a dependency.)
+Grok Bot clients that only speak MCP have the three tools and no hook process. `read_messages` is the whole receive path. MCP cannot push a tool call into an idle client (see below).
 
-Push delivery for those clients is in progress on a separate cloud agent, ["Push delivery of incoming messages for Grok Bot clients"](https://cursor.com/agents/bc-5fc4e04e-258b-59c3-8a1e-61969582bd7e). This design does not choose its transport, its session id, or its code layout. The contract it should satisfy is in [Adapter contract](#adapter-contract).
+The product itself can wake a Bot without MCP. Official docs, updated 22 Oct 2026, say one Bot can send an asynchronous message to another Bot, and the receiver wakes and can reply later. Routines run on a schedule or, where supported, after a Cursor account event such as Slack or GitHub. A test run does real work. Inference hooks are the wrong seam: before a governed model call, Cursor POSTs a signed `prompt` frame to an endpoint you own, and that endpoint returns allow or deny. It does not insert a message. ([Skills and routines](https://docs.x.ai/grok-bot/skills-routines-and-automations), [Message and collaborate](https://docs.x.ai/grok-bot/chat-and-collaboration), [Inference hooks](https://docs.x.ai/grok-bot/inference-hooks).) Webhook triggers with Standard Webhooks signatures are documented for Grok automations, last updated 17 Aug 2026, and the Bot routines page points at webhooks for schedules and Slack. A valid webhook returns 202 and starts work asynchronously. ([Webhook triggers](https://docs.x.ai/grok/automations/webhooks).) That is a notification-then-read ladder if the routine's first step is "call read_messages". It is not injection into an already-open MCP turn.
+
+Third-party bridges use the same doorbell shape. They are prior art, not a dependency. ([grok-bot-mcp-connector](https://glama.ai/mcp/servers/chipherndon/grok-bot-mcp-connector), retrieved 27 Oct 2026.)
+
+Push delivery for MCP clients is in progress on a separate cloud agent, ["Push delivery of incoming messages for Grok Bot clients"](https://cursor.com/agents/bc-5fc4e04e-258b-59c3-8a1e-61969582bd7e). This design does not choose its transport, its session id, or its code layout. The contract it should satisfy is in [Adapter contract](#adapter-contract). Do not also call Bot webhooks from the core bus. Two wakes for one inbox file is the double-delivery bug.
 
 ### Antigravity CLI
 
@@ -163,7 +175,19 @@ File hooks include `TaskStart`, `TaskResume`, `UserPromptSubmit`, `PreToolUse`, 
 
 ### Continue
 
-Continue has rules and prompt files. A February 2026 hook survey recorded no Continue hook surface. Later CLI builds have been reported to grow hooks, and the project has also been described as unmaintained. No current primary page showed a way to push a turn into a running Continue session. Leave it poll-only until someone retests a specific version. Do not add a manifest on the strength of the survey.
+Continue CLI merged a Claude-shaped hook runner on 4 Mar 2026 ([continuedev/continue#11029](https://github.com/continuedev/continue/pull/11029)). The internal agent notes list command and HTTP handlers, exit 0 to proceed and exit 2 to block, and `hookSpecificOutput`. Prompt and agent hook types were not implemented yet. Config merges `.continue/` and `.claude/` settings. A docs issue for a public hooks page was still open on 6 Mar 2026 ([#11115](https://github.com/continuedev/continue/issues/11115)). The February 2026 survey that said Continue had no hooks is stale. Treat current Continue CLI as next-boundary, same class as Copilot, and retest a release before adding a manifest. Nothing in that PR starts a turn while the CLI is idle. The IDE product is a separate surface. This pass did not find an inject API for it.
+
+### Factory Droid
+
+Droid hooks are Claude-shaped. `UserPromptSubmit`, `SessionStart`, and `PostToolUse` can return `hookSpecificOutput.additionalContext`. `Stop` can `decision: "block"` and continue. `Notification` fires for `idle_prompt` among other types, which is the same trap as Copilot: the event runs when Droid goes idle, not when telepathy writes a file. Config is `~/.factory/hooks.json` and `.factory/hooks.json`. ([Factory hooks](https://docs.factory.com/harness/hooks), [hooks reference](https://factory.mintlify.app/reference/hooks-reference), retrieved 27 Oct 2026.) Next-boundary only. Not a peer until someone ships a manifest and a live send.
+
+### Kiro CLI
+
+Kiro CLI V3 hooks use PascalCase triggers in `.kiro/hooks/*.json`. `UserPromptSubmit` cannot reject the prompt. A non-zero exit is forwarded to the agent as context. `Stop` cannot reject with exit 2, but exit 1 or `{"decision":"block","reason":"..."}` asks for another turn. Command actions receive JSON on stdin. Agent actions "inject a prompt into the current conversation", which is still inside a turn Kiro already started. ([V3 hooks migration](https://kiro.dev/docs/cli/v3/hooks-migration/), [Hooks](https://kiro.dev/docs/hooks/), retrieved 27 Oct 2026.) Next-boundary. No idle wake found.
+
+### Crush
+
+Crush ships 13 hook events, including `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`, `TurnStart`, and `TurnEnd`. Native stdout uses `context` (a string or a list) to append text to a tool result, plus `decision`, `updated_input`, and `updated_output`. Exit 2 blocks a tool. Exit 49 halts the turn. The Claude-compat parser drops `hookSpecificOutput.additionalContext`. An open issue filed 19 Jun 2026 shows the field is never copied onto `HookResult.Context`, while the native `context` field is. ([Crush hooks](https://github.com/charmbracelet/crush/blob/main/docs/hooks/README.md), [crush#3156](https://github.com/charmbracelet/crush/issues/3156).) A Crush adapter must emit `context`, not the Claude envelope telepathy uses everywhere else. That is a new `HookShape`, not a config alias. No idle-wake event in the 13.
 
 ### Aider
 
@@ -183,6 +207,8 @@ The 28 July 2026 spec revision is explicit.
 - Elicitation asks the user a question (form or URL) during a tool call. Using it to deliver an agent-to-agent message would put another agent's text in a dialog the user thinks is from the tool, and it only works while a tool call is open. Do not use it. ([Elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation).)
 
 Logging and roots are deprecated in the same revision. Telepathy's server advertises tools only (`src/server.ts`). Keep it that way.
+
+Tasks moved out of the core spec into the extension `io.modelcontextprotocol/tasks` (SEP-2663, final, created 27 Apr 2026). A server may return a task handle from `tools/call`. The client polls `tasks/get`. That is a slower poll, not a wake. The events extension (SEP-3415, draft PR opened 5 Oct 2026) sketches `events/list`, poll, a long-lived stream, and signed webhooks so a client can hear about an upstream event while the user is away. It is not accepted. The working group's charter still describes callback semantics as in progress. ([SEP-2663](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2663), [SEP-3415](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/3415), [charter](https://modelcontextprotocol.io/community/working-groups/tasks-events).) Do not block the ladder on it. If it lands later, it is one more `direct` adapter for clients that both advertise the extension and turn an event into a turn. The spec, even drafted, only delivers the event to the client.
 
 A harness issue from the same period states the gap cleanly: notifications stop at the client, and "the notification → agent-activity seam is a harness concern" that nobody owns yet. ([strands-agents/harness-sdk#3600](https://github.com/strands-agents/harness-sdk/issues/3600).) Telepathy should not wait for that seam. Hooks, monitors, and native queues already are it.
 
@@ -208,12 +234,12 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 
 | Harness | Direct inject, today | Wake idle, today | Notification, today | Poll only, today | Best platform rung, unused or partial |
 |---|---|---|---|---|---|
-| Claude Code TTY | Monitor line into a turn | Yes | The monitor line is the notification | If no monitor and no hooks | SDK `query` only for SDK-owned sessions |
+| Claude Code TTY | Monitor line into a turn | Yes | The monitor line is the notification | If no monitor and no hooks | Inbox socket since v2.1.224, same wake as `SendMessage`, and it honors `crossSessionInbound`. Payload line after auth was not in the page excerpt retrieved here |
 | Claude app / stream-json | Waiter exit, or hooks | Yes, once the model has started the one-shot waiter | Waiter completion | Until the waiter runs | Same |
 | Codex | `codex queue` plus mid-turn hook | Yes, unless interrupted | Queue is silent | If queue submit fails | `turn/steer` while busy; `Stop` continuation exists and is intentionally unused |
 | OpenCode 2 | `session.prompt` steer | Yes | No | If the plugin is not loaded | HTTP steer/queue |
 | OpenCode 1 / Kilo CLI | `promptAsync` when idle | Yes, when idle | No | If the plugin is not loaded | — |
-| Copilot CLI | Hook context / Stop block | No | `notification` hook cannot be triggered by us | Between turns, if hooks did not run | SDK `modifiedPrompt` is not a wake |
+| Copilot CLI | Hook context / Stop block | No | `notification` hook cannot be triggered by us | Between turns, if hooks did not run | `copilot --acp` can `session/load` a disk session. v1.0.19 still refuses two live writers |
 | Gemini CLI | `BeforeAgent` / `AfterTool` / `AfterAgent` | No | `Notification` hook is status only | While idle | `gemini --acp` only for a process we spawned |
 | Qwen Code | Same hook family | No | No | While idle | ACP sessions treat hook `ask` as deny |
 | Grok CLI | `PostToolUse` / `Stop`, after the model starts `monitor` | Yes, after that monitor starts | Monitor lines | Before the monitor, and on the next typed prompt (`UserPromptSubmit` drops stdout) | Internal ACP session actor; do not attach from outside |
@@ -227,7 +253,10 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 | Amp | No | No | No | Not a peer yet | In-process `appendUserMessage`; orb webhook is notify-then-read |
 | Goose | No | No | No | Not a peer yet | `Stop` can continue; prompt hooks do not inject until PR 10361 lands |
 | Cline | No | No | No | Not a peer yet | `contextModification` on the next prompt, VS Code ≥ 4.1.20 |
-| Continue | No | No | No | Not a peer yet | No confirmed push API |
+| Continue CLI | No | No | No | Not a peer yet | Claude-shaped hooks merged 4 Mar 2026. Public docs issue still open that day. Next prompt, not idle wake |
+| Factory Droid | No | No | No | Not a peer yet | `additionalContext` on prompt and tool hooks. `Stop` can continue. `idle_prompt` notification is not our wake |
+| Kiro CLI V3 | No | No | No | Not a peer yet | `Stop` `decision: block` continues. `UserPromptSubmit` cannot reject. Agent actions inject into a turn already running |
+| Crush | No | No | No | Not a peer yet | Native `context` field injects. Claude `additionalContext` is dropped ([crush#3156](https://github.com/charmbracelet/crush/issues/3156)) |
 | Aider | No | No | No | Not a peer | `--watch-files` is a file convention, not a session API |
 | Zed | No | No | No | Not a peer | Client of other agents; those agents can be peers |
 
@@ -341,7 +370,11 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 
 **Phase 1.** Extract `DeliveryAdapter` around the current Codex queue and the current inbox write. `direct` for Claude is "inbox write, listener claims". `direct` for OpenCode stays inside the plugin, which already watches the inbox; the sender does not call into OpenCode. Behavior and status strings stay. Tests in `test/integration.test.ts` already drive hooks, the monitor, the OpenCode plugin, and a fake `codex queue`; point them at the adapter.
 
-**Phase 2.** Codex mid-turn: call `turn/steer` when the peer is busy and the app-server accepts it, and keep `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread. Retest an interrupted TUI; the README's Esc quirk is load-bearing.
+**Phase 2.** Two inject gaps that vendor docs already name, each behind a live test.
+
+Codex mid-turn: call `turn/steer` when the peer is busy and the app-server accepts it, and keep `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread. Retest an interrupted TUI. The README's Esc quirk is load-bearing.
+
+Claude inbox socket: when the recipient's environment has `CLAUDE_CODE_MESSAGING_SOCKET`, post there instead of relying on the monitor, and let `crossSessionInbound` hold or refuse. The monitor stays the fallback when the socket is missing. Copy the post-auth payload from the current docs page into a test before shipping. A wrong line would look like a successful connect and deliver nothing.
 
 **Phase 3.** Grok Bot push lands in the other change, as the Grok Bot `direct` implementation of this contract. This phase is coordination, not code in this note: one claim, the existing formatter, the existing rate limit, the existing peer id. Grok CLI's monitor-tool path stays the CLI adapter. Do not replace it with the Bot mechanism unless they are the same process.
 
@@ -352,7 +385,7 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 - Copilot: leave `notification` unused. It cannot see our inbox.
 - Kimi and Antigravity: retest against current CLIs before adding events. Antigravity has no stable public schema.
 
-**Phase 5.** New peers, one adapter each, only where phase 4's retest would be honest: Amp (in-process `appendUserMessage`), Pi (in-process `before_agent_start`), Goose (`Stop` continuation, poll while idle), Cline (next prompt, version-gated). Aider, Continue, and Zed-the-editor stay out. Zed-hosted Claude or Codex is already a peer if that process loads telepathy.
+**Phase 5.** New peers, one adapter each, only after a live send on a named version: Amp (`appendUserMessage`), Pi (`before_agent_start`), Goose (`Stop` continuation, poll while idle), Cline (next prompt, VS Code at least 4.1.20), Continue CLI (Claude-shaped hooks, retest because the public docs page was still an open issue), Factory Droid (same envelope as Claude), Kiro CLI V3 (`Stop` block), Crush (native `context`, not `additionalContext`). Aider and Zed-the-editor stay out. Zed-hosted Claude or Codex is already a peer if that process loads telepathy.
 
 **Not a phase.** ACP proxy. Reopen only if a harness ships a supported multi-client attach that works on a process the user started without telepathy. The v2 RFD does not.
 
@@ -362,15 +395,21 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 - Codex `turn/steer` versus waiting for `PostToolUse`: steering mid-tool-call was observed by others to work during a long shell, but a steer that lands after the model has committed to its final text is dropped with a successful write. The adapter needs `expectedTurnId` (or the app-server's equivalent error) and must fall back to the queue when steer returns "not steerable".
 - Grok Bot session identity. If the push work addresses a chat inside a shared process, the registry's pid id is wrong for it. Settling that belongs in that change; this note should be updated in the same PR so the matrix does not keep two meanings of `grok`.
 - Cursor IDE versus Cursor CLI. The docs describe the IDE and the CLI together. Telepathy's live test was the CLI. The IDE extension is already listed as unsupported because one process hosts many chats.
-- Whether Claude's `crossSessionInbound` hold should apply to telepathy messages into a Claude session that has it set to `hold` or `refuse`. Today they skip it. Matching it would be a behavior change and a trust improvement.
+- Claude `crossSessionInbound`. The monitor path skips it. The documented inbox socket does not. Phase 2 should switch Claude delivery to the socket where the socket exists, so hold and refuse apply without telepathy reimplementing them. Until that payload is copied from the docs into a test, this stays open.
 - Antigravity and Kimi vendor docs. Both adapters are repo-tested and under-documented upstream. They should not gain new events until a primary page or a fresh live test says the stdout shape still works.
 - Goose PR 10361. If it merges, Goose moves from "Stop continues, prompt hooks are blind" to "next prompt can carry context". Recheck before writing a manifest.
 
 ## Prior art worth copying, and worth not copying
 
-Worth copying: Claude's labeled cross-session messages and the accept/hold/refuse switch; Codex's queue plus an explicit delete so two paths cannot both win; OpenCode's `steer` versus `queue` distinction; Amp's continuation cap.
+Worth copying: Claude's labeled cross-session messages, the accept/hold/refuse switch, and the inbox socket those messages already use; Codex's queue plus an explicit delete so two paths cannot both win; OpenCode's `steer` versus `queue` distinction; Amp's continuation cap.
 
-Worth not copying: hook-only inboxes that inject on the next prompt and call that push ([agent-chat-mcp](https://github.com/RLabs-Inc/agent-chat-mcp/) does this for Claude, Codex, and Gemini). It is rung 3, and it is what telepathy already does for the hook harnesses. Accessibility-driven typing into a desktop app. Webhook doorbells that wake a bot which then polls, except as the Grok Bot fallback if push cannot land inside the client.
+[open-agent-bridge](https://github.com/kevinArgueta96/open-agent-bridge) is the closest working system read for this pass. Its README says Claude delivery writes `CLAUDE_CODE_MESSAGING_SOCKET` (Claude Code at least 2.1.224), Codex delivery calls the app-server daemon socket (Codex at least 0.162), OpenCode and pi start turns from an in-process plugin over a private Unix socket, and Antigravity starts turns with `SendUserCascadeMessage` after the agent runs a one-time attach because the language server wants a CSRF token that hooks and MCP servers do not get. The Claude and Codex halves match vendor docs retrieved the same day. The Antigravity method and the CSRF claim are README statements. This pass did not read that repository's source. Copy the shape (one bus, one native door per harness). Do not copy an unreviewed Antigravity client.
+
+[hcom](https://github.com/salemaziel/hcom) is hooks in front of Claude, Gemini, Codex, and OpenCode, with a local SQLite log. It claims mid-turn inject and idle wake. That is telepathy's existing ladder, plus transcript and terminal observation this design does not take. Watching another session's screen is a surveillance feature, not delivery.
+
+[agent-chat-mcp](https://github.com/RLabs-Inc/agent-chat-mcp/) injects on the next `UserPromptSubmit` and calls that push. It is rung 3. [agent-inbox](https://github.com/salimfadhley/agent-inbox) is a mailbox with issued ids and HTTP clients. Poll, unless a hook is added outside the project.
+
+Worth not copying: accessibility-driven typing into a desktop app. A webhook doorbell that wakes a Grok Bot which then polls, except as that other change's fallback if it cannot land inside the client. Crush's Claude-compat path, until `additionalContext` is actually delivered.
 
 ## Sources
 
@@ -388,3 +427,17 @@ Primary pages, retrieved 27 October 2026 unless the row names an older date:
 - ACP schema (`session/prompt`), v2 prompt RFD (revised 1 Oct 2026), Zed external agents, Zed ACP registry post (28 Jan 2026)
 - Amp plugin API; Goose hooks guide and PR 10361 (open as of 15 Jul 2026); Cline issue 13554 (fix reported 24 Sep 2026); Aider watch-files
 - This repo: `src/core/deliver.ts`, `src/core/messages.ts`, `src/core/codex-queue.ts`, `src/hook.ts`, `src/monitor.ts`, `src/opencode.ts`, `src/server.ts`, and the per-harness manifests listed above
+
+Second pass, same day, added:
+
+- Claude Code inbox socket and `crossSessionInbound` behavior on that socket (cross-session messaging page, release v2.1.224)
+- Copilot ACP server reference, changelog 0.0.410, issue 1767 (live co-editing still unsupported as of the 7 Apr 2026 maintainer comment)
+- Grok Bot routines (22 Oct 2026), bot-to-bot handoff, inference hooks, Grok automation webhooks (17 Aug 2026)
+- Continue CLI hooks PR 11029 (merged 4 Mar 2026) and docs issue 11115
+- Factory Droid hooks reference
+- Kiro CLI V3 hooks migration
+- Crush hooks README and issue 3156 (19 Jun 2026)
+- MCP tasks SEP-2663 (final) and events SEP-3415 (draft, opened 5 Oct 2026)
+- open-agent-bridge, hcom, and agent-inbox READMEs
+
+Not searched, and named so a reader does not treat silence as a finding: no Slack, Linear, Notion, Datadog, or Sentry workspace is connected to this run. GitHub and the public docs above are the record. Vendor claims that were only in a third-party README are labeled as that. The Antigravity `SendUserCascadeMessage` call is one of those.
