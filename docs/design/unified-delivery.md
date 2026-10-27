@@ -59,7 +59,7 @@ Plugin monitors are the idle-wake path telepathy uses. A monitor is a long-runni
 
 Claude's own cross-session tools are the prior art telepathy already bridges. `ListAgents` and `SendMessage` deliver plain text between Claude sessions; an idle session starts a turn; a busy session sees the message between tool calls; `crossSessionInbound` can accept, hold, or refuse. Telepathy's `PreToolUse` on `SendMessage` delivers other agents' addresses and then denies the native call, so Claude's UI shows an error even when the inbox write succeeded. Native Claude-to-Claude traffic is not intercepted. ([Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), retrieved 27 Oct 2026; `src/hook.ts`.)
 
-The same page documents a direct inject telepathy does not use yet. Since v2.1.224 (macOS, Linux, WSL 2) and v2.1.234 (native Windows), each session with messaging enabled binds an inbox socket. Hooks and Bash see `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`. A script may connect and send `{"type":"auth","token":...}` as the first line (optional on macOS and Linux, required on native Windows). Messages on that socket go through the same inbound controls as `SendMessage`. The exception is an own-child post: when no `crossSessionInbound` value applies, Claude delivers a message it can verify came from the session's own child. If it cannot verify that, a bypass-permissions session holds the message. `refuse` drops every socket message and still binds the socket. Bare mode does not bind one. `claude -p` does. ([Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [v2.1.224 release notes](https://github.com/anthropics/claude-code/releases/tag/v2.1.224).)
+The same page documents the inbox socket the Claude adapter now posts to. Since v2.1.224 (macOS, Linux, WSL 2) and v2.1.234 (native Windows), each session with messaging enabled binds an inbox socket. Hooks and Bash see `CLAUDE_CODE_MESSAGING_SOCKET` and `CLAUDE_CODE_MESSAGING_TOKEN`. A script may connect and send `{"type":"auth","token":...}` as the first line (optional on macOS and Linux, required on native Windows). Messages on that socket go through the same inbound controls as `SendMessage`. The exception is an own-child post: when no `crossSessionInbound` value applies, Claude delivers a message it can verify came from the session's own child. If it cannot verify that, a bypass-permissions session holds the message. `refuse` drops every socket message and still binds the socket. Bare mode does not bind one. `claude -p` does. ([Cross-session messaging](https://code.claude.com/docs/en/cross-session-messaging), [v2.1.224 release notes](https://github.com/anthropics/claude-code/releases/tag/v2.1.224).)
 
 The page excerpt retrieved here shows the auth line and the trust rules. It does not quote the following line that carries the message body. Do not invent that payload from another project's README. Read the current page, then test, before any adapter writes the socket. Until then the monitor remains the Claude path this repo actually runs.
 
@@ -234,7 +234,7 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 
 | Harness | Direct inject, today | Wake idle, today | Notification, today | Poll only, today | Best platform rung, unused or partial |
 |---|---|---|---|---|---|
-| Claude Code TTY | Monitor line into a turn | Yes | The monitor line is the notification | If no monitor and no hooks | Inbox socket since v2.1.224, same wake as `SendMessage`, and it honors `crossSessionInbound`. Payload line after auth was not in the page excerpt retrieved here |
+| Claude Code TTY | Monitor line into a turn, and the inbox socket when the session exports one | Yes, when the socket post is confirmed or a monitor is running | The monitor line is the notification | If the socket does not confirm and no monitor and no hooks | Socket payload is documented (see below). A held or expired post is not delivery |
 | Claude app / stream-json | Waiter exit, or hooks | Yes, once the model has started the one-shot waiter | Waiter completion | Until the waiter runs | Same |
 | Codex | `codex queue` plus mid-turn hook | Yes, unless interrupted | Queue is silent | If queue submit fails | `turn/steer` while busy; `Stop` continuation exists and is intentionally unused |
 | OpenCode 2 | `session.prompt` steer | Yes | No | If the plugin is not loaded | HTTP steer/queue |
@@ -243,7 +243,7 @@ ACP remains useful as an optional adapter for a harness whose only programmatic 
 | Gemini CLI | `BeforeAgent` / `AfterTool` / `AfterAgent` | No | `Notification` hook is status only | While idle | `gemini --acp` only for a process we spawned |
 | Qwen Code | Same hook family | No | No | While idle | ACP sessions treat hook `ask` as deny |
 | Grok CLI | `PostToolUse` / `Stop`, after the model starts `monitor` | Yes, after that monitor starts | Monitor lines | Before the monitor, and on the next typed prompt (`UserPromptSubmit` drops stdout) | Internal ACP session actor; do not attach from outside |
-| Grok Bot MCP client | No | No | No, until the other change lands | Yes | Reserved. See that change |
+| Grok Bot MCP client | No | Webhook or command, when `delivery.json` is mode 600 and names the peer | The POST is a wake, not the message | Yes, the inbox copy | `wait_for_messages` is the other, unmerged change. This one does not add that tool |
 | Devin CLI | Hook context / Stop block | No | No | While idle | Plugin hooks fail open |
 | Antigravity CLI | `injectSteps` / Stop continue | No | No | While idle | Official schema not found |
 | Cursor CLI | `postToolUse` `additional_context` | No | No | While idle, and at turn end on the build that skips plugin `stop` | `followup_message` documented, not observed on CLI 2026.09.23 |
@@ -304,7 +304,7 @@ interface DeliveryAdapter {
 }
 ```
 
-Hooks are not methods. They are pull, declared in the harness manifest, and they call `claimInbox` when they run. `deliver` does not invoke them. It only decides whether to tell the sender "a hook will pick this up" (`nextTurnHook` and `hookRan`, as today) or "poll".
+The implementation records each attempt as `confirmed`, `armed`, `failed`, or `unsupported`, plus when it would fire (`immediate`, `mid-turn`, `turn-end`, `idle`, `next-prompt`, `poll`). `confirmed` is the only result that claims the inbox. `armed` leaves it. Hooks are still pull. `deliver` does not invoke them. It decides whether to say a hook will pick the message up, or that only `read_messages` will.
 
 Rules every adapter follows:
 
@@ -325,16 +325,29 @@ Hook stdout shapes stay in one table. Today they are already centralized (`hookS
 
 ### Fallback ladder
 
-For one message, in order, stop at the first accept:
+Each rung has a time, not only a rank. A rung counts as delivery only when it confirms. Otherwise the message stays in the inbox and the walk continues.
 
-1. **Direct**, if the recipient has a live injector: OpenCode/Kilo plugin, a running Claude monitor or waiter (the inbox write is enough; the watcher claims), a running Grok `monitor`, a future Grok Bot push adapter, an in-process Amp or Pi adapter.
-2. **Native queue**, if the harness drains one: Codex `thread/queue/add` / `codex queue`. While a regular turn is in flight, prefer `turn/steer` when it is wired, and still keep the inbox copy so a hook can win the race and delete the queue item.
-3. **Next-boundary hook**, if `nextTurnHook` is set and a hook has run at least once for this process: leave the inbox. Status: visible at the next prompt, tool result, or turn end, and not while idle.
-4. **Poll**: leave the inbox. Status: only `read_messages`. The using-telepathy skill already tells the model to say so when `read_messages` returns something the hooks never handed over.
+| Rung | When it fires | Confirmed when |
+|---|---|---|
+| Direct | Now: Claude inbox socket, or a live listener that claims the file (monitor, OpenCode plugin) | Socket: an explicit `delivered` reply, or the own-child rule below when no `crossSessionInbound` value applies. Listener: not at send time. The file stays until that process renames it. The status string still says delivered, which is the existing wording |
+| Mid-turn | After the next tool result | The hook claims the inbox. Codex `PostToolUse` does this and deletes the queue item so the turn-end copy does not also run |
+| Turn end | After the current turn completes or fails | Codex prints a queue id. That is acceptance into the queue, not the model reading it, so the inbox copy stays |
+| Idle wake | While the session is idle, or as a doorbell to a remote bot | A webhook HTTP 2xx or a command exit 0 is not confirmation. The inbox copy stays |
+| Next prompt | The user's next prompt, or the next hook boundary | The hook claims the inbox |
+| Poll | `read_messages` | `read_messages` claims the inbox |
 
-Notification is not its own rung. A monitor or webhook that starts a turn is rung 1. A notification that merely asks the model to call `read_messages` is rung 4 with a louder status string. Do not add a side channel that duplicates the inbox.
+Order for one message, continuing while nothing has confirmed:
 
-Interrupted Codex stays on rung 2 and does not fall through to a synthetic `thread/queue/start`. The user stopped that session. The sender is told, as today.
+1. **Direct.** Claude's socket when `CLAUDE_CODE_MESSAGING_SOCKET` was recorded for that peer. Then a live listener (OpenCode/Kilo plugin, Claude monitor or waiter, Grok `monitor`).
+2. **Mid-turn hook**, for Codex, when a turn is in progress and `PostToolUse` has run at least once. This ranks above the queue. `codex queue` does not deliver after a tool call. The hook appends the message to the tool result.
+3. **Native queue**, Codex only, and only when the thread is not interrupted. App-server commit `9341b38` (13 Aug 2026) dispatches the queue after a completed or failed turn and leaves it paused after an interrupt. An interrupt does not call `codex queue` and does not call `thread/queue/start`. The message stays unclaimed for the next prompt hook or `read_messages`. A `codex queue` error is the same shape: the inbox keeps the message, and the sender is told the queue failed.
+4. **Idle wake.** Webhook or command from `delivery.json`, for a peer named there. Grok Bot. The body is `{id, from, count, at}` with no message text. The receiver treats it as untrusted and reads the inbox.
+5. **Next-boundary hook**, if `nextTurnHook` is set and a hook has run, or for Codex if a hook has run. The inbox stays.
+6. **Poll.** The inbox stays. Status: only `read_messages`.
+
+A listener that is alive stops the walk, because that process will claim the file. The socket watcher is the exception: while it is armed, the monitor does not also claim, so a held or refused socket post falls through to `read_messages` instead of being printed twice.
+
+`turn/steer` is still not wired. The mid-turn path that exists today is the hook, not steer.
 
 ### What not to build
 
@@ -370,13 +383,11 @@ Each phase is shippable alone. None of them bumps the release by itself; the rep
 
 **Phase 1.** Extract `DeliveryAdapter` around the current Codex queue and the current inbox write. `direct` for Claude is "inbox write, listener claims". `direct` for OpenCode stays inside the plugin, which already watches the inbox; the sender does not call into OpenCode. Behavior and status strings stay. Tests in `test/integration.test.ts` already drive hooks, the monitor, the OpenCode plugin, and a fake `codex queue`; point them at the adapter.
 
-**Phase 2.** Two inject gaps that vendor docs already name, each behind a live test.
+**Phase 1, as built.** `sendMessage` walks the ladder above. Codex mid-turn stays the `PostToolUse` hook and ranks above `codex queue`. An interrupt or a queue error leaves the inbox unclaimed. Claude's socket watcher posts from the session's own server when the socket path was recorded. A webhook or command wakes a named peer and does not claim. `read_messages` also returns `structuredContent.messages`. A `TELEPATHY_NAME` or `--name` replaces the pid suffix and adopts the previous process's inbox. Two live peers with that name are reported.
 
-Codex mid-turn: call `turn/steer` when the peer is busy and the app-server accepts it, and keep `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread. Retest an interrupted TUI. The README's Esc quirk is load-bearing.
+**Phase 2, still open.** Codex `turn/steer` while busy, beside the hook, with `thread/queue/delete` so a hook that got there first does not steer a duplicate. Do not call `thread/queue/start` on an interrupted thread.
 
-Claude inbox socket: when the recipient's environment has `CLAUDE_CODE_MESSAGING_SOCKET`, post there instead of relying on the monitor, and let `crossSessionInbound` hold or refuse. The monitor stays the fallback when the socket is missing. Copy the post-auth payload from the current docs page into a test before shipping. A wrong line would look like a successful connect and deliver nothing.
-
-**Phase 3.** Grok Bot push lands in the other change, as the Grok Bot `direct` implementation of this contract. This phase is coordination, not code in this note: one claim, the existing formatter, the existing rate limit, the existing peer id. Grok CLI's monitor-tool path stays the CLI adapter. Do not replace it with the Bot mechanism unless they are the same process.
+**Phase 3, split.** The webhook in this change is the Grok Bot wake. `wait_for_messages` (branch `cursor/grok-bot-delivery-bd7e`) is a long-poll on the same inbox and is not copied here. They meet at the peer id and the inbox: the webhook tells the bot to read, and that tool, once merged, is one way to read. Grok Build's monitor stays the CLI path. The webhook does not replace it. A peer with a live listener is not also sent a webhook, so the monitor is not raced.
 
 **Phase 4.** Hook-only harnesses stay hook-only. Fill gaps that are config, after a live retest, not before:
 
@@ -393,9 +404,9 @@ Claude inbox socket: when the recipient's environment has `CLAUDE_CODE_MESSAGING
 
 - Should the hop cap count only `Stop`-driven continuations, or every `send_message` whose triggering turn was itself a telepathy delivery? The second is safer and will false-positive when a person asked the agent to "tell Codex and then reply with what it said".
 - Codex `turn/steer` versus waiting for `PostToolUse`: steering mid-tool-call was observed by others to work during a long shell, but a steer that lands after the model has committed to its final text is dropped with a successful write. The adapter needs `expectedTurnId` (or the app-server's equivalent error) and must fall back to the queue when steer returns "not steerable".
-- Grok Bot session identity. If the push work addresses a chat inside a shared process, the registry's pid id is wrong for it. Settling that belongs in that change; this note should be updated in the same PR so the matrix does not keep two meanings of `grok`.
+- Grok Bot session identity. The pid suffix changes when the client restarts. `TELEPATHY_NAME` or `--name` is the stable address, and a dead peer's inbox moves to the new process. Two live peers with that name are flagged. The peer id is still `grok-<pid>`, so the directory changes. The address does not.
 - Cursor IDE versus Cursor CLI. The docs describe the IDE and the CLI together. Telepathy's live test was the CLI. The IDE extension is already listed as unsupported because one process hosts many chats.
-- Claude `crossSessionInbound`. The monitor path skips it. The documented inbox socket does not. Phase 2 should switch Claude delivery to the socket where the socket exists, so hold and refuse apply without telepathy reimplementing them. Until that payload is copied from the docs into a test, this stays open.
+- Claude `crossSessionInbound`. The socket adapter posts from the session's own server and archives only on confirmation, as the socket section describes. The monitor remains the path when no socket is exported. Whether Claude treats the MCP server as an own-child, or only hooks and Bash, is still the page's "such as" rather than an allowlist. A held post that the user later approves can meet a `read_messages` copy. That window is accepted because the alternative is marking a hold as delivered.
 - Antigravity and Kimi vendor docs. Both adapters are repo-tested and under-documented upstream. They should not gain new events until a primary page or a fresh live test says the stdout shape still works.
 - Goose PR 10361. If it merges, Goose moves from "Stop continues, prompt hooks are blind" to "next prompt can carry context". Recheck before writing a manifest.
 
@@ -410,6 +421,61 @@ Worth copying: Claude's labeled cross-session messages, the accept/hold/refuse s
 [agent-chat-mcp](https://github.com/RLabs-Inc/agent-chat-mcp/) injects on the next `UserPromptSubmit` and calls that push. It is rung 3. [agent-inbox](https://github.com/salimfadhley/agent-inbox) is a mailbox with issued ids and HTTP clients. Poll, unless a hook is added outside the project.
 
 Worth not copying: accessibility-driven typing into a desktop app. A webhook doorbell that wakes a Grok Bot which then polls, except as that other change's fallback if it cannot land inside the client. Crush's Claude-compat path, until `additionalContext` is actually delivered.
+
+## Claude inbox socket
+
+Documented on the cross-session messaging page, retrieved 27 Oct 2026. https://code.claude.com/docs/en/cross-session-messaging
+
+The session binds a Unix socket on macOS and Linux, and a named pipe on native Windows, and exports the path as `CLAUDE_CODE_MESSAGING_SOCKET` to hooks and Bash before `SessionStart`. It also exports `CLAUDE_CODE_MESSAGING_TOKEN`. The auth line `{"type":"auth","token":"..."}` is optional on macOS and Linux, including WSL 2, and required on native Windows, where a connection whose first line is not auth is closed. The message line is `{"type":"user","message":{"role":"user","content":"..."}}`. A line has to finish within 30 seconds. The serialized form has to stay under about 1 MiB. Bare mode binds no socket. Availability is the path being set. Some builds only bound a socket when `CLAUDE_CODE_HARBOR_KITE` or `tengu_harbor_kite` was on. A session that does not export the path is treated as not having the feature.
+
+Versions from that page: v2.1.224 or later on macOS, Linux, and WSL 2. v2.1.234 or later on native Windows. Same-machine messaging on Bedrock, Claude Platform, Agent Platform, Foundry, or with flag fetching off, needs v2.1.248 or later. The token is what the page tells a script to send. Third-party notes put the token at v2.1.228. This code sends the token whenever the session exported it.
+
+`crossSessionInbound` is `accept`, `hold`, or `refuse`. When no value applies, the default depends on whether each side bypasses permission prompts. A hold in an interactive terminal opens an approval dialog. `dialogExpiry` defaults to five minutes, after which a default-held message is dropped. An explicit `hold` does not expire. A `-p` session cannot show the dialog and drops a default-held message at the same deadline.
+
+Own-child exception, from the same page: when no `crossSessionInbound` value applies, Claude delivers a message it verifies came from the session's own child processes. Hooks and Bash are the examples. On Linux the check can use process evidence after the child has exited. On macOS that evidence exists only while the child is still running. On native Windows, and on macOS after the child exits, the token is the verification. Telepathy's MCP server is a child of the Claude session and stays running, so the watcher posts from that process and sends the token. A sender that is another agent's server is not that child, and this code does not post from there. If Claude's verifier is an allowlist of hook and Bash only, the MCP server's post is an ordinary peer message and may be held. The message is archived only when the reply says `delivered`, or when the reply is silence and the own-child rule applies. `held`, `refused`, `expired`, `hold` in settings, and `refuse` in settings leave the inbox in place. `refuse` does not post.
+
+The monitor does not claim while that watcher is armed, so the two do not both present the body. Hooks already stay quiet while any listener is registered, so a held socket message waits for `read_messages` if the monitor is also running. If the monitor is not running, the next hook still sees an unclaimed inbox.
+
+## One protocol
+
+The question is whether every harness should be driven the same way.
+
+**(a) ACP host mode.** Telepathy would launch the agent (`telepathy run codex`, `gemini`, `claude`, `copilot`) and own the session, then inject every message with ACP `session/prompt`. That is the same call for every agent that speaks ACP.
+
+What speaks it today:
+
+| Harness | How you get ACP | Attaches to a TUI the user already started |
+|---|---|---|
+| Gemini CLI | `gemini --acp`. `session/new`, `session/load`, `session/prompt`. Load restores a saved session into this process | No |
+| Copilot CLI | `copilot --acp`. Since v1.0.19, `session/load` can resume a session another process saved. The maintainer comment on issue 1767 (7 Apr 2026) says two live writers are not supported | No |
+| Claude Code | Not its ACP mode for this. Same-machine delivery is the inbox socket | The socket, not ACP |
+| Codex | App-server is the control plane. `thread/resume` and `turn/start` are the equivalents. The TUI is a client of that server since the daemon move in 0.161 | The queue and app-server, for a thread the daemon has loaded. Not a second ACP client on a TUI that is not on that server |
+| OpenCode | In-process plugin, or HTTP `session.prompt` against a server. `opencode attach` attaches a TUI to `opencode serve` or `opencode web` | Only if that session is already on a server you can call |
+
+What the user gives up in host mode: the native TUI, unless something draws one. Zed and other ACP clients are that UI. A thin passthrough TUI is a terminal emulator plus permission prompts, model picker, and the harness's own screens. It is a second product, and it would still not be the vendor's TUI. Sessions the user started themselves stay on the ladder. Host mode does not see them.
+
+**(b) One telepathy contract, many transports.** This is what the code does. Every harness gets the same envelope (`formatAsUserTurn` / `formatForContext`), the same id, the same inbox, the same rate limit, and the same rule that a message is claimed only when a rung confirms. The adapter decides whether the bytes go to a socket, `codex queue`, a hook stdout shape, a webhook, or nowhere but the inbox. Adding a harness is an `AgentSpec`, a hook shape that already exists or one new `HookShape`, and an adapter whose attempts return `unsupported` until a real API is verified.
+
+**(c) Recommendation.** (b) is the baseline, because it reaches sessions the user started in a normal terminal. (a) is worth an opt-in later for sessions telepathy itself launches, where `session/prompt` really is the same call. It is not a replacement for (b). The live-attach table is why. No ACP host proof of concept is in this change. None of the ACP CLIs is installed in this environment, and a client that cannot be run against Gemini or Copilot would only show the JSON shapes the docs already publish.
+
+## Attaching to live sessions
+
+"Live attach" means a message can be injected into a session the user already started, without relaunching it under telepathy.
+
+| Harness | Live-attach method | Confidence | Source |
+|---|---|---|---|
+| Claude Code | Per-session inbox socket, `CLAUDE_CODE_MESSAGING_SOCKET`. Not ACP. Missing in bare mode. External writers can be held | High that the socket exists when the env var is set. Medium that an other-agent sender is delivered without a hold, which is why the post is made from Claude's own server | https://code.claude.com/docs/en/cross-session-messaging retrieved 27 Oct 2026 |
+| Codex | `codex queue` / `thread/queue/add` on a loaded thread. `turn/steer` for an in-flight turn, not wired here. Queue paused after interrupt (commit `9341b38`). `codex --remote unix://… resume <thread>` attaches a TUI to an app-server, observed on 0.147.0, not a documented third-party ingress into a TUI that is not on that server. Issue 15355 asks for a local ingress and says PTY emulation is the wrong tool | High for the queue on a daemon thread. Low for grabbing a TUI that is not a client of that server | https://learn.chatgpt.com/docs/app-server ; https://github.com/openai/codex/commit/9341b38310c73957e1313eab3f7c4034689bdec9 ; https://github.com/openai/codex/issues/15355 |
+| OpenCode | HTTP `POST /api/session/{id}/prompt` with `delivery` steer or queue, against `opencode serve` or the background service. `opencode attach <url>` attaches a TUI to that server. The in-process plugin is the path this repo uses. External posts have been reported missing from the TUI until reattach (issues 26671 and 41289) | Medium for a session whose server is reachable. Low for a stock TUI that did not expose one, beyond the plugin | https://opencode.ai/docs/cli/ ; https://opencode.ai/v2/docs/api ; those two GitHub issues |
+| Gemini CLI | `gemini --acp` is a new process. `session/load` restores history into it | High that it does not attach to the interactive TUI | https://geminicli.com/docs/cli/acp-mode/ |
+| Copilot CLI | `copilot --acp` `session/load` resumes a disk session. v1.0.19 comment: not two live writers | High | https://github.com/github/copilot-cli/issues/1767 |
+| Cursor CLI | Hooks pull at `postToolUse` and `stop`. No attach API found | Medium, from the absence in the hooks docs and in this repo | Cursor hooks reference, retrieved for the earlier pass |
+| Grok Build | No attach API found. The monitor tool and hooks run inside the session. Grok Bot is a remote routine, woken by HTTP, not a local TUI | Medium | Grok hooks and background-task docs, retrieved for the earlier pass. The webhook in this change is that wake |
+| PTY wrapper | `telepathy run <agent>` allocating a PTY and writing keystrokes into the real TUI | Not a supported attach. Rejected | Codex issue 15355, which asks for real turn and steer operations instead of input emulation |
+
+A PTY wrapper looks universal and is not. Mid-turn, the TUI is drawing a tool call, a permission prompt, or an editor. Bytes written to the PTY land in whichever of those has focus. There is no confirmation that the model saw them. Approval dialogs can be answered by a keystroke meant for the prompt. The user's own typing races the injector. Reliability is worse than the hook, which runs in the harness, and worse than a socket or queue the harness drains itself. The UX is a second cursor in the same terminal. This design does not add `telepathy run`.
+
+The conclusion for host mode follows the table. ACP `session/prompt` is uniform for processes telepathy spawned. It is not an attach API for the session already on the user's screen, except where the harness already has a side door (Claude's socket, Codex's queue, OpenCode's server). Those doors stay per-harness adapters under contract (b).
 
 ## Sources
 
