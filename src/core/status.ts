@@ -10,7 +10,7 @@ import { claudeConfigDir, type Peer } from './peers.ts';
  *   shell        not generating, but a shell command it started is still running (Claude Code only)
  *   idle         waiting for its user to type
  *   waiting      stopped on a permission prompt: nothing moves until its user answers it
- *   interrupted  its last turn was interrupted (Codex): it starts queued messages only after its user's next prompt
+ *   interrupted  its last turn was interrupted (Codex). The queue will not start. The next prompt's hook reads the inbox.
  */
 export type PeerStatus = 'busy' | 'shell' | 'idle' | 'waiting' | 'interrupted';
 

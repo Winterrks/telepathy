@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentLabel } from './agents.ts';
 import { findInstalls, isNewer } from './installs.ts';
-import { defaultCodexHome, listPeers, type Peer } from './peers.ts';
+import { defaultCodexHome, listPeers, type Peer, sameStableName } from './peers.ts';
 import { VERSION } from './version.ts';
 
 /** telepathy's Codex hooks, by the event key Codex uses when it records one as approved. */
@@ -45,6 +45,13 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
  */
 export function setupNotes(self: Peer): string[] {
   const notes: string[] = [];
+  const dupes = listPeers().filter((p) => sameStableName(self, p));
+  if (self.stableName && dupes.length) {
+    notes.push(
+      `[telepathy setup] ${dupes.length + 1} live sessions share the name ${self.agent}:${self.stableName} ` +
+        `(${[self.id, ...dupes.map((p) => p.id)].join(', ')}). A message to that name can reach either one; use the [ref] to pick.`,
+    );
+  }
   if (self.agent === 'codex') {
     const missing = unapprovedCodexHooks(self.codexHome ?? defaultCodexHome());
     if (missing?.length) {

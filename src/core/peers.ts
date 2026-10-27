@@ -80,6 +80,11 @@ export interface Peer {
    * written without the suffix, or one an older version handed out, keeps working.
    */
   aliases?: string[];
+  /**
+   * A name the user set (`TELEPATHY_NAME` or `--name`). It replaces the pid suffix, so the address survives a
+   * restart. Unset when the session is still named from its folder and process.
+   */
+  stableName?: string;
 }
 
 export const peerId = (agent: Agent, key: number | string) => `${agent}-${key}`;
@@ -228,6 +233,58 @@ export function registerListener(agent: Agent, pid: number, id = peerId(agent, p
   writeJsonAtomic(path.join(peerDir(id), 'listener.json'), record);
 }
 
+/**
+ * The stable name for this process, from `--name` or `TELEPATHY_NAME`. Empty after slugify means unset.
+ * `explicit` wins over the environment, so a server flag is not ignored when the variable is also set.
+ */
+export function configuredStableName(explicit?: string): string | undefined {
+  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  if (!raw) return undefined;
+  return slugify(raw) || undefined;
+}
+
+/**
+ * Records `name` on this peer and moves unread messages off a dead peer that used the same name. A live peer
+ * with the same name is left alone: that is a duplicate session, reported when peers are listed.
+ */
+export function registerStableName(agent: Agent, id: string, explicit?: string): void {
+  const name = configuredStableName(explicit);
+  if (!name) return;
+  writeJsonAtomic(path.join(peerDir(id), 'identity.json'), { name, pid: process.pid, at: new Date().toISOString() });
+  adoptStableInbox(agent, id, name);
+}
+
+function adoptStableInbox(agent: Agent, selfId: string, stableName: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const ident = readJson<{ name?: string }>(path.join(peerDir(name), 'identity.json'));
+    if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(inboxDir(name));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      try {
+        fs.renameSync(path.join(inboxDir(name), file), path.join(ensureDir(inboxDir(selfId)), file));
+      } catch {
+        // taken by another consumer
+      }
+    }
+  }
+}
+
+/** Another live peer using this one's configured name. */
+export const sameStableName = (a: Peer, b: Peer) =>
+  !!a.stableName && a.id !== b.id && a.agent === b.agent && a.stableName === b.stableName;
+
 export function readSession(id: string): SessionRecord | undefined {
   return readJson<SessionRecord>(path.join(peerDir(id), 'session.json'));
 }
@@ -329,10 +386,18 @@ export function readPeer(id: string): Peer | undefined {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent, pid, m[2], cwd);
+  const generated = displayName(agent, pid, m[2], cwd);
+  const identity = readJson<{ name?: string }>(path.join(dir, 'identity.json'));
+  const stable = identity?.name && slugify(identity.name) === identity.name ? identity.name : undefined;
+  const name = stable || generated;
   const sessionKeyed = !!session?.sessionId && m[2] === session.sessionId;
-  // Other names that also reach it: the bare folder name, and a Codex thread's title (what older versions called it).
-  const aliases = [cwd ? slugify(path.basename(cwd)) : '', agent === 'codex' ? slugify(codexThreadName(codexHome, session?.sessionId) ?? '') : ''];
+  // Other names that also reach it: the bare folder name, a Codex thread's title (what older versions called it),
+  // and the generated suffix name while a configured name is the address.
+  const aliases = [
+    cwd ? slugify(path.basename(cwd)) : '',
+    agent === 'codex' ? slugify(codexThreadName(codexHome, session?.sessionId) ?? '') : '',
+    stable ? slugify(generated) : '',
+  ];
   return {
     id,
     agent,
@@ -346,6 +411,7 @@ export function readPeer(id: string): Peer | undefined {
     codexHome,
     name,
     address: `${agent}:${slugify(name) || id}`,
+    stableName: stable,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, undefined),
     version: presence?.version,

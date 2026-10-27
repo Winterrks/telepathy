@@ -1,15 +1,11 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/hook.ts
-import path13 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath } from "node:url";
 
-// src/core/codex-queue.ts
-import { execFile, spawn } from "node:child_process";
-import os3 from "node:os";
+// src/core/claude-socket.ts
 import path7 from "node:path";
-import readline from "node:readline";
-import { promisify } from "node:util";
 
 // src/core/debug.ts
 import fs2 from "node:fs";
@@ -368,6 +364,42 @@ function adoptHeldMessages(agent, selfId, sessionId) {
     fs4.rmSync(peerDir(name), { recursive: true, force: true });
   }
 }
+function configuredStableName(explicit) {
+  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  if (!raw) return void 0;
+  return slugify(raw) || void 0;
+}
+function registerStableName(agent, id, explicit) {
+  const name = configuredStableName(explicit);
+  if (!name) return;
+  writeJsonAtomic(path5.join(peerDir(id), "identity.json"), { name, pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() });
+  adoptStableInbox(agent, id, name);
+}
+function adoptStableInbox(agent, selfId, stableName) {
+  let names;
+  try {
+    names = fs4.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const ident = readJson(path5.join(peerDir(name), "identity.json"));
+    if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
+    let files2 = [];
+    try {
+      files2 = fs4.readdirSync(inboxDir(name));
+    } catch {
+      continue;
+    }
+    for (const file of files2) {
+      try {
+        fs4.renameSync(path5.join(inboxDir(name), file), path5.join(ensureDir(inboxDir(selfId)), file));
+      } catch {
+      }
+    }
+  }
+}
 function readSession(id) {
   return readJson(path5.join(peerDir(id), "session.json"));
 }
@@ -430,9 +462,16 @@ function readPeer(id) {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent, pid, m[2], cwd);
+  const generated = displayName(agent, pid, m[2], cwd);
+  const identity = readJson(path5.join(dir, "identity.json"));
+  const stable = identity?.name && slugify(identity.name) === identity.name ? identity.name : void 0;
+  const name = stable || generated;
   const sessionKeyed = !!session?.sessionId && m[2] === session.sessionId;
-  const aliases = [cwd ? slugify(path5.basename(cwd)) : "", agent === "codex" ? slugify(codexThreadName(codexHome, session?.sessionId) ?? "") : ""];
+  const aliases = [
+    cwd ? slugify(path5.basename(cwd)) : "",
+    agent === "codex" ? slugify(codexThreadName(codexHome, session?.sessionId) ?? "") : "",
+    stable ? slugify(generated) : ""
+  ];
   return {
     id,
     agent,
@@ -446,6 +485,7 @@ function readPeer(id) {
     codexHome,
     name,
     address: `${agent}:${slugify(name) || id}`,
+    stableName: stable,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     version: presence?.version,
@@ -600,12 +640,44 @@ function formatForContext(messages, { lead: withLead = true, inlineLimit = 4e3 }
 ${bodies}` : bodies;
 }
 
+// src/core/claude-socket.ts
+var SOCKET_LINE_MAX = 1024 * 1024;
+var socketFile = (id) => path7.join(peerDir(id), "socket.json");
+var listenerFile = (id) => path7.join(peerDir(id), "socket-listener.json");
+function recordClaudeSocket(id, env = process.env) {
+  const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (!socketPath) return void 0;
+  const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
+  const record = { path: socketPath, ...token ? { token } : {}, recordedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  writeJsonAtomic(socketFile(id), record);
+  return { path: socketPath, ...token ? { token } : {} };
+}
+function readClaudeSocket(id) {
+  const record = readJson(socketFile(id));
+  if (!record?.path) return void 0;
+  return { path: record.path, ...record.token ? { token: record.token } : {} };
+}
+function claudeSocketArmed(id) {
+  const record = readJson(listenerFile(id));
+  return !!record && isSameProcess(record.pid, record.procStart);
+}
+var flushImpl;
+async function flushClaudeSocket(id) {
+  if (flushImpl) return flushImpl(id);
+  return "idle";
+}
+
 // src/core/codex-queue.ts
+import { execFile, spawn } from "node:child_process";
+import os3 from "node:os";
+import path8 from "node:path";
+import readline from "node:readline";
+import { promisify } from "node:util";
 var execFileAsync = promisify(execFile);
 function codexCandidates() {
   const configured = process.env.TELEPATHY_CODEX_BIN;
   if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path7.join(os3.homedir(), ".local", "bin", "codex")];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path8.join(os3.homedir(), ".local", "bin", "codex")];
 }
 var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
 async function queueIntoCodex(threadId, text, codexHome) {
@@ -702,14 +774,14 @@ async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
 // src/core/edits.ts
 import { createHash as createHash2 } from "node:crypto";
 import fs7 from "node:fs";
-import path10 from "node:path";
+import path11 from "node:path";
 
 // src/core/status.ts
-import path9 from "node:path";
+import path10 from "node:path";
 
 // src/core/codex-activity.ts
 import fs6 from "node:fs";
-import path8 from "node:path";
+import path9 from "node:path";
 var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
 function findRollout(codexHome, threadId) {
@@ -721,13 +793,13 @@ function findRollout(codexHome, threadId) {
       return [];
     }
   };
-  const root = path8.join(codexHome, "sessions");
+  const root = path9.join(codexHome, "sessions");
   for (const year of sorted(root)) {
-    for (const month of sorted(path8.join(root, year))) {
-      for (const day of sorted(path8.join(root, year, month))) {
-        const dir = path8.join(root, year, month, day);
+    for (const month of sorted(path9.join(root, year))) {
+      for (const day of sorted(path9.join(root, year, month))) {
+        const dir = path9.join(root, year, month, day);
         const file = sorted(dir).find(isRollout);
-        if (file) return path8.join(dir, file);
+        if (file) return path9.join(dir, file);
       }
     }
   }
@@ -796,7 +868,7 @@ function codexLastResponse(codexHome, threadId) {
 // src/core/status.ts
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path9.join(peerDir(id), "status.json");
+var statusFile = (id) => path10.join(peerDir(id), "status.json");
 function writeStatus(id, status, now = Date.now()) {
   writeJsonAtomic(statusFile(id), { status, at: new Date(now).toISOString() });
 }
@@ -807,7 +879,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record = readJson(path9.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record = readJson(path10.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record?.status !== "string" || !CLAUDE_STATUSES.includes(record.status)) return void 0;
   return { status: record.status, at: typeof record.statusUpdatedAt === "number" ? record.statusUpdatedAt : void 0 };
 }
@@ -874,8 +946,8 @@ function shellPaths(command, cwd) {
   for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
     const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
-    if (!path10.isAbsolute(word) && !cwd) continue;
-    const resolved = path10.resolve(cwd ?? "/", word);
+    if (!path11.isAbsolute(word) && !cwd) continue;
+    const resolved = path11.resolve(cwd ?? "/", word);
     if (resolved === cwd || !fs7.existsSync(resolved)) continue;
     found.push(resolved);
     if (found.length >= 8) break;
@@ -902,8 +974,8 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
 function ignored(file) {
-  const parts = file.split(path10.sep);
-  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path10.sep);
+  const parts = file.split(path11.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path11.sep);
 }
 function touchedFiles(toolName, toolInput, cwd) {
   const none = { edited: [], read: [] };
@@ -916,16 +988,16 @@ function touchedFiles(toolName, toolInput, cwd) {
   const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
   const files2 = [
     ...new Set(
-      raw.map((f) => f.trim()).filter((f) => path10.isAbsolute(f) || cwd).map((f) => path10.resolve(cwd ?? "/", f))
+      raw.map((f) => f.trim()).filter((f) => path11.isAbsolute(f) || cwd).map((f) => path11.resolve(cwd ?? "/", f))
     )
   ].filter((f) => !ignored(f));
   return { ...none, [kind]: files2 };
 }
 var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
-var editsDir = (id) => path10.join(peerDir(id), "edits");
+var editsDir = (id) => path11.join(peerDir(id), "edits");
 function recordEdits(selfId, files2, now = Date.now()) {
   for (const file of files2) {
-    writeJsonAtomic(path10.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
+    writeJsonAtomic(path11.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
   }
 }
 function othersRecentEdits(selfId, now) {
@@ -945,7 +1017,7 @@ function othersRecentEdits(selfId, now) {
       continue;
     }
     for (const name of files2) {
-      const edit = readJson(path10.join(editsDir(id), name));
+      const edit = readJson(path11.join(editsDir(id), name));
       const at = edit ? Date.parse(edit.at) : Number.NaN;
       if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
     }
@@ -968,20 +1040,20 @@ function overlapNote(self, files2, cwd, now = Date.now()) {
   if (!files2.length) return void 0;
   const recent = othersRecentEdits(self.id, now);
   if (!recent.length) return void 0;
-  const shownDir = path10.join(peerDir(self.id), "overlaps");
+  const shownDir = path11.join(peerDir(self.id), "overlaps");
   const alive = /* @__PURE__ */ new Map();
   const lines = [];
   for (const file of files2) {
-    const dir = isDirectory(file) ? file : path10.dirname(file);
+    const dir = isDirectory(file) ? file : path11.dirname(file);
     const byPeer = /* @__PURE__ */ new Map();
     for (const r of recent) {
       const same = r.edit.file === file;
-      if (!same && path10.dirname(r.edit.file) !== dir) continue;
+      if (!same && path11.dirname(r.edit.file) !== dir) continue;
       const best = byPeer.get(r.id);
       if (!best || same && best.edit.file !== file || same === (best.edit.file === file) && r.at > best.at) byPeer.set(r.id, r);
     }
     for (const [id, r] of byPeer) {
-      const marker = path10.join(shownDir, `${keyOf(`${id}
+      const marker = path11.join(shownDir, `${keyOf(`${id}
 ${dir}`)}.json`);
       if (fs7.existsSync(marker)) continue;
       if (!alive.has(id)) {
@@ -990,7 +1062,7 @@ ${dir}`)}.json`);
       }
       const peer = alive.get(id);
       if (!peer) continue;
-      const shown = cwd && r.edit.file.startsWith(cwd + path10.sep) ? path10.relative(cwd, r.edit.file) : r.edit.file;
+      const shown = cwd && r.edit.file.startsWith(cwd + path11.sep) ? path11.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
         `[telepathy note] Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? "send_message"}.`
       );
@@ -1007,11 +1079,12 @@ function trackTouchedFiles(self, toolName, toolInput, cwd) {
 
 // src/core/deliver.ts
 import crypto2 from "node:crypto";
-import path12 from "node:path";
+import fs10 from "node:fs";
+import path14 from "node:path";
 
 // src/core/setup.ts
 import fs8 from "node:fs";
-import path11 from "node:path";
+import path12 from "node:path";
 var CODEX_HOOKS = {
   session_start: "SessionStart",
   post_tool_use: "PostToolUse",
@@ -1020,7 +1093,7 @@ var CODEX_HOOKS = {
 function unapprovedCodexHooks(codexHome) {
   let config;
   try {
-    config = fs8.readFileSync(path11.join(codexHome, "config.toml"), "utf8");
+    config = fs8.readFileSync(path12.join(codexHome, "config.toml"), "utf8");
   } catch {
     return void 0;
   }
@@ -1030,11 +1103,137 @@ function unapprovedCodexHooks(codexHome) {
   return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
 }
 
+// src/core/wake.ts
+import { spawn as spawn2 } from "node:child_process";
+import fs9 from "node:fs";
+import path13 from "node:path";
+var DEFAULT_TIMEOUT_MS = 8e3;
+var deliveryConfigPath = () => path13.join(stateDir(), "delivery.json");
+function wakePayload(message) {
+  return { id: message.id, from: message.from.address, count: 1, at: message.sentAt };
+}
+function readDeliveryConfig() {
+  const file = deliveryConfigPath();
+  let mode;
+  try {
+    mode = fs9.statSync(file).mode & 511;
+  } catch {
+    return void 0;
+  }
+  if ((mode & 63) !== 0) {
+    debugLog("wake", `delivery.json is mode ${mode.toString(8)}, not 600; webhook config was not loaded`);
+    return void 0;
+  }
+  return readJson(file);
+}
+function wakeForPeer(peer, config = readDeliveryConfig()) {
+  if (!config) return void 0;
+  const keys = [peer.address, peer.stableName, peer.id].filter((k) => !!k);
+  for (const key of keys) {
+    const hit = config.peers?.[key];
+    if (hit?.webhook?.url || hit?.command?.length) return hit;
+  }
+  if (!config.webhook?.url && !config.command?.length) return void 0;
+  const name = config.name?.trim().toLowerCase();
+  if (!name) return void 0;
+  if (peer.stableName === name || peer.address.toLowerCase() === `${peer.agent}:${name}`) {
+    return { webhook: config.webhook, command: config.command };
+  }
+  return void 0;
+}
+var scrub = (text, secrets) => {
+  let out = text;
+  for (const secret of secrets) {
+    if (secret.length < 4) continue;
+    out = out.split(secret).join("[redacted]");
+  }
+  return out.slice(0, 200);
+};
+var headerSecrets = (headers) => Object.values(headers ?? {}).filter((v) => v.length >= 4);
+async function postWebhook(target, payload) {
+  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const secrets = headerSecrets(target.headers);
+  let host = "webhook";
+  try {
+    host = new URL(target.url).host || host;
+  } catch {
+    debugLog("wake", "webhook url is not a URL");
+    return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+  }
+  try {
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...target.headers },
+      body: JSON.stringify(payload),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) {
+      debugLog("wake", `webhook ${host} HTTP ${res.status}`);
+      return { ok: false, how: "webhook", detail: `HTTP ${res.status}` };
+    }
+    debugLog("wake", `webhook ${host} HTTP ${res.status}`);
+    return { ok: true, how: "webhook" };
+  } catch (err) {
+    const detail = scrub(err.name === "TimeoutError" ? "timed out" : err.message, secrets);
+    debugLog("wake", `webhook ${host} failed: ${detail}`);
+    return { ok: false, how: "webhook", detail };
+  }
+}
+function runCommand(argv, payload, timeoutMs) {
+  const bin = argv[0];
+  if (!bin) return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
+  return new Promise((resolve) => {
+    const child = spawn2(bin, argv.slice(1), { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.stderr?.on("data", (chunk) => {
+      if (stderr.length < 200) stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      debugLog("wake", `command ${path13.basename(bin)} failed: ${err.message}`);
+      resolve({ ok: false, how: "command", detail: err.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) {
+        debugLog("wake", `command ${path13.basename(bin)} exited 0`);
+        resolve({ ok: true, how: "command" });
+        return;
+      }
+      debugLog("wake", `command ${path13.basename(bin)} exited ${code ?? "signal"}`);
+      resolve({ ok: false, how: "command", detail: stderr.trim().slice(0, 120) || `exit ${code ?? "signal"}` });
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+async function notifyWake(peer, message) {
+  const target = wakeForPeer(peer);
+  if (!target) return void 0;
+  const payload = wakePayload(message);
+  if (target.webhook?.url) {
+    const posted = await postWebhook(target.webhook, payload);
+    if (posted.ok || !target.command?.length) return posted;
+    const ran = await runCommand(target.command, payload, target.webhook.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (ran.ok) return { ok: true, how: "command" };
+    return { ok: false, how: "webhook", detail: `${posted.detail}; command failed (${ran.detail})` };
+  }
+  if (target.command?.length) return runCommand(target.command, payload, DEFAULT_TIMEOUT_MS);
+  return void 0;
+}
+
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
-var sentLogFile = (selfId) => path12.join(peerDir(selfId), "sent-log.json");
+var SOCKET_WAIT_MS = () => {
+  const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 1500;
+};
+var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -1054,6 +1253,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto2.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
+var stillPending = (peerId2, messageId) => fs10.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -1079,30 +1279,124 @@ async function sendMessage(self, to, body) {
     body,
     sentAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
-  if (recipient.agent === "codex") {
-    if (!recipient.sessionId) {
+  if (recipient.agent === "codex" && !recipient.sessionId) {
+    const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
+    return {
+      ok: false,
+      error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`
+    };
+  }
+  const delivery = await routeDelivery(recipient, message);
+  recordSent(self.id, recipient.id, body);
+  return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
+}
+async function routeDelivery(recipient, message) {
+  if (recipient.agent === "codex") return routeCodex(recipient, message);
+  return routeInbox(recipient, message);
+}
+async function routeCodex(recipient, message) {
+  const activity = peerStatus(recipient)?.status;
+  const attempts = [];
+  if (activity === "busy" && recipient.toolHookRan) {
+    attempts.push({ id: "codex-mid-turn", result: "armed", when: "mid-turn" });
+  } else {
+    attempts.push({ id: "codex-mid-turn", result: "unsupported", when: "mid-turn" });
+  }
+  if (activity === "interrupted") {
+    attempts.push({ id: "codex-queue", result: "unsupported", when: "turn-end", detail: "paused after interrupt" });
+    writeToInbox(message);
+    attempts.push(inboxRung(recipient));
+    return { status: codexHeldStatus(recipient), report: { confirmed: false, attempts } };
+  }
+  let codexQueueId;
+  try {
+    codexQueueId = await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
+  } catch (err) {
+    const detail = err.message;
+    attempts.push({ id: "codex-queue", result: "failed", when: activity === "busy" ? "turn-end" : "idle", detail });
+    writeToInbox(message);
+    attempts.push(inboxRung(recipient));
+    return {
+      status: `${codexHeldStatus(recipient, detail)}`,
+      report: { confirmed: false, attempts }
+    };
+  }
+  if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
+  else archiveMessage(message);
+  const when = activity === "busy" || activity === "waiting" ? "turn-end" : "idle";
+  attempts.push({ id: "codex-queue", result: "armed", when });
+  return { status: codexQueueStatus(recipient), report: { confirmed: false, attempts } };
+}
+async function routeInbox(recipient, message) {
+  const attempts = [];
+  writeToInbox(message);
+  if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+    const outcome = await flushClaudeSocket(recipient.id);
+    if (outcome === "idle") await waitForSocket(recipient.id, message.id);
+    if (!stillPending(recipient.id, message.id)) {
+      attempts.push({ id: "claude-socket", result: "confirmed", when: "immediate" });
       return {
-        ok: false,
-        error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`
+        status: `Message delivered to ${peerRef(recipient)} through Claude's inbox socket.`,
+        report: { confirmed: true, attempts }
       };
     }
-    let codexQueueId;
-    try {
-      codexQueueId = await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
-    } catch (err) {
-      return { ok: false, error: `Could not deliver to ${who}: ${err.message}` };
-    }
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
-    else archiveMessage(message);
-    recordSent(self.id, recipient.id, body);
-    return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
+    attempts.push({
+      id: "claude-socket",
+      result: outcome === "failed" ? "failed" : "armed",
+      when: "immediate",
+      detail: outcome === "idle" ? "not confirmed" : outcome
+    });
+  } else if (recipient.agent === "claude") {
+    attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
-  writeToInbox(message);
-  recordSent(self.id, recipient.id, body);
-  return { ok: true, message, recipient, status: inboxStatus(recipient) };
+  if (recipient.hasListener && !claudeSocketArmed(recipient.id)) {
+    attempts.push({ id: "listener", result: "armed", when: "immediate" });
+    return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
+  }
+  attempts.push({
+    id: "listener",
+    result: "unsupported",
+    when: "immediate",
+    detail: recipient.hasListener ? "monitor stands down while the socket watcher is running" : void 0
+  });
+  const wake = await notifyWake(recipient, message);
+  if (wake) attempts.push(wakeAttempt(wake));
+  const socketBlockingHooks = recipient.agent === "claude" && recipient.hasListener && claudeSocketArmed(recipient.id);
+  const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
+  const fallback = inboxRung(fallbackPeer);
+  attempts.push(fallback);
+  return { status: wakeStatus(recipient, inboxStatus(fallbackPeer), wake), report: { confirmed: false, attempts } };
+}
+function wakeAttempt(wake) {
+  return {
+    id: wake.how,
+    result: wake.ok ? "armed" : "failed",
+    when: "idle",
+    detail: wake.ok ? void 0 : wake.detail
+  };
+}
+function inboxRung(recipient) {
+  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+    return { id: "next-boundary", result: "armed", when: "next-prompt" };
+  }
+  if (recipient.agent === "codex" && recipient.hookRan) {
+    return { id: "next-boundary", result: "armed", when: "next-prompt" };
+  }
+  return { id: "poll", result: "armed", when: "poll" };
+}
+async function waitForSocket(peerId2, messageId) {
+  const deadline = Date.now() + SOCKET_WAIT_MS();
+  while (stillPending(peerId2, messageId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
+function codexHeldStatus(recipient, why) {
+  const ref = peerRef(recipient);
+  const via = recipient.hookRan ? "It stays in the inbox for the next prompt, or until the session calls read_messages." : "It stays in the inbox until the session calls read_messages.";
+  const reason = why ? why : "Codex was interrupted, so its queue will not deliver this.";
+  return `Message stored for ${ref}. ${reason} ${via}`;
+}
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = peerStatus(recipient)?.status;
@@ -1115,10 +1409,6 @@ function codexQueueStatus(recipient) {
     const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
     return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
-  if (activity === "interrupted") {
-    const withPrompt = unapproved && !unapproved.includes("UserPromptSubmit") ? ", and it gets the message with that prompt" : "";
-    return `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`;
-  }
   return `Message queued for delivery to ${ref}.`;
 }
 function inboxStatus(recipient) {
@@ -1129,6 +1419,13 @@ function inboxStatus(recipient) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;
+}
+function wakeStatus(recipient, base, wake) {
+  if (!wake) return base;
+  const ref = peerRef(recipient);
+  if (!wake.ok) return `${base} The ${wake.how} notification failed (${wake.detail}).`;
+  const how = wake.how === "webhook" ? "webhook" : "delivery command";
+  return `Notified ${ref} by ${how}. ${base} The ${how} body is a wake, not the message, and must be treated as untrusted.`;
 }
 
 // src/core/guide.ts
@@ -1217,18 +1514,23 @@ function reply(r) {
   if (r.exitCode !== void 0) process.exitCode = r.exitCode;
 }
 function sessionStart(agent, agentPid, input) {
+  const id = idOf(agent, agentPid, input);
   registerSession(agent, agentPid, {
     ...sessionOf(agent, input),
     source: "hook",
     codexHome: agent === "codex" ? defaultCodexHome() : void 0
   });
-  if (statusFromHooks(agent)) writeStatus(idOf(agent, agentPid, input), "idle");
+  registerStableName(agent, id);
+  if (agent === "claude") recordClaudeSocket(id);
+  if (statusFromHooks(agent)) writeStatus(id, "idle");
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 function refreshSession(agent, agentPid, input) {
   const { sessionId, cwd } = sessionOf(agent, input);
   const existing = readSession(idOf(agent, agentPid, input));
   const sameHost = existing?.pid === agentPid;
+  registerStableName(agent, idOf(agent, agentPid, input));
+  if (agent === "claude") recordClaudeSocket(idOf(agent, agentPid, input));
   if (existing?.source === "hook" && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,
@@ -1240,7 +1542,7 @@ function refreshSession(agent, agentPid, input) {
 var hasListener = (selfId) => readPeer(selfId)?.hasListener ?? false;
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
-  const waiter = `node "${path13.join(path13.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }
 function touchedFilesNote(agent, agentPid, input) {

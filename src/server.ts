@@ -7,6 +7,7 @@ import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { setupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
+import { recordClaudeSocket, startClaudeSocketWatcher } from './core/claude-socket.ts';
 import {
   codexThreadsOf,
   defaultCodexHome,
@@ -14,6 +15,7 @@ import {
   readSession,
   registerPresence,
   registerSession,
+  registerStableName,
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
@@ -22,7 +24,11 @@ import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResul
 import { VERSION } from './core/version.ts';
 
 const argv = process.argv.slice(2);
-const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
+const flag = (name: string) => {
+  const value = argv[argv.indexOf(name) + 1];
+  return value && !value.startsWith('--') ? value : undefined;
+};
+const { agent, pid: agentPid } = findAgent(parseAgent(flag('--agent')));
 
 /**
  * Where the session works, if the server's cwd says so. Some agents (Codex, Kimi Code, Antigravity) start
@@ -59,8 +65,16 @@ function claudeWithoutMonitor(): boolean {
 }
 
 // A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).
-if (agent !== 'codex') registerPresence(agent, agentPid, { cwd: sessionCwd() });
-debugLog('server', `started for ${peerId(agent, agentPid)}`);
+const selfId = peerId(agent, agentPid);
+if (agent !== 'codex') {
+  registerPresence(agent, agentPid, { cwd: sessionCwd() });
+  registerStableName(agent, selfId, flag('--name'));
+}
+if (agent === 'claude') {
+  recordClaudeSocket(selfId);
+  startClaudeSocketWatcher(selfId);
+}
+debugLog('server', `started for ${selfId}`);
 
 const presenceFor = new Set<string>();
 
@@ -82,6 +96,7 @@ function selfIdFor(meta: Record<string, unknown> | undefined): string {
   if (!thread) return id;
   if (!presenceFor.has(id)) {
     registerPresence(agent, agentPid, { codexHome: defaultCodexHome() }, id);
+    registerStableName(agent, id, flag('--name'));
     presenceFor.add(id);
   }
   const existing = readSession(id);
@@ -105,7 +120,11 @@ const server = new McpServer(
   },
 );
 
-const text = ({ text, isError }: ToolResult) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
+const text = ({ text, isError, structured }: ToolResult) => ({
+  content: [{ type: 'text' as const, text }],
+  ...(structured ? { structuredContent: structured } : {}),
+  ...(isError ? { isError } : {}),
+});
 
 const NOTE_EVERY_MS = 10 * 60_000;
 const noteShownAt = new Map<string, number>();

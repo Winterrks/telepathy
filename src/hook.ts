@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { recordClaudeSocket } from './core/claude-socket.ts';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
@@ -17,6 +18,7 @@ import {
   readPeer,
   readSession,
   registerSession,
+  registerStableName,
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
@@ -144,12 +146,15 @@ function reply(r: HookReply | undefined): void {
  * nothing unless the agent can't show MCP server instructions: agents add this hook's output to the context.
  */
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
+  const id = idOf(agent, agentPid, input);
   registerSession(agent, agentPid, {
     ...sessionOf(agent, input),
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
-  if (statusFromHooks(agent)) writeStatus(idOf(agent, agentPid, input), 'idle');
+  registerStableName(agent, id);
+  if (agent === 'claude') recordClaudeSocket(id);
+  if (statusFromHooks(agent)) writeStatus(id, 'idle');
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
@@ -162,6 +167,8 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   const existing = readSession(idOf(agent, agentPid, input));
   // A Codex thread's record also names the process hosting it, which changes when Codex updates its daemon.
   const sameHost = existing?.pid === agentPid;
+  registerStableName(agent, idOf(agent, agentPid, input));
+  if (agent === 'claude') recordClaudeSocket(idOf(agent, agentPid, input));
   if (existing?.source === 'hook' && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,

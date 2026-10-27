@@ -2,6 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/monitor.ts
 import fs4 from "node:fs";
+import path7 from "node:path";
+
+// src/core/claude-socket.ts
 import path6 from "node:path";
 
 // src/core/debug.ts
@@ -189,6 +192,12 @@ function isAlive(pid) {
 function procStart(pid) {
   return processTable().get(pid)?.start;
 }
+function isSameProcess(pid, recordedStart) {
+  if (!isAlive(pid)) return false;
+  if (!recordedStart) return true;
+  const current = processTable(0).get(pid)?.start;
+  return current === void 0 || current === recordedStart;
+}
 function psField(pid, field) {
   try {
     return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
@@ -286,15 +295,24 @@ function formatMonitorLine(msg, inlineLimit = 4e3) {
   return `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" for the full text): ${preview}\u2026`;
 }
 
+// src/core/claude-socket.ts
+var SOCKET_LINE_MAX = 1024 * 1024;
+var listenerFile = (id2) => path6.join(peerDir(id2), "socket-listener.json");
+function claudeSocketArmed(id2) {
+  const record = readJson(listenerFile(id2));
+  return !!record && isSameProcess(record.pid, record.procStart);
+}
+
 // src/monitor.ts
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
 var id = peerId(agent, agentPid);
-var listenerFile = path6.join(peerDir(id), "listener.json");
+var listenerFile2 = path7.join(peerDir(id), "listener.json");
 var draining = false;
 function drain() {
   if (draining) return;
+  if (claudeSocketArmed(id)) return;
   draining = true;
   try {
     const messages = claimInbox(id);
@@ -310,7 +328,7 @@ function drain() {
 var watcher;
 function ensureWatching() {
   ensureDir(inboxDir(id));
-  if (!fs4.existsSync(listenerFile)) registerListener(agent, agentPid);
+  if (!fs4.existsSync(listenerFile2)) registerListener(agent, agentPid);
   if (watcher) return;
   try {
     watcher = fs4.watch(inboxDir(id), () => drain());
@@ -324,7 +342,7 @@ function ensureWatching() {
 }
 function stop() {
   try {
-    if (readJson(listenerFile)?.pid === process.pid) fs4.rmSync(listenerFile, { force: true });
+    if (readJson(listenerFile2)?.pid === process.pid) fs4.rmSync(listenerFile2, { force: true });
   } catch {
   }
   process.exit(0);

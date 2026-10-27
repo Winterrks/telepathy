@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { claudeSocketArmed } from './core/claude-socket.ts';
 import { debugLog } from './core/debug.ts';
 import { claimInbox, formatMonitorLine } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson } from './core/paths.ts';
@@ -24,6 +25,8 @@ const listenerFile = path.join(peerDir(id), 'listener.json');
 let draining = false;
 function drain(): void {
   if (draining) return;
+  // The socket watcher is the delivery path while it is running. Claiming here would print a second copy.
+  if (claudeSocketArmed(id)) return;
   draining = true;
   try {
     const messages = claimInbox(id);

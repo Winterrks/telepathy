@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
+import fs from 'node:fs';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
+import { claudeSocketArmed, flushClaudeSocket, readClaudeSocket } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
 import { unapprovedCodexHooks } from './setup.ts';
 import {
@@ -12,18 +14,45 @@ import {
   partyOf,
   writeToInbox,
 } from './messages.ts';
-import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { agentLabel, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
 import { peerStatus } from './status.ts';
+import { notifyWake, type WakeResult } from './wake.ts';
 
 export type SendResult =
-  | { ok: true; message: Message; recipient: Peer; status: string }
+  | { ok: true; message: Message; recipient: Peer; status: string; delivery: DeliveryReport }
   | { ok: false; error: string };
+
+/**
+ * When a rung would present the message, if it accepts.
+ * `immediate` is a live injector. `mid-turn` is the next tool result. `turn-end` is Codex's queue, which
+ * dispatches only after a completed or failed turn. `idle` is a wake of a session that is waiting.
+ * `next-prompt` is a hook on the user's next prompt. `poll` is `read_messages`.
+ */
+export type DeliveryWhen = 'immediate' | 'mid-turn' | 'turn-end' | 'idle' | 'next-prompt' | 'poll';
+
+export interface DeliveryAttempt {
+  id: string;
+  result: 'confirmed' | 'armed' | 'failed' | 'unsupported';
+  when: DeliveryWhen;
+  detail?: string;
+}
+
+/** `confirmed` is true only when a rung accepted the message and the inbox copy was claimed. */
+export interface DeliveryReport {
+  confirmed: boolean;
+  attempts: DeliveryAttempt[];
+}
 
 // Loop guard. Two agents that auto-reply to each other would otherwise ping-pong forever.
 const DUPLICATE_WINDOW_MS = 2 * 60_000;
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX_PER_RECIPIENT = 20;
+/** How long a sender waits for the recipient's socket watcher to claim. A held message falls through after this. */
+const SOCKET_WAIT_MS = () => {
+  const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 1500;
+};
 
 interface SentEntry {
   to: string;
@@ -54,6 +83,8 @@ function recordSent(selfId: string, toId: string, body: string): void {
   writeJsonAtomic(sentLogFile(selfId), log);
 }
 
+const stillPending = (peerId: string, messageId: string) => fs.existsSync(path.join(inboxDir(peerId), `${messageId}.json`));
+
 /** Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook. */
 export async function sendMessage(self: Peer, to: string, body: string): Promise<SendResult> {
   if (!body.trim()) return { ok: false, error: 'Message is empty.' };
@@ -83,37 +114,174 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     body,
     sentAt: new Date().toISOString(),
   };
-  const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
 
-  if (recipient.agent === 'codex') {
-    if (!recipient.sessionId) {
-      return {
-        ok: false,
-        error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`,
-      };
-    }
-    let codexQueueId: string | undefined;
-    try {
-      codexQueueId = await queueIntoCodex(recipient.sessionId, formatAsUserTurn(message), recipient.codexHome);
-    } catch (err) {
-      return { ok: false, error: `Could not deliver to ${who}: ${(err as Error).message}` };
-    }
-    // Also in the inbox, so read_messages can hand it over mid-turn and take it back out of Codex's queue.
-    if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
-    else archiveMessage(message);
-    recordSent(self.id, recipient.id, body);
-    return { ok: true, message, recipient, status: codexQueueStatus(recipient) };
+  if (recipient.agent === 'codex' && !recipient.sessionId) {
+    const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
+    return {
+      ok: false,
+      error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`,
+    };
   }
 
-  writeToInbox(message);
+  const delivery = await routeDelivery(recipient, message);
   recordSent(self.id, recipient.id, body);
-  return { ok: true, message, recipient, status: inboxStatus(recipient) };
+  return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
+}
+
+interface Route {
+  status: string;
+  report: DeliveryReport;
+}
+
+/**
+ * One message, one walk. A rung that confirms claims the inbox and the walk stops. A rung that only arms
+ * (the queue, a hook, a webhook) leaves the inbox in place and the walk continues to a rung that covers a
+ * case the first one misses. Codex's queue is the turn-end rung: it does not deliver after a tool call, and
+ * it does not start after the user interrupts, so those cases are the mid-turn hook and the inbox.
+ */
+async function routeDelivery(recipient: Peer, message: Message): Promise<Route> {
+  if (recipient.agent === 'codex') return routeCodex(recipient, message);
+  return routeInbox(recipient, message);
+}
+
+async function routeCodex(recipient: Peer, message: Message): Promise<Route> {
+  const activity = peerStatus(recipient)?.status;
+  const attempts: DeliveryAttempt[] = [];
+
+  // Mid-turn is the PostToolUse hook appending to the tool result. It ranks above the queue, which only
+  // runs the message after the turn ends. The hook withdraws the queue item when it claims the inbox.
+  if (activity === 'busy' && recipient.toolHookRan) {
+    attempts.push({ id: 'codex-mid-turn', result: 'armed', when: 'mid-turn' });
+  } else {
+    attempts.push({ id: 'codex-mid-turn', result: 'unsupported', when: 'mid-turn' });
+  }
+
+  // Commit 9341b38: the queue dispatches after a completed or failed turn and stays paused after an interrupt.
+  // Calling it here would look like success and then not deliver. The inbox is the copy the next prompt reads.
+  if (activity === 'interrupted') {
+    attempts.push({ id: 'codex-queue', result: 'unsupported', when: 'turn-end', detail: 'paused after interrupt' });
+    writeToInbox(message);
+    attempts.push(inboxRung(recipient));
+    return { status: codexHeldStatus(recipient), report: { confirmed: false, attempts } };
+  }
+
+  let codexQueueId: string | undefined;
+  try {
+    codexQueueId = await queueIntoCodex(recipient.sessionId as string, formatAsUserTurn(message), recipient.codexHome);
+  } catch (err) {
+    const detail = (err as Error).message;
+    attempts.push({ id: 'codex-queue', result: 'failed', when: activity === 'busy' ? 'turn-end' : 'idle', detail });
+    writeToInbox(message);
+    attempts.push(inboxRung(recipient));
+    return {
+      status: `${codexHeldStatus(recipient, detail)}`,
+      report: { confirmed: false, attempts },
+    };
+  }
+
+  if (codexQueueId) writeToInbox({ ...message, codexQueueId, codexThreadId: recipient.sessionId });
+  else archiveMessage(message);
+  const when: DeliveryWhen = activity === 'busy' || activity === 'waiting' ? 'turn-end' : 'idle';
+  attempts.push({ id: 'codex-queue', result: 'armed', when });
+  return { status: codexQueueStatus(recipient), report: { confirmed: false, attempts } };
+}
+
+async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
+  const attempts: DeliveryAttempt[] = [];
+  writeToInbox(message);
+
+  if (recipient.agent === 'claude' && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+    const outcome = await flushClaudeSocket(recipient.id);
+    // The watcher runs in the recipient's server. This process only posted if that server is this process.
+    if (outcome === 'idle') await waitForSocket(recipient.id, message.id);
+    if (!stillPending(recipient.id, message.id)) {
+      attempts.push({ id: 'claude-socket', result: 'confirmed', when: 'immediate' });
+      return {
+        status: `Message delivered to ${peerRef(recipient)} through Claude's inbox socket.`,
+        report: { confirmed: true, attempts },
+      };
+    }
+    attempts.push({
+      id: 'claude-socket',
+      result: outcome === 'failed' ? 'failed' : 'armed',
+      when: 'immediate',
+      detail: outcome === 'idle' ? 'not confirmed' : outcome,
+    });
+  } else if (recipient.agent === 'claude') {
+    attempts.push({ id: 'claude-socket', result: 'unsupported', when: 'immediate' });
+  }
+
+  // A live listener (Claude's monitor, Grok's monitor, the OpenCode plugin) claims the inbox itself.
+  // The status string is the one those sessions already show. The file stays unclaimed until that process renames it.
+  // While the socket watcher is armed, the monitor does not claim, and hooks stay quiet because a listener is
+  // registered, so an unconfirmed socket post falls through to read_messages rather than to that monitor.
+  if (recipient.hasListener && !claudeSocketArmed(recipient.id)) {
+    attempts.push({ id: 'listener', result: 'armed', when: 'immediate' });
+    return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
+  }
+  attempts.push({
+    id: 'listener',
+    result: 'unsupported',
+    when: 'immediate',
+    detail: recipient.hasListener ? 'monitor stands down while the socket watcher is running' : undefined,
+  });
+
+  const wake = await notifyWake(recipient, message);
+  if (wake) attempts.push(wakeAttempt(wake));
+
+  const socketBlockingHooks = recipient.agent === 'claude' && recipient.hasListener && claudeSocketArmed(recipient.id);
+  const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
+  const fallback = inboxRung(fallbackPeer);
+  attempts.push(fallback);
+  return { status: wakeStatus(recipient, inboxStatus(fallbackPeer), wake), report: { confirmed: false, attempts } };
+}
+
+function wakeAttempt(wake: WakeResult): DeliveryAttempt {
+  // A 2xx or a command exit is not the model seeing the message. The inbox copy is still the message.
+  return {
+    id: wake.how,
+    result: wake.ok ? 'armed' : 'failed',
+    when: 'idle',
+    detail: wake.ok ? undefined : wake.detail,
+  };
+}
+
+function inboxRung(recipient: Peer): DeliveryAttempt {
+  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+    return { id: 'next-boundary', result: 'armed', when: 'next-prompt' };
+  }
+  if (recipient.agent === 'codex' && recipient.hookRan) {
+    return { id: 'next-boundary', result: 'armed', when: 'next-prompt' };
+  }
+  return { id: 'poll', result: 'armed', when: 'poll' };
+}
+
+async function waitForSocket(peerId: string, messageId: string): Promise<void> {
+  const deadline = Date.now() + SOCKET_WAIT_MS();
+  while (stillPending(peerId, messageId) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 /** Said to the sender when the recipient is stopped on a permission prompt. */
 const waitingNote = (ref: string, verb: string) =>
   `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only ` +
   "after its user answers. Tell your user if it's urgent; don't resend.";
+
+/**
+ * Inbox copy for a Codex message the queue will not deliver. `why` is set when `codex queue` itself failed;
+ * an interrupt leaves it unset. The next prompt hook, or `read_messages`, is what presents the body.
+ */
+function codexHeldStatus(recipient: Peer, why?: string): string {
+  const ref = peerRef(recipient);
+  const via = recipient.hookRan
+    ? 'It stays in the inbox for the next prompt, or until the session calls read_messages.'
+    : 'It stays in the inbox until the session calls read_messages.';
+  const reason = why
+    ? why
+    : "Codex was interrupted, so its queue will not deliver this.";
+  return `Message stored for ${ref}. ${reason} ${via}`;
+}
 
 /** When a queued message reaches Codex, from the state of its last turn. */
 function codexQueueStatus(recipient: Peer): string {
@@ -131,13 +299,6 @@ function codexQueueStatus(recipient: Peer): string {
       : '';
     return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
   }
-  if (activity === 'interrupted') {
-    const withPrompt = unapproved && !unapproved.includes('UserPromptSubmit') ? ', and it gets the message with that prompt' : '';
-    return (
-      `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
-      `queued messages until its user sends that session a prompt${withPrompt}. Tell your user if it's urgent; don't resend.`
-    );
-  }
   return `Message queued for delivery to ${ref}.`;
 }
 
@@ -154,4 +315,15 @@ function inboxStatus(recipient: Peer): string {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;
+}
+
+function wakeStatus(recipient: Peer, base: string, wake: WakeResult | undefined): string {
+  if (!wake) return base;
+  const ref = peerRef(recipient);
+  if (!wake.ok) return `${base} The ${wake.how} notification failed (${wake.detail}).`;
+  const how = wake.how === 'webhook' ? 'webhook' : 'delivery command';
+  return (
+    `Notified ${ref} by ${how}. ${base} ` +
+    `The ${how} body is a wake, not the message, and must be treated as untrusted.`
+  );
 }

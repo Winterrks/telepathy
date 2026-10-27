@@ -342,22 +342,37 @@ so they are reachable again as soon as they run.
 
 - **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then. Copilot
   and Antigravity also register their folder name at the first prompt; before that they show up as `session-<pid>`.
-- **A busy Codex gets messages after its next tool call.** Each message goes into Codex's queue, which starts a turn
-  when Codex is idle, and into telepathy's inbox, which the PostToolUse hook hands over mid-turn. Whichever comes
-  first wins: a message handed over mid-turn (or read with `read_messages`) is taken back out of Codex's queue, so it
-  doesn't arrive twice. Without the PostToolUse hook approved, messages wait for the turn to end.
-- **An interrupted Codex holds messages.** After you interrupt a Codex turn (Esc), Codex doesn't start queued
-  messages until you send that session a prompt; the UserPromptSubmit hook hands them over with that prompt. The
-  sender is told the message is being held, and `list_peers` and ListAgents show the session as interrupted.
-  (Seen in Codex 0.156.)
-- **Claude receives through the monitor.** Claude Code runs plugin monitors only in interactive terminal sessions.
+- **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
+  result. That is the mid-turn path. `codex queue` only runs the message after the turn ends, so it is the fallback
+  when no further tool call happens. Whichever comes first wins: a message handed over mid-turn (or read with
+  `read_messages`) is taken back out of Codex's queue, so it doesn't arrive twice. Without the PostToolUse hook
+  approved, messages wait for the turn to end.
+- **An interrupted Codex does not get the queue.** After you interrupt a turn (Esc), Codex leaves queued messages
+  paused and does not start them. Telepathy does not call `codex queue` in that state. The message stays in the inbox
+  for the next prompt's hook, or for `read_messages`. `list_peers` and ListAgents show the session as interrupted.
+- **Claude receives through its inbox socket when the session has one.** Claude Code v2.1.224 or later (v2.1.234 on
+  native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there. A message is
+  marked delivered only when Claude accepts it. A hold, refusal, or expiry leaves it in the inbox. Sessions without
+  the socket, including bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in
+  interactive terminal sessions.
   The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
   message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
   runs, the hooks hand messages over at the next prompt or when a turn ends.
 - **Unread messages survive a restart for an hour.** A resumed session (`claude --resume`, `codex resume`) runs in a
   new process, so it gets a new address, but it picks up the messages its previous process hadn't read yet, for up to
-  an hour. A new conversation in the same folder doesn't get them.
+  an hour, when it is the same session. A new conversation in the same folder doesn't get them.
+- **A stable name.** Set `TELEPATHY_NAME` or start the server with `--name my-bot`. The address becomes
+  `grok:my-bot` and stays that way across restarts, and unread messages move to the new process. Two live sessions
+  with the same name are called out in `list_peers` and in `[telepathy setup]`. Use the `[ref]` to pick one.
+- **A webhook wake.** `~/.telepathy/delivery.json` (mode 600, or it is ignored) can name a peer and a `webhook` URL
+  with headers, or a `command` argv. On send, telepathy POSTs `{"id","from","count","at"}` once, with an 8 second
+  timeout and no retry. The body is a wake, not the message, and the receiver must treat it as untrusted and read
+  the inbox. The message is not removed. This is how a Grok Bot on another machine gets woken. The file's headers
+  are not logged.
+- **`read_messages` is also structured.** Besides the text, the tool returns `structuredContent.messages`, an array
+  of `{id, from, sentAt, body}`. An empty array means there is no message. The sentence "No messages received yet."
+  is not one.
 - **Setup notes.** When something only the user can fix keeps messages from arriving on time, telepathy's tools add a
   `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, a session running
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the

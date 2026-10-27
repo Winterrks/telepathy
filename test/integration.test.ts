@@ -241,8 +241,10 @@ describe('telepathy plugin', () => {
     try {
       const claude = await connect('claude', claudeAgent.pid);
       const res = await call(claude, 'send_message', { to: 'codex:other', message: 'x' });
-      assert.equal(res.isError, true);
+      assert.equal(res.isError, undefined, 'a queue failure is not a lost message');
       assert.match(toolText(res), /codex queue failed: Error: thread not found/);
+      assert.match(toolText(res), /stays in the inbox/);
+      assert.equal(fs.readdirSync(path.join(sb.home, 'peers', 'codex-t', 'inbox')).length, 1);
     } finally {
       if (transportEnvBackup === undefined) delete sb.env.FAKE_CODEX_FAIL;
       else sb.env.FAKE_CODEX_FAIL = transportEnvBackup;
@@ -482,11 +484,15 @@ describe('telepathy plugin', () => {
       fs.appendFileSync(rollout, event('turn_aborted'));
       assert.equal(
         toolText(await call(claude, 'send_message', { to: 'codex:auth', message: 'two' })),
-        `Message queued for ${ref}, but Codex is holding it: its last turn was interrupted, and it doesn't start ` +
-          `queued messages until its user sends that session a prompt. Tell your user if it's urgent; don't resend.`,
+        `Message stored for ${ref}. Codex was interrupted, so its queue will not deliver this. ` +
+          `It stays in the inbox for the next prompt, or until the session calls read_messages.`,
       );
       assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · interrupted: gets messages only after its user sends it a prompt/);
-      assert.equal(codexCalls(sb).length, 2, 'both are still queued');
+      assert.equal(codexCalls(sb).length, 1, 'the interrupted message is not queued');
+      const held = fs.readdirSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox')).map((f) => JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox', f), 'utf8')) as { body: string; codexQueueId?: string });
+      const interrupted = held.find((m) => m.body === 'two');
+      assert.ok(interrupted, 'the interrupted message stays in the inbox');
+      assert.equal(interrupted?.codexQueueId, undefined);
     });
 
     test('ListAgents output of an unknown shape gets the Codex sessions as a note instead', () => {
