@@ -46,6 +46,7 @@ interface World {
     name?: string;
     home?: string;
     pluginDirs?: string;
+    claudeConfig?: string;
   }[];
 }
 
@@ -176,11 +177,13 @@ function confirmEnv(): void {
 }
 
 test('parseRunArgs keeps harness flags after the agent', () => {
-  const parsed = parseRunArgs(['--headless', '--name', 'box', 'claude', '--resume', 'abc']);
+  const parsed = parseRunArgs(['--headless', '--install', '--name', 'box', 'claude', '--resume', 'abc']);
   assert.equal(parsed.headless, true);
+  assert.equal(parsed.install, true);
   assert.equal(parsed.name, 'box');
   assert.equal(parsed.agent, 'claude');
   assert.deepEqual(parsed.userArgs, ['--resume', 'abc']);
+  assert.equal(parseRunArgs(['claude']).install, false);
   const after = parseRunArgs(['--headless', 'claude', '--name', 'box', '--cwd', '/tmp', 'extra']);
   assert.equal(after.name, 'box');
   assert.equal(after.cwd, '/tmp');
@@ -672,6 +675,27 @@ test('an ACP agent that fails to authenticate exits instead of waiting', async (
   }
 });
 
+test('isolation does not assign CLAUDE_CONFIG_DIR', async () => {
+  const w = world();
+  const dir = path.join(w.sb.env.HOME, '.claude', 'plugins');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'installed_plugins.json'),
+    JSON.stringify({ plugins: { 'telepathy@telepathy': [{ version: '0.9.0', installPath: dir }] } }),
+  );
+  const env = { ...w.env };
+  delete env.CLAUDE_CONFIG_DIR;
+  const launched = spawnCli(['run', '--headless', '--name', 'plain', 'claude'], env);
+  try {
+    const started = await waitFor(() => w.readLog().find((entry) => entry.cmd === 'claude' && entry.args?.includes('stream-json') && entry.name === 'plain'));
+    assert.equal(started.claudeConfig, undefined);
+    assert.ok(started.pluginDirs?.includes(dir));
+  } finally {
+    await stop(env, 'plain', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
 test('an installed plugin keeps the --name and is not a second host peer', async () => {
   const w = world();
   plantClaude(w.sb);
@@ -687,6 +711,7 @@ test('an installed plugin keeps the --name and is not a second host peer', async
     assert.ok(started?.pluginDirs?.includes(path.join(w.sb.env.CLAUDE_CONFIG_DIR, 'plugins')));
     assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'claude-h-box', 'hosted.json')), false);
     assert.equal(w.readLog().some((entry) => entry.event === 'stdin'), false);
+    assert.equal(started?.claudeConfig, w.sb.env.CLAUDE_CONFIG_DIR);
   } finally {
     await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();

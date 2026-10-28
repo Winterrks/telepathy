@@ -26,6 +26,7 @@ Usage:
 Copilot CLI starts an ACP host instead. \`agy\` is an alias for antigravity. \`--acp\` forces ACP where a launcher exists.
 \`--headless\` keeps a peer up until \`telepathy stop\`: Claude stream-json, Codex app-server,
 OpenCode serve, or ACP. \`--name\` reuses the same peer id after a restart.
+\`run\` does not install a plugin or edit a global config unless \`--install\` is passed.
 
 Auto-update is on by default. \`telepathy config auto-update off\` or TELEPATHY_AUTO_UPDATE=0 disables it.
 State lives in TELEPATHY_HOME, or ~/.telepathy.

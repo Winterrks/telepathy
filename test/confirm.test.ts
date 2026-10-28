@@ -133,6 +133,48 @@ describe('transcript confirmation', () => {
     assert.match(result.status, new RegExp(`The transcript shows ${messageMarker(msg.id)}`));
   });
 
+  test('an Antigravity brain transcript counts when the extra dir is an unexpanded placeholder', async () => {
+    process.env.TELEPATHY_CONFIRM_WAIT = '1';
+    process.env.TELEPATHY_CONFIRM_ABORT_MS = '2000';
+    process.env.TELEPATHY_CONFIRM_GRACE_MS = '200';
+    process.env.TELEPATHY_CONFIRM_POLL_MS = '20';
+    const home = path.join(sb.home, 'agy-home');
+    fs.mkdirSync(home, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    process.env.TELEPATHY_TRANSCRIPT_DIR = '${TELEPATHY_TRANSCRIPT_DIR}';
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    const key = `agy${n++}`;
+    registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-tx');
+    registerSession('codex', fromProc.pid, { sessionId: 'thread-tx', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
+    registerSession('antigravity', toProc.pid, { sessionId: key, cwd: '/w/app', source: 'hook' });
+    const from = readPeer('codex-thread-tx');
+    const to = readPeer(`antigravity-${key}`);
+    assert.ok(from && to);
+    try {
+      const pending = sendMessage(from, to.id, 'agy confirm');
+      const file = await waitFor(() => {
+        try {
+          return fs.readdirSync(inboxDir(to.id))[0];
+        } catch {
+          return undefined;
+        }
+      });
+      const msg = JSON.parse(fs.readFileSync(path.join(inboxDir(to.id), file), 'utf8')) as { id: string };
+      const transcript = path.join(home, '.gemini', 'antigravity-ide', 'brain', key, '.system_generated', 'logs', 'transcript.jsonl');
+      fs.mkdirSync(path.dirname(transcript), { recursive: true });
+      fs.writeFileSync(transcript, `${messageMarker(msg.id)}\n`);
+      const result = await pending;
+      assert.equal(result.ok, true, result.ok ? '' : result.error);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+    }
+  });
+
   test('a timeout withdraws the inbox and is not success', async () => {
     arm('200', '80');
     const { from, to } = pair();
