@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
-import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
+import { configuredEnv, ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import { VERSION } from './version.ts';
 import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand, processCwd } from './codex-launch.ts';
 import { codexThreadLoaded } from './codex-threads.ts';
@@ -203,7 +203,7 @@ const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 /** A ref like `claude-4242`, a Codex thread's `codex-01a1176e-84cc-76c3-b84c-8e4da4d38c36`, or `opencode-ses_edfc…`. */
 const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 
-export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+export const defaultCodexHome = () => configuredEnv('CODEX_HOME') || path.join(os.homedir(), '.codex');
 export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 export function registerSession(
@@ -230,11 +230,7 @@ export function registerSession(
   writeJsonAtomic(file, record);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId) as string;
-    const firstSeen = !previous || previous.sessionId !== fields.sessionId;
-    const carried =
-      agent === 'codex'
-        ? carryLaunchedCodexName(fields.sessionId, fields.cwd ?? previous?.cwd, firstSeen)
-        : undefined;
+    const carried = agent === 'codex' ? carryLaunchedCodexName(fields.sessionId) : undefined;
     rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
     if (peerId(agent, pid) !== id) {
       writeJsonAtomic(linkFile(agent, pid), { id });
@@ -390,7 +386,7 @@ export function registerListener(agent: Agent, pid: number, id = peerId(agent, p
  * `explicit` wins over the environment, so a server flag is not ignored when the variable is also set.
  */
 export function configuredStableName(explicit?: string): string | undefined {
-  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  const raw = explicit?.trim() || configuredEnv('TELEPATHY_NAME');
   if (!raw) return undefined;
   return slugify(raw) || undefined;
 }
@@ -673,21 +669,12 @@ function codexTuiNamesThread(threadId: string): boolean {
 }
 
 /**
- * The pid-keyed name of the TUI this thread belongs to, and a `link.json` so that row disappears once the thread
- * peer is live. `codex resume <uuid>` matches on the id. A fresh TUI matches only the first time this thread is
- * seen, and only when the directory agrees or there is a single window whose directory we cannot compare.
- * Two windows in one directory stay two rows: guessing would hide the one that still has no thread.
+ * The pid-keyed name of the TUI whose command line names this thread, and a `link.json` so that row disappears
+ * once the thread peer is live. A fresh TUI is not linked from the working directory: a hosted `codex:acpx`
+ * session in the same folder is a different process.
  */
-function carryLaunchedCodexName(sessionId: string, cwd: string | undefined, firstSeen: boolean): string | undefined {
-  const tuis = launchedTuis();
-  const named = tuis.find((tui) => tui.threadId === sessionId);
-  let chosen = named;
-  if (!chosen && firstSeen) {
-    const fresh = tuis.filter((tui) => !tui.threadId && !linkedElsewhere(tui.pid, sessionId));
-    const sameDir = cwd ? fresh.filter((tui) => tui.cwd && tui.cwd === cwd) : [];
-    if (sameDir.length === 1) chosen = sameDir[0];
-    else if (fresh.length === 1 && (!cwd || !fresh[0]?.cwd)) chosen = fresh[0];
-  }
+function carryLaunchedCodexName(sessionId: string): string | undefined {
+  const chosen = launchedTuis().find((tui) => tui.threadId === sessionId);
   if (!chosen) return undefined;
   const threadPeer = sessionPeerId('codex', chosen.pid, sessionId);
   const pidKey = peerId('codex', chosen.pid);
@@ -697,11 +684,6 @@ function carryLaunchedCodexName(sessionId: string, cwd: string | undefined, firs
   }
   const placeholder = readPeer(pidKey);
   return placeholder && !placeholder.sessionId ? placeholder.name : undefined;
-}
-
-function linkedElsewhere(pid: number, sessionId: string): boolean {
-  const link = linkedPeerId('codex', pid);
-  return !!link && link !== sessionPeerId('codex', pid, sessionId);
 }
 
 /**

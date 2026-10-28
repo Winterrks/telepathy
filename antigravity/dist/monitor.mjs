@@ -15,8 +15,20 @@ import path2 from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
 function stateDir() {
-  return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
 var peersDir = () => path.join(stateDir(), "peers");
 var peerDir = (id2) => path.join(peersDir(), id2);

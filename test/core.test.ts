@@ -549,7 +549,7 @@ describe('Codex TUI launch', () => {
     assert.equal(codexTuiLaunch('bash -c codex'), undefined);
   });
 
-  test('a launched Codex with no thread is listed, and one window keeps that name once a thread exists', async () => {
+  test('a launched Codex with no thread stays its own row when another session appears', async () => {
     const sb = makeSandbox();
     process.env.TELEPATHY_HOME = sb.home;
     process.env.CODEX_HOME = sb.codexHome;
@@ -567,11 +567,11 @@ describe('Codex TUI launch', () => {
 
       registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
       const after = listPeers();
-      assert.equal(after.some((p) => p.id === `codex-${tui.pid}`), false);
+      assert.ok(after.some((p) => p.id === `codex-${tui.pid}`));
       const bound = after.find((p) => p.id === `codex-${thread}`);
       assert.ok(bound);
-      assert.equal(bound.address, listed.address);
-      assert.equal(bound.name, listed.name);
+      assert.notEqual(bound.address, listed.address);
+      assert.equal(fs.existsSync(path.join(sb.home, 'peers', `codex-${tui.pid}`, 'link.json')), false);
     } finally {
       setCodexProcs(sb, []);
       await killAndWait(tui);

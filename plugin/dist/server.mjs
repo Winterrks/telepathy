@@ -27672,8 +27672,20 @@ import path2 from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
 function stateDir() {
-  return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
 var peersDir = () => path.join(stateDir(), "peers");
 var peerDir = (id) => path.join(peersDir(), id);
@@ -28235,7 +28247,7 @@ function rememberedName(agent, sessionId) {
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-var defaultCodexHome = () => process.env.CODEX_HOME || path5.join(os2.homedir(), ".codex");
+var defaultCodexHome = () => configuredEnv("CODEX_HOME") || path5.join(os2.homedir(), ".codex");
 var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path5.join(os2.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
   const file2 = path5.join(peerDir(id), "session.json");
@@ -28255,8 +28267,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
   writeJsonAtomic(file2, record2);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId);
-    const firstSeen = !previous || previous.sessionId !== fields.sessionId;
-    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId, fields.cwd ?? previous?.cwd, firstSeen) : void 0;
+    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId) : void 0;
     rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
     if (peerId(agent, pid) !== id) {
       writeJsonAtomic(linkFile(agent, pid), { id });
@@ -28359,7 +28370,7 @@ function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
   writeJsonAtomic(path5.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
 }
 function configuredStableName(explicit) {
-  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  const raw = explicit?.trim() || configuredEnv("TELEPATHY_NAME");
   if (!raw) return void 0;
   return slugify2(raw) || void 0;
 }
@@ -28560,16 +28571,8 @@ function launchedTuis() {
 function codexTuiNamesThread(threadId) {
   return launchedTuis().some((tui) => tui.threadId === threadId);
 }
-function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
-  const tuis = launchedTuis();
-  const named = tuis.find((tui) => tui.threadId === sessionId);
-  let chosen = named;
-  if (!chosen && firstSeen) {
-    const fresh = tuis.filter((tui) => !tui.threadId && !linkedElsewhere(tui.pid, sessionId));
-    const sameDir = cwd ? fresh.filter((tui) => tui.cwd && tui.cwd === cwd) : [];
-    if (sameDir.length === 1) chosen = sameDir[0];
-    else if (fresh.length === 1 && (!cwd || !fresh[0]?.cwd)) chosen = fresh[0];
-  }
+function carryLaunchedCodexName(sessionId) {
+  const chosen = launchedTuis().find((tui) => tui.threadId === sessionId);
   if (!chosen) return void 0;
   const threadPeer = sessionPeerId("codex", chosen.pid, sessionId);
   const pidKey = peerId("codex", chosen.pid);
@@ -28579,10 +28582,6 @@ function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
   }
   const placeholder = readPeer(pidKey);
   return placeholder && !placeholder.sessionId ? placeholder.name : void 0;
-}
-function linkedElsewhere(pid, sessionId) {
-  const link = linkedPeerId("codex", pid);
-  return !!link && link !== sessionPeerId("codex", pid, sessionId);
 }
 function observeLaunchedCodex() {
   for (const proc of codexTuiProcesses()) {
@@ -29431,15 +29430,20 @@ function inspectTranscript(peer, marker) {
   return hosted;
 }
 function inspectHarnessTranscript(peer, marker) {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs9.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
+  const harness = searchHarnessTranscript(peer, marker);
+  const extra = configuredEnv("TELEPATHY_TRANSCRIPT_DIR");
+  if (!extra) return harness;
+  const extraFound = fs9.existsSync(extra) && treeHas(extra, marker, 4);
+  if (extraFound) return { located: true, found: true };
+  if (harness.found) return harness;
+  return { located: harness.located || fs9.existsSync(extra), found: false };
+}
+function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "claude") return claudeTranscript(peer, marker);
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "gemini") return geminiTranscript(marker);
+  if (peer.agent === "antigravity") return antigravityTranscript(peer, marker);
   if (peer.agent === "copilot" && peer.sessionId) {
     const file2 = path10.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
     if (!fs9.existsSync(file2)) return { located: false, found: false };
@@ -29493,6 +29497,16 @@ function geminiTranscript(marker) {
   const tmp = path10.join(home2, "tmp");
   if (!fs9.existsSync(tmp)) return { located: false, found: false };
   return { located: true, found: treeHas(tmp, marker, 4) };
+}
+function antigravityTranscript(peer, marker) {
+  if (!peer.sessionId) return { located: false, found: false };
+  const root = path10.join(os4.homedir(), ".gemini");
+  const files = ["antigravity-cli", "antigravity-ide", "antigravity"].map(
+    (dir) => path10.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl")
+  );
+  const existing = files.filter((file2) => fs9.existsSync(file2));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
 }
 function treeHas(dir, marker, depth) {
   if (depth < 0) return false;
@@ -29708,7 +29722,7 @@ function genericDir(dir) {
   return false;
 }
 function isolatedStateRoots() {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv("TELEPATHY_HOME");
   if (!explicit) return void 0;
   const state = resolveReal(explicit);
   let passwd = path11.resolve(os5.userInfo().homedir);
@@ -30953,7 +30967,7 @@ if (invokedAsUpdateAll()) {
 
 // src/auto-update.ts
 function autoUpdateEnabled() {
-  const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
+  const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
   const cfg = readJson(path18.join(stateDir(), "config.json"));

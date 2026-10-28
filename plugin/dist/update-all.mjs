@@ -82,60 +82,89 @@ var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
 // src/core/installs.ts
+import fs2 from "node:fs";
+import os2 from "node:os";
+import path2 from "node:path";
+
+// src/core/paths.ts
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-var home = () => os.homedir();
-var cacheHome = () => process.env.XDG_CACHE_HOME || path.join(home(), ".cache");
-var dataHome = () => process.env.XDG_DATA_HOME || path.join(home(), ".local", "share");
-function resolveReal(dir) {
-  const abs = path.resolve(dir);
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
+function stateDir() {
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
+}
+function readJson(file) {
   try {
-    return fs.realpathSync(abs);
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+
+// src/core/installs.ts
+var home = () => os2.homedir();
+var cacheHome = () => process.env.XDG_CACHE_HOME || path2.join(home(), ".cache");
+var dataHome = () => process.env.XDG_DATA_HOME || path2.join(home(), ".local", "share");
+function resolveReal(dir) {
+  const abs = path2.resolve(dir);
+  try {
+    return fs2.realpathSync(abs);
   } catch {
     return abs;
   }
 }
 function genericDir(dir) {
   const normalized = resolveReal(dir);
-  if (normalized === path.parse(normalized).root) return true;
+  if (normalized === path2.parse(normalized).root) return true;
   const generic = ["/tmp", "/var", "/private", "/private/tmp", "/var/tmp", "/private/var"];
   if (generic.includes(normalized)) return true;
   try {
-    const tmp = resolveReal(os.tmpdir());
-    if (normalized === tmp || normalized === path.dirname(tmp)) return true;
+    const tmp = resolveReal(os2.tmpdir());
+    if (normalized === tmp || normalized === path2.dirname(tmp)) return true;
   } catch {
   }
   return false;
 }
 function isolatedStateRoots() {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv("TELEPATHY_HOME");
   if (!explicit) return void 0;
   const state = resolveReal(explicit);
-  let passwd = path.resolve(os.userInfo().homedir);
+  let passwd = path2.resolve(os2.userInfo().homedir);
   try {
-    passwd = fs.realpathSync(passwd);
+    passwd = fs2.realpathSync(passwd);
   } catch {
   }
-  if (state === path.join(passwd, ".telepathy")) return void 0;
-  const parent = path.dirname(state);
+  if (state === path2.join(passwd, ".telepathy")) return void 0;
+  const parent = path2.dirname(state);
   const roots = [genericDir(parent) || parent === passwd ? state : parent];
-  let apparent = path.resolve(os.homedir());
+  let apparent = path2.resolve(os2.homedir());
   try {
-    apparent = fs.realpathSync(apparent);
+    apparent = fs2.realpathSync(apparent);
   } catch {
   }
-  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path.sep));
+  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path2.sep));
   if (apparent !== passwd && !covered) roots.push(apparent);
   return roots;
 }
 function inRoots(dir, roots) {
   const resolved = resolveReal(dir);
-  return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path2.sep));
 }
 function readVersion(file) {
   try {
-    const version = JSON.parse(fs.readFileSync(file, "utf8")).version;
+    const version = JSON.parse(fs2.readFileSync(file, "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
@@ -143,14 +172,14 @@ function readVersion(file) {
 }
 function builtVersion(dir) {
   try {
-    return /var VERSION = (?:true \? )?"(\d+\.\d+\.\d+[^"]*)"/.exec(fs.readFileSync(path.join(dir, "dist", "server.mjs"), "utf8"))?.[1];
+    return /var VERSION = (?:true \? )?"(\d+\.\d+\.\d+[^"]*)"/.exec(fs2.readFileSync(path2.join(dir, "dist", "server.mjs"), "utf8"))?.[1];
   } catch {
     return void 0;
   }
 }
 var list = (dir) => {
   try {
-    return fs.readdirSync(dir);
+    return fs2.readdirSync(dir);
   } catch {
     return [];
   }
@@ -167,10 +196,10 @@ function newestOf(installs) {
   return installs.reduce((best, i) => !best || isNewer(i.version, best.version) ? i : best, void 0);
 }
 function claude() {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || path.join(home(), ".claude");
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path2.join(home(), ".claude");
   let plugins = {};
   try {
-    plugins = JSON.parse(fs.readFileSync(path.join(configDir, "plugins", "installed_plugins.json"), "utf8")).plugins ?? {};
+    plugins = JSON.parse(fs2.readFileSync(path2.join(configDir, "plugins", "installed_plugins.json"), "utf8")).plugins ?? {};
   } catch {
     return [];
   }
@@ -179,12 +208,12 @@ function claude() {
   );
 }
 function codex() {
-  const cache = path.join(process.env.CODEX_HOME || path.join(home(), ".codex"), "plugins", "cache");
+  const cache = path2.join(process.env.CODEX_HOME || path2.join(home(), ".codex"), "plugins", "cache");
   const found = list(cache).flatMap(
-    (marketplace) => list(path.join(cache, marketplace, "telepathy")).map((version) => ({
+    (marketplace) => list(path2.join(cache, marketplace, "telepathy")).map((version) => ({
       agent: "codex",
       version,
-      dir: path.join(cache, marketplace, "telepathy", version),
+      dir: path2.join(cache, marketplace, "telepathy", version),
       marketplace
     }))
   );
@@ -192,24 +221,24 @@ function codex() {
   return newest ? [newest] : [];
 }
 function extension(agent) {
-  const dir = path.join(home(), `.${agent}`, "extensions", "telepathy");
-  const version = readVersion(path.join(dir, `${agent}-extension.json`));
+  const dir = path2.join(home(), `.${agent}`, "extensions", "telepathy");
+  const version = readVersion(path2.join(dir, `${agent}-extension.json`));
   return version ? [{ agent, version, dir }] : [];
 }
 function copilot() {
-  const root = path.join(home(), ".copilot", "installed-plugins");
+  const root = path2.join(home(), ".copilot", "installed-plugins");
   return list(root).flatMap((marketplace) => {
-    const dir = path.join(root, marketplace, "telepathy");
-    const version = readVersion(path.join(dir, ".github", "plugin", "plugin.json"));
+    const dir = path2.join(root, marketplace, "telepathy");
+    const version = readVersion(path2.join(dir, ".github", "plugin", "plugin.json"));
     return version ? [{ agent: "copilot", version, dir, marketplace }] : [];
   });
 }
 function devin() {
-  const cache = path.join(dataHome(), "devin", "cli", "plugins", "cache");
+  const cache = path2.join(dataHome(), "devin", "cli", "plugins", "cache");
   const found = list(cache).filter((name) => /telepathy/i.test(name)).flatMap(
-    (name) => list(path.join(cache, name)).flatMap((version) => {
-      const dir = path.join(cache, name, version);
-      const manifest = readVersion(path.join(dir, ".devin-plugin", "plugin.json"));
+    (name) => list(path2.join(cache, name)).flatMap((version) => {
+      const dir = path2.join(cache, name, version);
+      const manifest = readVersion(path2.join(dir, ".devin-plugin", "plugin.json"));
       return manifest ? [{ agent: "devin", version: manifest, dir }] : [];
     })
   );
@@ -217,28 +246,28 @@ function devin() {
   return newest ? [newest] : [];
 }
 function antigravity() {
-  const dir = path.join(home(), ".gemini", "config", "plugins", "telepathy");
+  const dir = path2.join(home(), ".gemini", "config", "plugins", "telepathy");
   const version = builtVersion(dir);
   return version ? [{ agent: "antigravity", version, dir }] : [];
 }
 function opencodeNpmCache() {
-  const npm = path.join(cacheHome(), "opencode", "npm");
-  return list(npm).filter((name) => /telepathy/i.test(name)).flatMap((name) => list(path.join(npm, name)).map((install) => path.join(npm, name, install, "node_modules", "telepathy"))).filter((dir) => fs.existsSync(path.join(dir, "package.json")));
+  const npm = path2.join(cacheHome(), "opencode", "npm");
+  return list(npm).filter((name) => /telepathy/i.test(name)).flatMap((name) => list(path2.join(npm, name)).map((install) => path2.join(npm, name, install, "node_modules", "telepathy"))).filter((dir) => fs2.existsSync(path2.join(dir, "package.json")));
 }
-var isOpencodeNpmInstall = (install) => install.agent === "opencode" && install.dir.startsWith(path.join(cacheHome(), "opencode", "npm") + path.sep);
+var isOpencodeNpmInstall = (install) => install.agent === "opencode" && install.dir.startsWith(path2.join(cacheHome(), "opencode", "npm") + path2.sep);
 function packageCache(agent) {
-  const packages = path.join(cacheHome(), agent, "packages");
+  const packages = path2.join(cacheHome(), agent, "packages");
   const candidates = agent === "opencode" ? [...opencodeNpmCache(), ...list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
     const found2 = [];
     const walk = (dir, depth) => {
-      if (fs.existsSync(path.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path.join(dir, "node_modules", "telepathy"));
-      else if (depth < 4) for (const sub of list(dir)) walk(path.join(dir, sub), depth + 1);
+      if (fs2.existsSync(path2.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path2.join(dir, "node_modules", "telepathy"));
+      else if (depth < 4) for (const sub of list(dir)) walk(path2.join(dir, sub), depth + 1);
     };
-    walk(path.join(packages, name), 0);
+    walk(path2.join(packages, name), 0);
     return found2;
-  })] : list(path.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path.join(packages, "git", name));
+  })] : list(path2.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path2.join(packages, "git", name));
   const found = candidates.flatMap((dir) => {
-    const version = readVersion(path.join(dir, "package.json"));
+    const version = readVersion(path2.join(dir, "package.json"));
     return version ? [{ agent, version, dir }] : [];
   });
   const newest = newestOf(found);
@@ -261,21 +290,6 @@ function installsInScope(installs = findInstalls()) {
   const roots = isolatedStateRoots();
   if (!roots) return installs;
   return installs.filter((install) => inRoots(install.dir, roots));
-}
-
-// src/core/paths.ts
-import fs2 from "node:fs";
-import os2 from "node:os";
-import path2 from "node:path";
-function stateDir() {
-  return process.env.TELEPATHY_HOME || path2.join(os2.homedir(), ".telepathy");
-}
-function readJson(file) {
-  try {
-    return JSON.parse(fs2.readFileSync(file, "utf8"));
-  } catch {
-    return void 0;
-  }
 }
 
 // src/version-check.ts

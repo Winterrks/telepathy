@@ -15,7 +15,7 @@ Usage:
   telepathy doctor
   telepathy install [--dry-run] [--only a,b]
   telepathy config [auto-update on|off]
-  telepathy run [--list] [--acp | --headless] [--name X] [--cwd D] <agent> [args...]
+  telepathy run [--list] [--acp | --headless] [--install] [--name X] [--cwd D] <agent> [args...]
   telepathy ps
   telepathy stop <name>
   telepathy mcp --agent <agent>
@@ -26,6 +26,7 @@ Usage:
 Gemini CLI and Copilot CLI start an ACP host instead. \`--acp\` forces ACP where a launcher exists.
 \`--headless\` keeps a peer up until \`telepathy stop\`: Claude stream-json, Codex app-server,
 OpenCode serve, or ACP. \`--name\` reuses the same peer id after a restart.
+\`run\` does not install a plugin or edit a global config unless \`--install\` is passed.
 
 Auto-update is on by default. \`telepathy config auto-update off\` or TELEPATHY_AUTO_UPDATE=0 disables it.
 State lives in TELEPATHY_HOME, or ~/.telepathy.
@@ -55,8 +56,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (cmd === 'install') {
     const dryRun = rest.includes('--dry-run');
+    const onlyEq = rest.find((arg) => arg.startsWith('--only='));
     const onlyFlag = rest.indexOf('--only');
-    const only = onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
+    const only = onlyEq ? parseOnly(onlyEq.slice('--only='.length)) : onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
     return installAll({ dryRun, only });
   }
   if (cmd === 'config') return configCommand(rest);

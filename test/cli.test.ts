@@ -8,8 +8,9 @@ import { test } from 'node:test';
 import { autoUpdateEnabled, runAutoUpdate, scheduleAutoUpdate } from '../src/auto-update.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { installsInScope } from '../src/core/installs.ts';
-import { inboxDir } from '../src/core/paths.ts';
-import { readPeer, registerSession } from '../src/core/peers.ts';
+import { newMessageId, writeToInbox } from '../src/core/messages.ts';
+import { configuredEnv, inboxDir, stateDir } from '../src/core/paths.ts';
+import { configuredStableName, readPeer, registerSession } from '../src/core/peers.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
 import { readHeadlessRecord } from '../src/headless/peer.ts';
 import { parseRunArgs } from '../src/cli/run.ts';
@@ -46,6 +47,7 @@ interface World {
     name?: string;
     home?: string;
     pluginDirs?: string;
+    claudeConfig?: string;
   }[];
 }
 
@@ -176,11 +178,13 @@ function confirmEnv(): void {
 }
 
 test('parseRunArgs keeps harness flags after the agent', () => {
-  const parsed = parseRunArgs(['--headless', '--name', 'box', 'claude', '--resume', 'abc']);
+  const parsed = parseRunArgs(['--headless', '--install', '--name', 'box', 'claude', '--resume', 'abc']);
   assert.equal(parsed.headless, true);
+  assert.equal(parsed.install, true);
   assert.equal(parsed.name, 'box');
   assert.equal(parsed.agent, 'claude');
   assert.deepEqual(parsed.userArgs, ['--resume', 'abc']);
+  assert.equal(parseRunArgs(['claude']).install, false);
   const after = parseRunArgs(['--headless', 'claude', '--name', 'box', '--cwd', '/tmp', 'extra']);
   assert.equal(after.name, 'box');
   assert.equal(after.cwd, '/tmp');
@@ -254,7 +258,12 @@ test('install --dry-run prints official commands and does not run them', () => {
     assert.match(result.stdout, /claude plugin marketplace add Winterrks\/telepathy/);
     assert.match(result.stdout, /plugin install telepathy@telepathy/);
     assert.match(result.stdout, /\/plugins install/);
+    assert.doesNotMatch(result.stdout, /OpenCode|Gemini|Copilot/);
     assert.equal(w.readLog().length, 0);
+    const kilo = run(['install', '--dry-run', '--only=kilo'], w.env);
+    assert.equal(kilo.status, 0);
+    assert.match(kilo.stdout, /kilo\.json/);
+    assert.doesNotMatch(kilo.stdout, /claude plugin marketplace/);
     const bad = run(['install', '--only', 'nope'], w.env);
     assert.equal(bad.status, 1);
   } finally {
@@ -549,6 +558,43 @@ test('a tool call confirms an ACP turn before the turn finishes', async () => {
   }
 });
 
+test('ACP messages are separated by a newline', async () => {
+  const w = world({ FAKE_ACP_TWO: '1' });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'lines', 'gemini'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const sent = await sendMessage(self, 'gemini:lines', 'hi');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    await waitFor(() => (launched.out().includes('one\ntwo') ? true : undefined));
+  } finally {
+    await stop(w.env, 'lines', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an ACP auth failure after the prompt exits', async () => {
+  const w = world({ FAKE_ACP_AUTH_LATE: '1' });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'late', 'gemini'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const pending = sendMessage(self, 'gemini:late', 'hi');
+    const result = await Promise.race([
+      launched.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`auth hang: ${launched.err()}\n${launched.out()}`)), 8000)),
+    ]);
+    assert.notEqual(result.code, 0);
+    assert.match(`${launched.out()}\n${launched.err()}`, /authenticat/i);
+    await pending.catch(() => undefined);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
 test('ACP text chunks are one stream, not one line each', async () => {
   const w = world({ FAKE_ACP_SPLIT: '1' });
   confirmEnv();
@@ -628,6 +674,27 @@ test('an ACP agent that fails to authenticate exits instead of waiting', async (
   }
 });
 
+test('isolation does not assign CLAUDE_CONFIG_DIR', async () => {
+  const w = world();
+  const dir = path.join(w.sb.env.HOME, '.claude', 'plugins');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, 'installed_plugins.json'),
+    JSON.stringify({ plugins: { 'telepathy@telepathy': [{ version: '0.9.0', installPath: dir }] } }),
+  );
+  const env = { ...w.env };
+  delete env.CLAUDE_CONFIG_DIR;
+  const launched = spawnCli(['run', '--headless', '--name', 'plain', 'claude'], env);
+  try {
+    const started = await waitFor(() => w.readLog().find((entry) => entry.cmd === 'claude' && entry.args?.includes('stream-json') && entry.name === 'plain'));
+    assert.equal(started.claudeConfig, undefined);
+    assert.ok(started.pluginDirs?.includes(dir));
+  } finally {
+    await stop(env, 'plain', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
 test('an installed plugin keeps the --name and is not a second host peer', async () => {
   const w = world();
   plantClaude(w.sb);
@@ -643,6 +710,7 @@ test('an installed plugin keeps the --name and is not a second host peer', async
     assert.ok(started?.pluginDirs?.includes(path.join(w.sb.env.CLAUDE_CONFIG_DIR, 'plugins')));
     assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'claude-h-box', 'hosted.json')), false);
     assert.equal(w.readLog().some((entry) => entry.event === 'stdin'), false);
+    assert.equal(started?.claudeConfig, w.sb.env.CLAUDE_CONFIG_DIR);
   } finally {
     await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();
@@ -762,6 +830,8 @@ test('an isolated TELEPATHY_HOME does not see installs outside it', async () => 
     const installs = installsInScope();
     assert.ok(installs.some((install) => install.agent === 'claude'));
     assert.equal(installs.some((install) => install.dir.startsWith(outside)), false);
+    const status = run(['status'], { ...w.env, CODEX_HOME: outside });
+    assert.match(status.stdout, /Codex 0\.0\.1/);
     await runAutoUpdate();
     assert.equal(fs.existsSync(versionDir), true);
     assert.equal(fs.existsSync(path.join(w.sb.home, 'github-version.json')), false);
@@ -773,29 +843,109 @@ test('an isolated TELEPATHY_HOME does not see installs outside it', async () => 
   }
 });
 
-test('every harness MCP config forwards TELEPATHY_AUTO_UPDATE and TELEPATHY_NAME', () => {
-  const files = [
-    'plugin/codex.mcp.json',
-    'plugin/claude.mcp.json',
-    'plugin/copilot.mcp.json',
-    'plugin/cursor.mcp.json',
-    'plugin/grok.mcp.json',
-    'plugin/devin.mcp.json',
-    'antigravity/mcp_config.json',
-    'gemini-extension.json',
-    'qwen-extension.json',
-    '.kimi-plugin/plugin.json',
-  ];
-  for (const file of files) {
-    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    for (const name of FORWARDED_ENV) assert.ok(text.includes(name), `${file} does not forward ${name}`);
-  }
+test('MCP configs use only the placeholder syntax that harness expands', () => {
+  const claude = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/claude.mcp.json'), 'utf8')) as {
+    mcpServers: { bridge: { env: Record<string, string> } };
+  };
+  for (const name of FORWARDED_ENV) assert.equal(claude.mcpServers.bridge.env[name], `\${${name}:-}`);
+  const cursor = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/cursor.mcp.json'), 'utf8')) as {
+    mcpServers: { telepathy: { env: Record<string, string> } };
+  };
+  for (const name of FORWARDED_ENV) assert.equal(cursor.mcpServers.telepathy.env[name], `\${env:${name}}`);
   const codex = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/codex.mcp.json'), 'utf8')) as {
     mcpServers: { bridge: { env_vars: string[] } };
   };
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_AUTO_UPDATE'));
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_HOME'));
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_NAME'));
+  for (const name of FORWARDED_ENV) assert.ok(codex.mcpServers.bridge.env_vars.includes(name));
+  for (const file of ['plugin/copilot.mcp.json', 'plugin/devin.mcp.json', 'plugin/grok.mcp.json', 'gemini-extension.json', 'qwen-extension.json', '.kimi-plugin/plugin.json']) {
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.doesNotMatch(text, /\$\{TELEPATHY_/, `${file} still assigns a \${TELEPATHY_} placeholder`);
+    assert.doesNotMatch(text, /"CODEX_HOME"/, `${file} still assigns CODEX_HOME`);
+  }
+});
+
+test('an unexpanded placeholder is not a home, a name, or a transcript dir', () => {
+  const saved = {
+    TELEPATHY_HOME: process.env.TELEPATHY_HOME,
+    TELEPATHY_NAME: process.env.TELEPATHY_NAME,
+    HOME: process.env.HOME,
+  };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-placeholder-'));
+  process.env.HOME = home;
+  process.env.TELEPATHY_HOME = '${TELEPATHY_HOME}';
+  process.env.TELEPATHY_NAME = '${TELEPATHY_NAME}';
+  try {
+    assert.equal(configuredEnv('TELEPATHY_HOME'), undefined);
+    assert.equal(stateDir(), path.join(home, '.telepathy'));
+    assert.equal(stateDir().includes('${'), false);
+    assert.equal(configuredStableName(), undefined);
+    assert.equal(configuredEnv('TELEPATHY_TRANSCRIPT_DIR', { TELEPATHY_TRANSCRIPT_DIR: '${TELEPATHY_TRANSCRIPT_DIR}' }), undefined);
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('run does not install unless asked', () => {
+  const w = world();
+  try {
+    const result = run(['run', 'claude', '--', '--version'], w.env);
+    assert.equal(result.status, 0);
+    assert.equal(w.readLog().some((entry) => entry.args?.includes('plugin')), false);
+    assert.ok(w.readLog().some((entry) => entry.args?.includes('--version')));
+  } finally {
+    w.restore();
+  }
+});
+
+test('an installed plugin inbox is still pumped', async () => {
+  const w = world();
+  plantClaude(w.sb);
+  const launched = spawnCli(['run', '--headless', '--name', 'box', 'claude'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const record = readHeadlessRecord('claude', 'box');
+    assert.ok(record);
+    writeToInbox({
+      id: newMessageId(),
+      from: { id: 'claude-sender', agent: 'claude', name: 'sender', address: 'claude:sender' },
+      to: { id: record.peerId, agent: 'claude', name: 'box', address: 'claude:box' },
+      body: 'pump me',
+      sentAt: new Date().toISOString(),
+    });
+    await waitFor(() => (w.readLog().some((entry) => entry.event === 'stdin' && entry.line?.includes('pump me')) ? true : undefined));
+  } finally {
+    await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an installed ACP plugin inbox is still pumped', async () => {
+  const w = world();
+  plantGemini(w.sb.env.HOME);
+  const launched = spawnCli(['run', 'gemini'], w.env);
+  try {
+    await waitFor(() => (launched.out().includes('session ') ? true : undefined));
+    registerSession('gemini', process.pid, { sessionId: 'sess-acp', cwd: '/work/gemini', source: 'hook' });
+    const peer = readPeer('gemini-sess-acp');
+    assert.ok(peer);
+    writeToInbox({
+      id: newMessageId(),
+      from: { id: 'claude-sender', agent: 'claude', name: 'sender', address: 'claude:sender' },
+      to: { id: peer.id, agent: 'gemini', name: peer.name, address: peer.address },
+      body: 'wake the acp peer',
+      sentAt: new Date().toISOString(),
+    });
+    await waitFor(() =>
+      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('wake the acp peer')) ? true : undefined,
+    );
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    await launched.done.catch(() => undefined);
+    w.restore();
+  }
 });
 
 test('the real home state directory is untouched', () => {

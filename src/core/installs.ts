@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Agent } from './agents.ts';
+import { configuredEnv } from './paths.ts';
 
 /** One agent's installed copy of telepathy, found on disk. */
 export interface Install {
@@ -47,7 +48,7 @@ function genericDir(dir: string): boolean {
  * A different `TELEPATHY_HOME` is a sandbox. Installs outside it, including the real `~/.claude`, are not.
  */
 export function isolatedStateRoots(): string[] | undefined {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv('TELEPATHY_HOME');
   if (!explicit) return undefined;
   const state = resolveReal(explicit);
   let passwd = path.resolve(os.userInfo().homedir);
