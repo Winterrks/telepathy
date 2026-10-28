@@ -1,8 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { commandLines, processTable } from './proc.ts';
+import { commandLines, type ProcInfo, processTable, psCommand } from './proc.ts';
 
 /**
  * A Codex window that is already on screen, before it has a thread id telepathy can queue to.
@@ -17,6 +15,8 @@ export interface CodexTuiProc {
   args: string;
   cwd?: string;
   start?: string;
+  /** `CODEX_HOME` from this process, when it could be read. Queue and delete use it. */
+  codexHome?: string;
 }
 
 /** Flags that take the next argv token. A boolean flag must not swallow the prompt or the subcommand. */
@@ -121,55 +121,67 @@ export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
   return {};
 }
 
-/** The plugin's Codex home. A process with a different `CODEX_HOME` is not this plugin's peer. */
-function pluginCodexHome(): string {
-  return path.resolve(process.env.CODEX_HOME || path.join(os.homedir(), '.codex'));
-}
-
-/** True when `codexHome` was read and is not the plugin's. Unset or unreadable is not a difference. */
-export function codexHomeDiffers(codexHome: string | undefined): boolean {
-  if (!codexHome) return false;
-  return path.resolve(codexHome) !== pluginCodexHome();
-}
-
 function parentIsAppBundle(parent: string | undefined): boolean {
   return !!parent && APP_BUNDLE.test(parent);
 }
 
-/** Parent command line, or its `comm` when the args are missing. */
-function parentCommand(pid: number): string | undefined {
-  const ppid = processTable().get(pid)?.ppid;
+/** Parent command line from maps this call already loaded. No extra `ps`. */
+function parentCommandOf(pid: number, table: Map<number, ProcInfo>, lines: Map<number, string>): string | undefined {
+  const ppid = table.get(pid)?.ppid;
   if (!ppid) return undefined;
-  const args = commandLines().get(ppid);
-  const comm = processTable().get(ppid)?.comm;
+  const args = lines.get(ppid);
+  const comm = table.get(ppid)?.comm;
   return [args, comm].filter((part) => !!part).join('\n') || undefined;
 }
 
-/**
- * `CODEX_HOME` from the process environment, when it can be read. Linux uses `/proc/<pid>/environ`.
- * macOS uses `ps -E`. Unset or unreadable returns undefined, and the process is not skipped for that.
- */
-function processCodexHome(pid: number): string | undefined {
+/** `CODEX_HOME` from `/proc/<pid>/environ`. Undefined when the file cannot be read (macOS). */
+function procEnvironHome(pid: number): { home?: string } | undefined {
   try {
     const raw = fs.readFileSync(`/proc/${pid}/environ`);
     for (const entry of raw.toString('utf8').split('\0')) {
       if (!entry.startsWith('CODEX_HOME=')) continue;
-      return entry.slice('CODEX_HOME='.length) || undefined;
+      const home = entry.slice('CODEX_HOME='.length);
+      return { home: home || undefined };
     }
-    return undefined;
+    return {};
   } catch {
-    // macOS has no /proc.
+    return undefined;
   }
+}
+
+/**
+ * `CODEX_HOME` for the candidates that survived the command-line filter. One `/proc` read each, and at most
+ * one `ps -E` for the pids that have no `/proc`. The result is not used to hide a TUI.
+ */
+function codexHomes(pids: number[]): Map<number, string> {
+  const homes = new Map<number, string>();
+  const missing: number[] = [];
+  for (const pid of pids) {
+    const fromProc = procEnvironHome(pid);
+    if (!fromProc) {
+      missing.push(pid);
+      continue;
+    }
+    if (fromProc.home) homes.set(pid, fromProc.home);
+  }
+  if (!missing.length) return homes;
   try {
-    const out = execFileSync('ps', ['-ww', '-p', String(pid), '-E', '-o', 'command='], {
+    const out = execFileSync(psCommand(), ['-ww', '-p', missing.join(','), '-E', '-o', 'pid=,command='], {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C' },
     });
-    const match = /(?:^|\s)CODEX_HOME=(\S*)/.exec(out);
-    return match?.[1] || undefined;
+    for (const line of out.split('\n')) {
+      const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+      if (!match) continue;
+      const home = /(?:^|\s)CODEX_HOME=(\S*)/.exec(match[2] ?? '');
+      if (home?.[1]) homes.set(Number(match[1]), home[1]);
+    }
   } catch {
-    return undefined;
+    // Unreadable. The peer keeps the default home.
   }
+  return homes;
 }
 
 /** Working directory of a live process. `/proc` on Linux; `lsof` where that link does not exist. */
@@ -192,8 +204,8 @@ export function processCwd(pid: number): string | undefined {
   }
 }
 
-function acceptTui(args: string, parent: string | undefined, codexHome: string | undefined): boolean {
-  return !!codexTuiLaunch(args) && !parentIsAppBundle(parent) && !codexHomeDiffers(codexHome);
+function acceptTui(args: string, parent: string | undefined): boolean {
+  return !!codexTuiLaunch(args) && !parentIsAppBundle(parent);
 }
 
 function procsFromOverride(file: string): CodexTuiProc[] {
@@ -213,13 +225,14 @@ function procsFromOverride(file: string): CodexTuiProc[] {
       };
       if (typeof rec.pid !== 'number' || typeof rec.args !== 'string') continue;
       const parent = typeof rec.parent === 'string' ? rec.parent : undefined;
-      const codexHome = typeof rec.codexHome === 'string' ? rec.codexHome : undefined;
-      if (!acceptTui(rec.args, parent, codexHome)) continue;
+      const codexHome = typeof rec.codexHome === 'string' && rec.codexHome ? rec.codexHome : undefined;
+      if (!acceptTui(rec.args, parent)) continue;
       procs.push({
         pid: rec.pid,
         args: rec.args,
         cwd: typeof rec.cwd === 'string' ? rec.cwd : undefined,
         start: typeof rec.start === 'string' ? rec.start : undefined,
+        codexHome,
       });
     }
     return procs;
@@ -228,20 +241,40 @@ function procsFromOverride(file: string): CodexTuiProc[] {
   }
 }
 
+let liveCache: { at: number; procs: CodexTuiProc[] } | undefined;
+
+/** Drops the short-lived TUI scan so the next listing reads the process table again. */
+export function clearCodexTuiCache(): void {
+  liveCache = undefined;
+}
+
 /**
  * Interactive Codex TUIs. `TELEPATHY_CODEX_PROCS` is a JSON file of `{pid, args, cwd?, start?, parent?, codexHome?}`
  * and replaces the process scan, so tests do not list a Codex the developer happens to have open. Unset, one `ps`
- * supplies the command lines. A process whose parent is an app bundle, or whose `CODEX_HOME` differs from the
- * plugin's, is not a TUI even when the command line is.
+ * supplies every command line and one supplies the process table. Only lines that are already an allowlisted TUI
+ * are checked for an app-bundle parent, and only those that remain get a `CODEX_HOME` lookup. A different
+ * `CODEX_HOME` does not hide the TUI; it is recorded so queue and delete use that home. The result is reused for
+ * a fraction of a second, so a tool call that lists twice does not scan twice.
  */
 export function codexTuiProcesses(): CodexTuiProc[] {
   const override = process.env.TELEPATHY_CODEX_PROCS;
   if (override) return procsFromOverride(override);
-  const procs: CodexTuiProc[] = [];
-  const starts = processTable();
-  for (const [pid, args] of commandLines()) {
-    if (!acceptTui(args, parentCommand(pid), processCodexHome(pid))) continue;
-    procs.push({ pid, args, start: starts.get(pid)?.start });
+  if (liveCache && Date.now() - liveCache.at < 500) return liveCache.procs;
+  const lines = commandLines();
+  const table = processTable();
+  const candidates: { pid: number; args: string }[] = [];
+  for (const [pid, args] of lines) {
+    if (!codexTuiLaunch(args)) continue;
+    if (parentIsAppBundle(parentCommandOf(pid, table, lines))) continue;
+    candidates.push({ pid, args });
   }
+  const homes = codexHomes(candidates.map((candidate) => candidate.pid));
+  const procs = candidates.map((candidate) => ({
+    pid: candidate.pid,
+    args: candidate.args,
+    start: table.get(candidate.pid)?.start,
+    codexHome: homes.get(candidate.pid),
+  }));
+  liveCache = { at: Date.now(), procs };
   return procs;
 }

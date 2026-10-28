@@ -4,6 +4,7 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
+import { beginToolCall, endToolCall } from './core/confirm.ts';
 import { debugLog } from './core/debug.ts';
 import { unseenSetupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
@@ -188,8 +189,13 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
   async ({ to, message }, ctx) => {
-    const selfId = selfIdFor(ctx.mcpReq._meta);
-    return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
+    const ownsClock = beginToolCall();
+    try {
+      const selfId = selfIdFor(ctx.mcpReq._meta);
+      return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
+    } finally {
+      if (ownsClock) endToolCall();
+    }
   },
 );
 

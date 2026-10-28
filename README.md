@@ -148,8 +148,8 @@ Then open `/hooks` in a Codex session and approve telepathy's four hooks (press 
 listed as soon as the process is up, before any prompt, as `no thread yet`. A send then fails immediately and writes
 nothing: Codex's MCP server and SessionStart run per thread, and a side `thread/start` would not be the composer on
 screen. Only an interactive TUI is listed (bare `codex`, a prompt, `codex resume`, `codex fork`, plus global flags).
-The ChatGPT app's `exec-server` helper is not a session, and neither is a process with a different `CODEX_HOME` or
-an app-bundle parent. `codex resume <id>` is that thread immediately, so a send can be queued. After the first prompt, SessionStart
+The ChatGPT app's `exec-server` helper is not a session, and neither is a TUI whose parent is an app bundle.
+A listed TUI keeps the `CODEX_HOME` it was started with, so a send queues in that home. `codex resume <id>` is that thread immediately, so a send can be queued. After the first prompt, SessionStart
 binds the same name to the thread. Without the hooks, a thread becomes deliverable once it has called a telepathy
 tool. PostToolUse
 and UserPromptSubmit hand messages over during a turn and with your next prompt; without them, a busy Codex gets a
@@ -426,7 +426,8 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
   [update-all](#updating-every-agent) command). Codex's MCP server in this plugin is named `bridge`, so the tool
   timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 110
-  seconds (100s, then 10s) and returns as soon as that grace period ends, which stays inside Claude Code's
+  seconds (100s, then 10s), counted from the start of the tool call so listing before the wait counts against it,
+  and returns as soon as that grace period ends. That stays inside Claude Code's
   about-120s move of a live tool call to the background.
   A value read from `config.toml` or from a `-c` override on the Codex process is trusted. When that
   effective value is below 110, the note names the key. When the file is readable and neither place shows the key,

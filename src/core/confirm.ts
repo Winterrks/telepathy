@@ -20,8 +20,37 @@ export function confirmWaitEnabled(): boolean {
 
 export function confirmAbortMs(): number {
   // 100s + 10s grace is 110s. Claude moves a live tool call to the background at about 120s, and the
-  // return after the grace period does not wait on anything else.
+  // return after the grace period does not wait on anything else. When a tool call has been marked,
+  // that 110s is measured from the mark, so listing before the wait counts against it.
   return envMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
+}
+
+/** Set at the start of a tool call. Unset, the 110s starts when the wait itself starts. */
+let toolCallStartedAt: number | undefined;
+
+/** Starts the confirm clock. A caller that already started it keeps that earlier time. */
+export function beginToolCall(at = Date.now()): boolean {
+  if (toolCallStartedAt !== undefined) return false;
+  toolCallStartedAt = at;
+  return true;
+}
+
+export function endToolCall(): void {
+  toolCallStartedAt = undefined;
+}
+
+/**
+ * Abort and grace for this wait. With a tool-call mark, both fit in the time still left before
+ * `mark + abort + grace`, and `deadline` is that instant.
+ */
+export function confirmWindow(now = Date.now()): { abort: number; grace: number; deadline?: number } {
+  const abort = confirmAbortMs();
+  const grace = confirmGraceMs();
+  if (toolCallStartedAt === undefined) return { abort, grace };
+  const deadline = toolCallStartedAt + abort + grace;
+  const left = Math.max(0, deadline - now);
+  const graceMs = Math.min(grace, left);
+  return { abort: left - graceMs, grace: graceMs, deadline };
 }
 
 export function confirmGraceMs(): number {
@@ -241,6 +270,34 @@ function scrubSignal(text: string): string {
     .replace(/\bdelivered\b/gi, 'handed off');
 }
 
+/** Drops a sentence that repeats an earlier one, or that only restates a shorter one already said. */
+function dedupeSentences(text: string): string {
+  const kept: string[] = [];
+  for (const part of text.split(/(?<=\.)\s+/)) {
+    const sentence = part.trim();
+    if (!sentence) continue;
+    const body = sentence.replace(/\.+$/, '');
+    const overlap = kept.findIndex((prev) => {
+      const prevBody = prev.replace(/\.+$/, '');
+      return prevBody === body || prevBody.startsWith(body) || body.startsWith(prevBody);
+    });
+    if (overlap === -1) kept.push(sentence);
+    else if (body.length > kept[overlap].replace(/\.+$/, '').length) kept[overlap] = sentence;
+  }
+  return kept.join(' ');
+}
+
+function withoutOverlap(notes: string[], said: string): string[] {
+  const bodies = said
+    .split(/(?<=\.)\s+/)
+    .map((sentence) => sentence.trim().replace(/\.+$/, ''))
+    .filter(Boolean);
+  return notes.filter((note) => {
+    const body = note.trim().replace(/\.+$/, '');
+    return !bodies.some((prev) => prev === body || body.startsWith(prev) || prev.startsWith(body));
+  });
+}
+
 interface Retract {
   withdrawn: WithdrawResult;
   signal: string;
@@ -251,7 +308,7 @@ interface Retract {
  * Every failure withdraws the inbox copy, deletes a queued Codex item, and cancels a wake that is still
  * on disk. A file already in `withdrawn/` stays there. Nothing is moved back to the inbox.
  */
-async function retract(peer: Peer, messageId: string, routeStatus: string): Promise<Retract> {
+async function retract(peer: Peer, messageId: string, routeStatus: string, deleteMs: number): Promise<Retract> {
   const stored = storedMessage(peer.id, messageId);
   const withdrawn = withdrawPending(peer.id, messageId);
   const signal = UNRECALLABLE.test(routeStatus) ? routeStatus : scrubSignal(routeStatus);
@@ -265,10 +322,14 @@ async function retract(peer: Peer, messageId: string, routeStatus: string): Prom
   const queueId = stored?.codexQueueId;
   const thread = stored?.codexThreadId ?? peer.sessionId;
   if (peer.agent === 'codex' && queueId && thread) {
-    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome, CONFIRM_QUEUE_DELETE_MS);
-    if (!removed) notes.push('The Codex queue item could not be removed because the app-server was unreachable.');
-    else if (removed.get(queueId) === false) notes.push('Codex had already taken the queue item, so it could not be removed.');
-    else notes.push('The Codex queue item was removed.');
+    if (deleteMs <= 0) {
+      notes.push('The Codex queue item could not be removed in the time left.');
+    } else {
+      const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome, deleteMs);
+      if (!removed) notes.push('The Codex queue item could not be removed because the app-server was unreachable.');
+      else if (removed.get(queueId) === false) notes.push('Codex had already taken the queue item, so it could not be removed.');
+      else notes.push('The Codex queue item was removed.');
+    }
   }
 
   const wake = cancelWake(peer.id, messageId);
@@ -302,7 +363,9 @@ function failureStatus(
       retracted.withdrawn === 'withdrawn'
         ? 'The inbox copy was withdrawn.'
         : 'Nothing was left in its inbox.';
-    return `Message failed: ${peerRef(peer)} is offline (session not running). ${copy}${extra}`;
+    const rest = withoutOverlap(retracted.notes, copy);
+    const tail = rest.length ? ` ${rest.join(' ')}` : '';
+    return `Message failed: ${peerRef(peer)} is offline (session not running). ${copy}${tail}`;
   }
   const where = located
     ? 'A transcript file was found and does not contain the marker, so delivery is unconfirmed.'
@@ -321,17 +384,23 @@ function failureStatus(
 export async function confirmDelivery(peer: Peer, message: Message, routeStatus: string): Promise<ConfirmOutcome> {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  const plan = confirmWindow();
+  const deleteBudget = () =>
+    plan.deadline === undefined
+      ? CONFIRM_QUEUE_DELETE_MS
+      : Math.min(CONFIRM_QUEUE_DELETE_MS, Math.max(0, plan.deadline - Date.now()));
   let retracted: Retract | undefined;
   const fail = async (reason: 'offline' | 'unconfirmed', located = false): Promise<ConfirmOutcome> => {
     if (reason === 'offline') notePeerExit(peer.id);
-    retracted ??= await retract(peer, message.id, routeStatus);
+    retracted ??= await retract(peer, message.id, routeStatus, deleteBudget());
     const status = failureStatus(peer, marker, routeStatus, reason, retracted, located);
-    return { confirmed: false, status: UNRECALLABLE.test(routeStatus) ? status : scrubSignal(status) };
+    const text = UNRECALLABLE.test(routeStatus) ? status : scrubSignal(status);
+    return { confirmed: false, status: dedupeSentences(text) };
   };
 
   // A held socket copy can still show up after the process looks gone, so that wait runs below.
   if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return fail('offline');
-  const first = await untilMarker(peer, marker, confirmAbortMs());
+  const first = await untilMarker(peer, marker, plan.abort);
   if (first.kind === 'found') {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
@@ -339,8 +408,9 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
   if (first.kind === 'offline') return fail('offline');
 
   // Withdraw before the grace period, including the queue delete, so the grace poll is the last wait.
-  retracted = await retract(peer, message.id, routeStatus);
-  const second = await untilMarker(peer, marker, confirmGraceMs());
+  retracted = await retract(peer, message.id, routeStatus, deleteBudget());
+  const graceMs = plan.deadline === undefined ? plan.grace : Math.max(0, plan.deadline - Date.now());
+  const second = await untilMarker(peer, marker, graceMs);
   if (second.kind === 'found') {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };

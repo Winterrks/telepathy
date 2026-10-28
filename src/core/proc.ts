@@ -13,13 +13,24 @@ export interface ProcInfo {
 
 let cache: { at: number; table: Map<number, ProcInfo> } | undefined;
 
+/** `ps`, or `TELEPATHY_PS_BIN` when a test is counting how many times the process table is read. */
+export function psCommand(): string {
+  return process.env.TELEPATHY_PS_BIN || 'ps';
+}
+
+/** Drops the short-lived `ps` caches so the next listing reads the process table again. */
+export function clearProcessListCache(): void {
+  cache = undefined;
+  argsCache = undefined;
+}
+
 /** One `ps` call for the whole table; cached briefly because listing peers checks many pids. */
 export function processTable(maxAgeMs = 500): Map<number, ProcInfo> {
   if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
   const table = new Map<number, ProcInfo>();
   let out = '';
   try {
-    out = execFileSync('ps', ['-Ao', 'pid=,ppid=,lstart=,comm='], {
+    out = execFileSync(psCommand(), ['-Ao', 'pid=,ppid=,lstart=,comm='], {
       encoding: 'utf8',
       env: { ...process.env, LC_ALL: 'C' },
       maxBuffer: 16 * 1024 * 1024,
@@ -74,7 +85,7 @@ export function commandLines(maxAgeMs = 500): Map<number, string> {
   const table = new Map<number, string>();
   let out = '';
   try {
-    out = execFileSync('ps', ['-Ao', 'pid=,args='], {
+    out = execFileSync(psCommand(), ['-Ao', 'pid=,args='], {
       encoding: 'utf8',
       env: { ...process.env, LC_ALL: 'C' },
       maxBuffer: 16 * 1024 * 1024,
@@ -101,7 +112,7 @@ export const isStreamJsonClaude = (pid: number): boolean =>
 /** One `ps` column for one process; only needed for agents that run as node or Python scripts. */
 function psField(pid: number, field: 'args' | 'ucomm'): string | undefined {
   try {
-    return execFileSync('ps', ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
+    return execFileSync(psCommand(), ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
   } catch {
     return undefined;
   }

@@ -155,7 +155,8 @@ describe('delivery ladder', () => {
   test('codex resume of an id is queued on that thread', async () => {
     const thread = '01a14000-bbbb-7000-8000-000000000002';
     const tui = spawn();
-    setCodexProcs(sb, [{ pid: tui.pid, args: `codex resume ${thread}`, cwd: '/work/resumed' }]);
+    const home = path.join(sb.codexHome, 'other');
+    setCodexProcs(sb, [{ pid: tui.pid, args: `codex resume ${thread}`, cwd: '/work/resumed', codexHome: home }]);
     try {
       const listed = listPeers().find((p) => p.id === `codex-${thread}`);
       assert.ok(listed);
@@ -168,6 +169,7 @@ describe('delivery ladder', () => {
       const calls = fs.readFileSync(sb.codexLog, 'utf8').trim().split('\n').filter(Boolean).slice(before);
       assert.equal(calls.length, 1);
       assert.match(calls[0] ?? '', new RegExp(thread));
+      assert.equal(JSON.parse(calls[0] ?? '{}').codexHome, home);
     } finally {
       setCodexProcs(sb, []);
       await killAndWait(tui);

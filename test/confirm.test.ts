@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { confirmAbortMs, confirmDelivery, confirmGraceMs } from '../src/core/confirm.ts';
+import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { messageMarker } from '../src/core/messages.ts';
 import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
@@ -21,7 +21,22 @@ describe('transcript confirmation', () => {
     process.env.CODEX_HOME = sb.codexHome;
   });
 
+  const assertNoRepeatedSentence = (text: string) => {
+    const kept: string[] = [];
+    for (const part of text.split(/(?<=\.)\s+/)) {
+      const sentence = part.trim();
+      if (!sentence) continue;
+      const body = sentence.replace(/\.+$/, '');
+      for (const prev of kept) {
+        const prevBody = prev.replace(/\.+$/, '');
+        assert.equal(prevBody === body || prevBody.startsWith(body) || body.startsWith(prevBody), false, text);
+      }
+      kept.push(sentence);
+    }
+  };
+
   after(async () => {
+    endToolCall();
     process.env.TELEPATHY_CONFIRM_WAIT = '0';
     delete process.env.TELEPATHY_CONFIRM_ABORT_MS;
     delete process.env.TELEPATHY_CONFIRM_GRACE_MS;
@@ -66,6 +81,39 @@ describe('transcript confirmation', () => {
     assert.ok(confirmAbortMs() + confirmGraceMs() < 120_000);
   });
 
+  test('the 110s window is measured from the tool call, including time already spent', () => {
+    process.env.TELEPATHY_CONFIRM_ABORT_MS = '100000';
+    process.env.TELEPATHY_CONFIRM_GRACE_MS = '10000';
+    beginToolCall(1_000_000);
+    try {
+      assert.deepEqual(confirmWindow(1_000_000), { abort: 100_000, grace: 10_000, deadline: 1_110_000 });
+      assert.deepEqual(confirmWindow(1_016_000), { abort: 84_000, grace: 10_000, deadline: 1_110_000 });
+      assert.deepEqual(confirmWindow(1_105_000), { abort: 0, grace: 5_000, deadline: 1_110_000 });
+      assert.deepEqual(confirmWindow(1_200_000), { abort: 0, grace: 0, deadline: 1_110_000 });
+    } finally {
+      endToolCall();
+      delete process.env.TELEPATHY_CONFIRM_ABORT_MS;
+      delete process.env.TELEPATHY_CONFIRM_GRACE_MS;
+    }
+  });
+
+  test('a tool call that already used most of the window does not wait out the rest of the abort', async () => {
+    arm('5000', '5000');
+    beginToolCall(Date.now() - 9_000);
+    const { from, to } = pair();
+    const started = Date.now();
+    try {
+      const result = await sendMessage(from, to.id, 'almost out of time');
+      assert.ok(Date.now() - started < 3_000);
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assertNoRepeatedSentence(result.error);
+      assert.equal(fs.existsSync(inboxDir(to.id)) ? fs.readdirSync(inboxDir(to.id)).length : 0, 0);
+    } finally {
+      endToolCall();
+    }
+  });
+
   test('success is the marker in the transcript', async () => {
     const dir = arm('2000', '200');
     const { from, to } = pair();
@@ -93,6 +141,7 @@ describe('transcript confirmation', () => {
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
     assert.match(result.error, /unconfirmed/);
+    assertNoRepeatedSentence(result.error);
     assert.equal(fs.existsSync(inboxDir(to.id)) && fs.readdirSync(inboxDir(to.id)).length > 0, false);
     assert.equal(fs.readdirSync(withdrawnDir(to.id)).length, 1);
   });
@@ -137,6 +186,7 @@ describe('transcript confirmation', () => {
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
     assert.match(result.error, /already claimed/);
+    assertNoRepeatedSentence(result.error);
   });
 
   test('a session that is not running stores nothing', async () => {
@@ -159,6 +209,7 @@ describe('transcript confirmation', () => {
     assert.match(result.error, /^Message failed:/);
     assert.match(result.error, /is offline \(session not running\)\. Nothing was left in its inbox\./);
     assert.doesNotMatch(result.error, /\b(stays|stored|delivered)\b/i);
+    assertNoRepeatedSentence(result.error);
     assert.equal(fs.existsSync(inboxDir(to.id)) ? fs.readdirSync(inboxDir(to.id)).length : 0, 0);
   });
 
@@ -188,6 +239,9 @@ describe('transcript confirmation', () => {
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
     assert.match(result.error, /The inbox copy was withdrawn/);
+    assert.doesNotMatch(result.error, /The inbox copy was withdrawn\. The inbox copy was withdrawn/);
+    assert.equal(result.error.split('The inbox copy was withdrawn').length - 1, 1);
+    assertNoRepeatedSentence(result.error);
     assert.doesNotMatch(result.error, /\b(stays|stored|delivered)\b/i);
     assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), false);
     assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), file)), true);
@@ -204,6 +258,7 @@ describe('transcript confirmation', () => {
     assert.equal(held.confirmed, false);
     assert.match(held.status, /cannot be recalled/);
     assert.doesNotMatch(held.status, /^Message failed:/);
+    assertNoRepeatedSentence(held.status);
 
     const interruptedMessage = {
       id: 'm-000000003-bbccdd',
@@ -224,6 +279,7 @@ describe('transcript confirmation', () => {
     assert.match(interrupted.status, /The inbox copy was withdrawn, so the next prompt will not see it/);
     assert.doesNotMatch(interrupted.status, /It stays in the inbox/);
     assert.doesNotMatch(interrupted.status, /\b(stays|stored|delivered)\b/i);
+    assertNoRepeatedSentence(interrupted.status);
   });
 
   test('a hold that posts nothing fails by saying the receiver is holding, not that it has no listener', async () => {
@@ -250,6 +306,7 @@ describe('transcript confirmation', () => {
     assert.doesNotMatch(result.error, /\bdelivered\b/i);
     assert.doesNotMatch(result.error, /no listener/);
     assert.doesNotMatch(result.error, /It has no listener/);
+    assertNoRepeatedSentence(result.error);
   });
 
   test('a failed confirm does not call an unconfirmed handoff delivered', async () => {
@@ -263,6 +320,7 @@ describe('transcript confirmation', () => {
     assert.equal(result.confirmed, false);
     assert.match(result.status, /Strongest signal: Unconfirmed handoff to opencode:app \[opencode-ses_x\]\./);
     assert.doesNotMatch(result.status, /\bdelivered\b/i);
+    assertNoRepeatedSentence(result.status);
   });
 
   test('a failed confirm deletes a queued Codex item and withdraws the inbox', async () => {
@@ -297,6 +355,7 @@ describe('transcript confirmation', () => {
     assert.match(result.status, /^Message failed:/);
     assert.match(result.status, /The Codex queue item was removed/);
     assert.doesNotMatch(result.status, /\b(stays|stored|delivered)\b/i);
+    assertNoRepeatedSentence(result.status);
     assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${message.id}.json`)), false);
     assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${message.id}.json`)), true);
     assert.match(fs.readFileSync(sb.codexLog, 'utf8').slice(before.length), /app-server/);

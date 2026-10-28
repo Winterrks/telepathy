@@ -14,7 +14,7 @@ import {
   writeToInbox,
 } from './messages.ts';
 import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { confirmDelivery, confirmWaitEnabled, withdrawPending } from './confirm.ts';
+import { beginToolCall, confirmDelivery, confirmWaitEnabled, endToolCall, withdrawPending } from './confirm.ts';
 import { keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
@@ -87,6 +87,8 @@ const stillPending = (peerId: string, messageId: string) => fs.existsSync(path.j
 
 /** Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook. */
 export async function sendMessage(self: Peer, to: string, body: string): Promise<SendResult> {
+  const ownsClock = beginToolCall();
+  try {
   if (!body.trim()) return { ok: false, error: 'Message is empty.' };
   if (body.length > MAX_MESSAGE_CHARS) {
     return {
@@ -161,6 +163,9 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     status: proof.status,
     delivery: { ...delivery.report, confirmed: true },
   };
+  } finally {
+    if (ownsClock) endToolCall();
+  }
 }
 
 interface Route {

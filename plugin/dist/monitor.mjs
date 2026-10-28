@@ -165,12 +165,15 @@ function isAgentProcess(agent2, comm, args, kernelName = () => void 0) {
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
 var cache;
+function psCommand() {
+  return process.env.TELEPATHY_PS_BIN || "ps";
+}
 function processTable(maxAgeMs = 500) {
   if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync("ps", ["-Ao", "pid=,ppid=,lstart=,comm="], {
+    out = execFileSync(psCommand(), ["-Ao", "pid=,ppid=,lstart=,comm="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -207,7 +210,7 @@ function isSameProcess(pid, recordedStart) {
 }
 function psField(pid, field) {
   try {
-    return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }

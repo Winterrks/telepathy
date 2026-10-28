@@ -4,6 +4,7 @@ import { claudeSocketArmed, crossSessionInbound, readClaudeSocket, recordClaudeS
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
+import { beginToolCall, endToolCall } from './core/confirm.ts';
 import { sendMessage } from './core/deliver.ts';
 import { unrefWakeTimers } from './core/wake.ts';
 import { guideText } from './core/guide.ts';
@@ -381,7 +382,13 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
   }
   const fromInput = idOf('claude', agentPid, input);
   const bound = fromInput !== peerId('claude', agentPid) ? fromInput : (linkedPeerId('claude', agentPid) ?? fromInput);
-  const result = await sendMessage(selfPeer('claude', agentPid, bound), to, message);
+  const ownsClock = beginToolCall();
+  let result: Awaited<ReturnType<typeof sendMessage>>;
+  try {
+    result = await sendMessage(selfPeer('claude', agentPid, bound), to, message);
+  } finally {
+    if (ownsClock) endToolCall();
+  }
   debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
     result.ok

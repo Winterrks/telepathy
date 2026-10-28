@@ -700,12 +700,13 @@ function observeResumedCodex(proc: CodexTuiProc, threadId: string, cwd: string |
   const id = sessionPeerId('codex', proc.pid, threadId);
   const existing = readSession(id);
   const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
-  if (!existing?.sessionId || !hostAlive) {
+  const home = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
+  if (!existing?.sessionId || !hostAlive || (proc.codexHome && existing.codexHome !== proc.codexHome)) {
     registerSession('codex', proc.pid, {
       sessionId: threadId,
       cwd: cwd ?? existing?.cwd,
       source: existing?.source === 'hook' || existing?.source === 'meta' ? existing.source : 'process',
-      codexHome: existing?.codexHome ?? defaultCodexHome(),
+      codexHome: home,
     });
   }
   if (peerId('codex', proc.pid) !== id) writeJsonAtomic(linkFile('codex', proc.pid), { id });
@@ -719,15 +720,17 @@ function observeUnpromptedCodex(proc: CodexTuiProc, cwd: string | undefined): vo
     if (linked && isPeerAlive(linked)) return;
   }
   const existing = readSession(id);
+  const home = proc.codexHome || existing?.codexHome || defaultCodexHome();
   if (
     existing?.source === 'process' &&
     existing.pid === proc.pid &&
     isSameProcess(proc.pid, existing.procStart) &&
+    existing.codexHome === home &&
     (existing.cwd || !cwd)
   ) {
     return;
   }
-  registerSession('codex', proc.pid, { cwd, source: 'process', codexHome: defaultCodexHome() });
+  registerSession('codex', proc.pid, { cwd, source: 'process', codexHome: home });
 }
 
 /**

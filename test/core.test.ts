@@ -7,10 +7,10 @@ import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
-import { codexTuiLaunch } from '../src/core/codex-launch.ts';
+import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses } from '../src/core/codex-launch.ts';
 import { formatAgo, describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
-import { processTable } from '../src/core/proc.ts';
+import { clearProcessListCache, processTable } from '../src/core/proc.ts';
 import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
 import { inboxDir, peerDir } from '../src/core/paths.ts';
 import { isDeliveryOwner, listPeers, type Peer, readPeer, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
@@ -661,38 +661,112 @@ describe('Codex TUI launch', () => {
     }
   });
 
-  test('the ChatGPT desktop helper is not a peer, and neither is an app-bundle parent or a foreign CODEX_HOME', async () => {
+  test('the ChatGPT helper and an app-bundle parent are hidden, and a foreign CODEX_HOME is still listed', async () => {
     const sb = makeSandbox();
     process.env.TELEPATHY_HOME = sb.home;
-    process.env.CODEX_HOME = sb.codexHome;
+    delete process.env.CODEX_HOME;
     const helper = fakeAgent();
     const bundled = fakeAgent();
     const foreign = fakeAgent();
     const own = fakeAgent();
     const chatgpt =
       '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api';
+    const foreignHome = '/tmp/other-codex-home';
     try {
       setCodexProcs(sb, [
         { pid: helper.pid, args: chatgpt, cwd: '/Users/example' },
         { pid: bundled.pid, args: 'codex', cwd: '/Users/example', parent: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' },
-        { pid: foreign.pid, args: 'codex', cwd: '/work/foreign', codexHome: '/tmp/other-codex-home' },
+        { pid: foreign.pid, args: 'codex', cwd: '/work/foreign', codexHome: foreignHome },
         { pid: own.pid, args: 'codex', cwd: '/work/own', parent: '/bin/zsh', codexHome: sb.codexHome },
       ]);
-      const ids = listPeers().map((p) => p.id);
-      assert.equal(ids.includes(`codex-${helper.pid}`), false);
-      assert.equal(ids.includes(`codex-${bundled.pid}`), false);
-      assert.equal(ids.includes(`codex-${foreign.pid}`), false);
-      assert.equal(ids.includes(`codex-${own.pid}`), true);
-      for (const pid of [helper.pid, bundled.pid, foreign.pid]) {
+      const ids = () => listPeers().map((p) => p.id);
+      assert.equal(ids().includes(`codex-${helper.pid}`), false);
+      assert.equal(ids().includes(`codex-${bundled.pid}`), false);
+      assert.equal(ids().includes(`codex-${foreign.pid}`), true);
+      assert.equal(ids().includes(`codex-${own.pid}`), true);
+      const foreignSession = JSON.parse(
+        fs.readFileSync(path.join(sb.home, 'peers', `codex-${foreign.pid}`, 'session.json'), 'utf8'),
+      ) as { codexHome?: string };
+      assert.equal(foreignSession.codexHome, foreignHome);
+      process.env.CODEX_HOME = sb.codexHome;
+      assert.equal(ids().includes(`codex-${foreign.pid}`), true);
+      assert.equal(readPeer(`codex-${foreign.pid}`)?.codexHome, foreignHome);
+      for (const pid of [helper.pid, bundled.pid]) {
         assert.equal(fs.existsSync(path.join(sb.home, 'peers', `codex-${pid}`, 'session.json')), false);
       }
     } finally {
       setCodexProcs(sb, []);
+      process.env.CODEX_HOME = sb.codexHome;
       await killAndWait(helper);
       await killAndWait(bundled);
       await killAndWait(foreign);
       await killAndWait(own);
       sb.cleanup();
+    }
+  });
+
+  test('a busy process table does not spawn ps once per process', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'um-ps-'));
+    const log = path.join(dir, 'ps.log');
+    const bin = path.join(dir, 'ps');
+    fs.writeFileSync(
+      bin,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(process.env.PS_LOG, JSON.stringify(argv) + '\\n');
+const joined = argv.join(' ');
+const noise = 600;
+if (joined.includes('pid=,args=')) {
+  let out = '2500000 codex\\n2500001 codex\\n10 /bin/zsh\\n11 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\\n';
+  for (let i = 0; i < noise; i++) out += (3000000 + i) + ' node worker-' + i + '\\n';
+  process.stdout.write(out);
+} else if (joined.includes('lstart')) {
+  let out = '2500000 10 Wed Oct 28 12:00:00 2026 codex\\n2500001 11 Wed Oct 28 12:00:00 2026 codex\\n10 1 Wed Oct 28 12:00:00 2026 /bin/zsh\\n11 1 Wed Oct 28 12:00:00 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\\n';
+  for (let i = 0; i < noise; i++) out += (3000000 + i) + ' 1 Wed Oct 28 12:00:00 2026 node\\n';
+  process.stdout.write(out);
+} else if (joined.includes('-E')) {
+  process.stdout.write('2500000 CODEX_HOME=/tmp/codex-from-ps /usr/local/bin/codex\\n');
+} else {
+  process.stderr.write('unexpected ps ' + joined + '\\n');
+  process.exit(1);
+}
+`,
+    );
+    fs.chmodSync(bin, 0o755);
+    const prevPs = process.env.TELEPATHY_PS_BIN;
+    const prevProcs = process.env.TELEPATHY_CODEX_PROCS;
+    const prevLog = process.env.PS_LOG;
+    delete process.env.TELEPATHY_CODEX_PROCS;
+    process.env.TELEPATHY_PS_BIN = bin;
+    process.env.PS_LOG = log;
+    clearProcessListCache();
+    clearCodexTuiCache();
+    try {
+      const procs = codexTuiProcesses();
+      assert.equal(procs.length, 1);
+      assert.equal(procs[0]?.pid, 2500000);
+      assert.equal(procs[0]?.codexHome, '/tmp/codex-from-ps');
+      const calls = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean);
+      assert.ok(calls.length <= 4, calls.join('\n'));
+      const envCalls = calls.filter((call) => call.includes('-E'));
+      assert.equal(envCalls.length, 1);
+      assert.match(envCalls[0] ?? '', /2500000/);
+      assert.doesNotMatch(envCalls[0] ?? '', /2500001/);
+      assert.doesNotMatch(envCalls[0] ?? '', /3000000/);
+      codexTuiProcesses();
+      const again = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean);
+      assert.equal(again.length, calls.length);
+    } finally {
+      clearProcessListCache();
+      clearCodexTuiCache();
+      if (prevPs === undefined) delete process.env.TELEPATHY_PS_BIN;
+      else process.env.TELEPATHY_PS_BIN = prevPs;
+      if (prevProcs === undefined) delete process.env.TELEPATHY_CODEX_PROCS;
+      else process.env.TELEPATHY_CODEX_PROCS = prevProcs;
+      if (prevLog === undefined) delete process.env.PS_LOG;
+      else process.env.PS_LOG = prevLog;
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 
