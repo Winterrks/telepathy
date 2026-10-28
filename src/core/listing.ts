@@ -30,6 +30,9 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
  * as they are posted. The next-turn hint is for a session whose hooks are the path.
  */
 function deliveryHint(peer: Peer): string | undefined {
+  if ((peer.agent === 'opencode' || peer.agent === 'kilo') && !peer.sessionId) {
+    return 'no session yet, sees messages at its first prompt';
+  }
   if (peer.agent === 'codex' || peer.hasListener) return undefined;
   if (peer.agent === 'claude' && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);

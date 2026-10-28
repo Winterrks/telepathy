@@ -6,9 +6,10 @@ import type { Agent } from './core/agents.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
-import { claimInbox, formatForContext } from './core/messages.ts';
+import { claimInbox, formatForContext, pendingCount } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
 import { isDeliveryOwner, isPeerAlive, keepSessionName, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
+import { commandLine, processTable } from './core/proc.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { startWakeFlusher } from './core/wake.ts';
@@ -31,40 +32,138 @@ interface ListedSession {
   id?: string;
   parentID?: string;
   info?: { id?: string; parentID?: string };
+  time?: { created?: number; updated?: number };
 }
 
 interface PluginInput {
   client: {
     session: {
       promptAsync(options: { path: { id: string }; body: { parts: { type: 'text'; text: string }[]; agent?: string; model?: unknown } }): Promise<unknown>;
-      /** Present on some OpenCode builds. A single primary session is the one this TUI is showing. */
+      /** Present on some OpenCode builds. Used only after init returns, and only to resolve `--continue`. */
       list?(): Promise<unknown>;
+      /** Creates a session when mail arrives before the TUI has one. */
+      create?(body?: unknown): Promise<unknown>;
+      select?(options: { sessionID?: string; path?: { id: string }; body?: { sessionID: string } }): Promise<unknown>;
+    };
+    tui?: {
+      selectSession?(options: { sessionID?: string; body?: { sessionID: string } }): Promise<unknown>;
     };
   };
   directory?: string;
 }
 
-/** `opencode --session ses_…` puts the resumed id on argv before the plugin's first prompt. */
-export function opencodeSessionFromArgv(argv: readonly string[] = process.argv): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === '--session') {
-      const next = argv[i + 1];
-      if (next && !next.startsWith('-')) return next;
-    }
-    const eq = /^--session=(.+)$/.exec(arg ?? '');
-    if (eq?.[1]) return eq[1];
-  }
-  return undefined;
+export interface OpenCodeLaunch {
+  sessionID?: string;
+  /** `--continue` / `-c`: resume the most recently updated session. */
+  continueLast: boolean;
+  /** `--fork` duplicates the named session, so the id on the command line is not the one now on screen. */
+  fork: boolean;
 }
 
-function listedSessions(value: unknown): { id: string; parentID?: string }[] {
+/** Splits a `ps` args string on whitespace, keeping quoted regions together. */
+export function tokenizeCommandLine(args: string): string[] {
+  const out: string[] = [];
+  let cur = '';
+  let quote: '"' | "'" | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i] ?? '';
+    if (quote) {
+      if (ch === quote) quote = undefined;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < args.length) {
+      cur += args[++i] ?? '';
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) out.push(cur);
+      cur = '';
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+const looksLikeOpenCode = (argv: readonly string[]) => argv.some((token) => /(^|[\\/])opencode(\.exe)?$/.test(token));
+
+/** `--session`, `-s`, `--continue`, and `--fork` from one argv. `-s` and `-c` count only for an OpenCode command. */
+export function opencodeLaunchFromArgv(argv: readonly string[]): OpenCodeLaunch {
+  const opencode = looksLikeOpenCode(argv);
+  let sessionID: string | undefined;
+  let continueLast = false;
+  let fork = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] ?? '';
+    if (arg === '--fork' || arg === '--fork-session') {
+      fork = true;
+      continue;
+    }
+    if (arg === '--continue' || (opencode && arg === '-c')) {
+      continueLast = true;
+      continue;
+    }
+    if (arg === '--session' || (opencode && arg === '-s')) {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('-')) {
+        sessionID = next;
+        i++;
+      }
+      continue;
+    }
+    const sessionEq = /^(?:--session|-s)=(.+)$/.exec(arg);
+    if (sessionEq?.[1] && (arg.startsWith('--session') || opencode)) sessionID = sessionEq[1];
+  }
+  return { sessionID, continueLast, fork };
+}
+
+/**
+ * OpenCode 1.19 runs plugins in another process, so `--session` is on an ancestor, not on `process.argv`.
+ * Walks parents until a session id or `--continue` shows up. `--session` counts on any ancestor. `-s` and
+ * `-c` count only when that process's command looks like the `opencode` binary.
+ */
+export function opencodeLaunchFromAncestors(
+  startPid = process.ppid,
+  readArgs: (pid: number) => string | undefined = commandLine,
+  parentOf: (pid: number) => number | undefined = (pid) => processTable(0).get(pid)?.ppid,
+): OpenCodeLaunch {
+  const seen = new Set<number>();
+  let merged: OpenCodeLaunch = { continueLast: false, fork: false };
+  for (let pid = startPid; pid > 1 && !seen.has(pid); ) {
+    seen.add(pid);
+    const parsed = opencodeLaunchFromArgv(tokenizeCommandLine(readArgs(pid) ?? ''));
+    merged = {
+      sessionID: merged.sessionID ?? parsed.sessionID,
+      continueLast: merged.continueLast || parsed.continueLast,
+      fork: merged.fork || parsed.fork,
+    };
+    if (merged.sessionID) return merged;
+    const next = parentOf(pid);
+    if (!next || next === pid) break;
+    pid = next;
+  }
+  return merged;
+}
+
+/** `opencode --session ses_…` on this process's own argv. Often absent in OpenCode 1.19. */
+export function opencodeSessionFromArgv(argv: readonly string[] = process.argv): string | undefined {
+  const launch = opencodeLaunchFromArgv(argv);
+  return launch.fork ? undefined : launch.sessionID;
+}
+
+function listedSessions(value: unknown): { id: string; parentID?: string; updated: number }[] {
   const rows = Array.isArray(value)
     ? value
     : value && typeof value === 'object' && Array.isArray((value as { data?: unknown }).data)
       ? (value as { data: unknown[] }).data
       : [];
-  const out: { id: string; parentID?: string }[] = [];
+  const out: { id: string; parentID?: string; updated: number }[] = [];
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
     const rec = row as ListedSession;
@@ -72,9 +171,20 @@ function listedSessions(value: unknown): { id: string; parentID?: string }[] {
     if (!id) continue;
     const parentID =
       typeof rec.parentID === 'string' ? rec.parentID : typeof rec.info?.parentID === 'string' ? rec.info.parentID : undefined;
-    out.push({ id, parentID });
+    const time = rec.time;
+    const updated = typeof time?.updated === 'number' ? time.updated : typeof time?.created === 'number' ? time.created : 0;
+    out.push({ id, parentID, updated });
   }
   return out;
+}
+
+function createdSessionID(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const rec = value as { id?: unknown; data?: { id?: unknown }; info?: { id?: unknown } };
+  if (typeof rec.id === 'string') return rec.id;
+  if (typeof rec.data?.id === 'string') return rec.data.id;
+  if (typeof rec.info?.id === 'string') return rec.info.id;
+  return undefined;
 }
 
 interface BusEvent {
@@ -83,7 +193,15 @@ interface BusEvent {
     sessionID?: string;
     info?: { id?: string; parentID?: string };
     status?: { type?: string };
+    params?: { sessionID?: string };
   };
+}
+
+/** A session id carried by a session event or a TUI route/select event. */
+function eventSession(event: BusEvent): { sessionID?: string; parentID?: string } {
+  const p = event.properties ?? {};
+  const sessionID = p.info?.id ?? p.sessionID ?? p.params?.sessionID;
+  return { sessionID, parentID: p.info?.parentID };
 }
 
 /**
@@ -109,6 +227,7 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   const pid = process.pid;
   let id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
+  registerListener(agent, pid, id);
   writeStatus(id, 'idle');
   debugLog('opencode', `plugin loaded for ${id} in ${directory ?? '?'}`);
 
@@ -117,11 +236,39 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   const busy = new Set<string>();
   let delivering = false;
 
+  /**
+   * A fresh TUI has no session until the first prompt. Mail that arrives first creates one and prompts it,
+   * which is that first prompt. Returns the id, or undefined when this build has no create call.
+   */
+  async function openSession(): Promise<string | undefined> {
+    const create = client.session.create;
+    if (!create) return undefined;
+    const sessionID = createdSessionID(await create({}));
+    if (!sessionID) return undefined;
+    bind(sessionID);
+    const select = client.tui?.selectSession ?? client.session.select;
+    if (select) {
+      try {
+        await select({ sessionID, body: { sessionID }, path: { id: sessionID } });
+      } catch (err) {
+        debugLog('opencode', `tui select failed: ${(err as Error).message}`);
+      }
+    }
+    return sessionID;
+  }
+
   /** Hands pending messages to the active session once it's idle; promptAsync then starts a turn. */
   async function deliver(): Promise<void> {
-    if (delivering || !active || busy.has(active.sessionID) || !isDeliveryOwner(id, pid)) return;
+    if (delivering || !isDeliveryOwner(id, pid)) return;
+    if (!active && pendingCount(id) === 0) return;
+    if (active && busy.has(active.sessionID)) return;
     delivering = true;
     try {
+      if (!active) {
+        const sessionID = await openSession();
+        if (!sessionID) return;
+      }
+      if (!active || busy.has(active.sessionID)) return;
       const messages = claimInbox(id);
       if (!messages.length) return;
       const target = active;
@@ -188,12 +335,18 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     debugLog('opencode', `bound ${previous} to ${id}`);
   };
 
-  // `--session` is on the TUI argv. OpenCode 1.19 runs this plugin in another process, so it is often absent.
-  // Do not await `client.session.list` here: OpenCode cannot answer that call until plugin init returns, and
-  // waiting deadlocks the TUI and `opencode session list`. The timer runs after this function returns.
-  const argvSession = opencodeSessionFromArgv();
-  if (argvSession) bind(argvSession);
-  else if (client.session.list) {
+  // Do not await a client call here. OpenCode cannot answer until plugin init returns, and waiting deadlocks
+  // the TUI. `--session` is read from this process or an ancestor. `--continue` lists after init returns and
+  // binds the newest primary session. A fresh TUI has no session yet and stays on the pid until one exists.
+  const own = opencodeLaunchFromArgv(process.argv);
+  const inherited = opencodeLaunchFromAncestors();
+  const launch: OpenCodeLaunch = {
+    sessionID: own.sessionID ?? inherited.sessionID,
+    continueLast: own.continueLast || inherited.continueLast,
+    fork: own.fork || inherited.fork,
+  };
+  if (launch.sessionID && !launch.fork) bind(launch.sessionID);
+  else if (launch.continueLast && !launch.fork && client.session.list) {
     const list = client.session.list.bind(client.session);
     const timer = setTimeout(() => {
       if (id !== peerId(agent, pid)) return;
@@ -201,8 +354,10 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
         .then(() => list())
         .then((value) => {
           if (id !== peerId(agent, pid)) return;
-          const primary = listedSessions(value).filter((row) => !row.parentID);
-          if (primary.length === 1 && primary[0]) bind(primary[0].id);
+          const primary = listedSessions(value)
+            .filter((row) => !row.parentID)
+            .sort((a, b) => b.updated - a.updated);
+          if (primary[0]) bind(primary[0].id);
         })
         .catch((err) => debugLog('opencode', `session list failed: ${(err as Error).message}`));
     }, 0);
@@ -229,11 +384,12 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
 
     event: async ({ event }: { event: BusEvent }) => {
       const p = event.properties ?? {};
-      // session.created/updated, and TUI events that name the session on screen. `--session` is not on this
-      // process's argv in OpenCode 1.19, so these events (and chat.message) are what rebind a resume.
+      // session.created/updated, and TUI events that name the session on screen, including tui.session.select.
+      // Startup `--session` does not emit one of these in OpenCode 1.19, so the ancestor command line is what
+      // binds a resume. These events cover a session picked in the TUI after launch.
       if (event.type === 'session.created' || event.type === 'session.updated' || event.type.startsWith('tui.')) {
-        const sessionID = p.info?.id ?? p.sessionID;
-        if (sessionID && p.info?.parentID) children.add(sessionID);
+        const { sessionID, parentID } = eventSession(event);
+        if (sessionID && parentID) children.add(sessionID);
         else if (sessionID) bind(sessionID);
       }
       const status = statusOf(event, (sessionID) => !children.has(sessionID) && (!active || active.sessionID === sessionID));

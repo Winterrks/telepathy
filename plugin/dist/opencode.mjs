@@ -20083,6 +20083,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
     startedAt: previous?.sessionId === fields.sessionId && previous?.startedAt || now,
     updatedAt: now
   };
+  if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);
   writeJsonAtomic(file2, record2);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId);
@@ -20094,6 +20095,30 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
     adoptHeldMessages(agent, id, fields.sessionId);
   }
   return record2;
+}
+function notePeerExit(id, at = (/* @__PURE__ */ new Date()).toISOString()) {
+  const session = readSession(id);
+  if (!session || session.exitedAt) return;
+  writeJsonAtomic(path5.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
+}
+function dropInboxAfter(id, exitedAt) {
+  const cutoff = Date.parse(exitedAt);
+  if (Number.isNaN(cutoff)) return;
+  let files = [];
+  try {
+    files = fs5.readdirSync(inboxDir(id));
+  } catch {
+    return;
+  }
+  for (const file2 of files) {
+    const msg = readJson(path5.join(inboxDir(id), file2));
+    const sent = Date.parse(msg?.sentAt ?? "");
+    if (Number.isNaN(sent) || sent <= cutoff) continue;
+    try {
+      fs5.rmSync(path5.join(inboxDir(id), file2), { force: true });
+    } catch {
+    }
+  }
 }
 function moveInbox(fromId, toId) {
   if (fromId === toId) return;
@@ -20285,6 +20310,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, void 0)) {
+      if (peer) notePeerExit(name);
       if (!holdsUnread(name) && !keepsSession(peer)) fs5.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
@@ -20395,6 +20421,13 @@ function archiveSettled(peerId2, id) {
       return;
     } catch {
     }
+  }
+}
+function pendingCount(peerId2) {
+  try {
+    return fs6.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).length;
+  } catch {
+    return 0;
   }
 }
 function readArchived(peerId2, id) {
@@ -21060,11 +21093,29 @@ async function untilMarker(peer, marker, budgetMs) {
   const deadline = Date.now() + budgetMs;
   const step = confirmPollMs();
   for (; ; ) {
-    if (transcriptHasMarker(peer, marker)) return true;
+    if (transcriptHasMarker(peer, marker)) return "found";
+    if (!isPeerAlive(peer)) return "offline";
     const left = deadline - Date.now();
-    if (left <= 0) return false;
+    if (left <= 0) return "timeout";
     await sleep(Math.min(step, left));
   }
+}
+function offlineInFlight(peer, messageId) {
+  notePeerExit(peer.id);
+  cancelWake(peer.id, messageId);
+  const inbox = path9.join(inboxDir(peer.id), `${messageId}.json`);
+  const aside = path9.join(withdrawnDir(peer.id), `${messageId}.json`);
+  if (!fs8.existsSync(inbox) && fs8.existsSync(aside)) {
+    try {
+      fs8.renameSync(aside, path9.join(ensureDir(inboxDir(peer.id)), `${messageId}.json`));
+    } catch {
+    }
+  }
+  const kept = fs8.existsSync(inbox);
+  return {
+    confirmed: false,
+    status: kept ? `Message failed: ${peerRef(peer)} is offline (session not running). A copy already in its inbox stays for when that session resumes.` : `Message failed: ${peerRef(peer)} is offline (session not running), so nothing was stored.`
+  };
 }
 var UNRECALLABLE = /cannot be recalled/i;
 function signalAfterWithdraw(routeStatus, withdrawn) {
@@ -21081,17 +21132,13 @@ function signalAfterWithdraw(routeStatus, withdrawn) {
 async function confirmDelivery(peer, message, routeStatus) {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
-    return {
-      confirmed: false,
-      kept: true,
-      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
-    };
-  }
-  if (await untilMarker(peer, marker, confirmAbortMs())) {
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return offlineInFlight(peer, message.id);
+  const first = await untilMarker(peer, marker, confirmAbortMs());
+  if (first === "found") {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (first === "offline") return offlineInFlight(peer, message.id);
   const stored2 = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
   const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
@@ -21114,10 +21161,12 @@ async function confirmDelivery(peer, message, routeStatus) {
       wake === "cancelled" ? "The pending wake was cancelled before it was sent." : "A wake that already left cannot be recalled; its body has no message text."
     );
   }
-  if (await untilMarker(peer, marker, confirmGraceMs())) {
+  const second = await untilMarker(peer, marker, confirmGraceMs());
+  if (second === "found") {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (second === "offline") return offlineInFlight(peer, message.id);
   const look = inspectTranscript(peer, marker);
   const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
   const extra = notes.length ? ` ${notes.join(" ")}` : "";
@@ -21310,6 +21359,9 @@ function formatAgo(ms) {
   return `${Math.floor(s / 86400)}d ago`;
 }
 function deliveryHint(peer) {
+  if ((peer.agent === "opencode" || peer.agent === "kilo") && !peer.sessionId) {
+    return "no session yet, sees messages at its first prompt";
+  }
   if (peer.agent === "codex" || peer.hasListener) return void 0;
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);
@@ -21586,16 +21638,20 @@ async function sendMessage(self, to, body) {
       error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`
     };
   }
+  if (!isPeerAlive(recipient)) {
+    notePeerExit(recipient.id);
+    return {
+      ok: false,
+      error: `Message failed: ${peerRef(recipient)} is offline (session not running), so nothing was stored.`
+    };
+  }
   const delivery = await routeDelivery(recipient, message);
   if (!confirmWaitEnabled()) {
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) {
-    if (proof.kept) recordSent(self.id, recipient.id, body);
-    return { ok: false, error: proof.status };
-  }
+  if (!proof.confirmed) return { ok: false, error: proof.status };
   recordSent(self.id, recipient.id, body);
   return {
     ok: true,
@@ -21738,8 +21794,8 @@ async function waitForSocket(peerId2, messageId) {
 }
 function claudeInboundBlockedStatus(recipient, inbound) {
   const ref = peerRef(recipient);
-  const why = inbound === "hold" ? "is holding peer messages (crossSessionInbound is hold)" : "is refusing peer messages (crossSessionInbound is refuse)";
-  return `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+  const why = inbound === "hold" ? "That session is holding peer messages (crossSessionInbound is hold)" : "That session is refusing peer messages (crossSessionInbound is refuse)";
+  return `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
 }
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
@@ -21833,17 +21889,85 @@ function readMessagesTool(selfId, { id, limit }) {
 
 // src/opencode.ts
 startWakeFlusher();
-function opencodeSessionFromArgv(argv = process.argv) {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--session") {
-      const next = argv[i + 1];
-      if (next && !next.startsWith("-")) return next;
+function tokenizeCommandLine(args) {
+  const out2 = [];
+  let cur = "";
+  let quote;
+  for (let i = 0; i < args.length; i++) {
+    const ch = args[i] ?? "";
+    if (quote) {
+      if (ch === quote) quote = void 0;
+      else cur += ch;
+      continue;
     }
-    const eq = /^--session=(.+)$/.exec(arg ?? "");
-    if (eq?.[1]) return eq[1];
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < args.length) {
+      cur += args[++i] ?? "";
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) out2.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
   }
-  return void 0;
+  if (cur) out2.push(cur);
+  return out2;
+}
+var looksLikeOpenCode = (argv) => argv.some((token) => /(^|[\\/])opencode(\.exe)?$/.test(token));
+function opencodeLaunchFromArgv(argv) {
+  const opencode = looksLikeOpenCode(argv);
+  let sessionID;
+  let continueLast = false;
+  let fork = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i] ?? "";
+    if (arg === "--fork" || arg === "--fork-session") {
+      fork = true;
+      continue;
+    }
+    if (arg === "--continue" || opencode && arg === "-c") {
+      continueLast = true;
+      continue;
+    }
+    if (arg === "--session" || opencode && arg === "-s") {
+      const next = argv[i + 1];
+      if (next && !next.startsWith("-")) {
+        sessionID = next;
+        i++;
+      }
+      continue;
+    }
+    const sessionEq = /^(?:--session|-s)=(.+)$/.exec(arg);
+    if (sessionEq?.[1] && (arg.startsWith("--session") || opencode)) sessionID = sessionEq[1];
+  }
+  return { sessionID, continueLast, fork };
+}
+function opencodeLaunchFromAncestors(startPid = process.ppid, readArgs = commandLine, parentOf = (pid) => processTable(0).get(pid)?.ppid) {
+  const seen = /* @__PURE__ */ new Set();
+  let merged = { continueLast: false, fork: false };
+  for (let pid = startPid; pid > 1 && !seen.has(pid); ) {
+    seen.add(pid);
+    const parsed = opencodeLaunchFromArgv(tokenizeCommandLine(readArgs(pid) ?? ""));
+    merged = {
+      sessionID: merged.sessionID ?? parsed.sessionID,
+      continueLast: merged.continueLast || parsed.continueLast,
+      fork: merged.fork || parsed.fork
+    };
+    if (merged.sessionID) return merged;
+    const next = parentOf(pid);
+    if (!next || next === pid) break;
+    pid = next;
+  }
+  return merged;
+}
+function opencodeSessionFromArgv(argv = process.argv) {
+  const launch = opencodeLaunchFromArgv(argv);
+  return launch.fork ? void 0 : launch.sessionID;
 }
 function listedSessions(value) {
   const rows = Array.isArray(value) ? value : value && typeof value === "object" && Array.isArray(value.data) ? value.data : [];
@@ -21854,9 +21978,24 @@ function listedSessions(value) {
     const id = typeof rec.id === "string" ? rec.id : typeof rec.info?.id === "string" ? rec.info.id : void 0;
     if (!id) continue;
     const parentID = typeof rec.parentID === "string" ? rec.parentID : typeof rec.info?.parentID === "string" ? rec.info.parentID : void 0;
-    out2.push({ id, parentID });
+    const time3 = rec.time;
+    const updated = typeof time3?.updated === "number" ? time3.updated : typeof time3?.created === "number" ? time3.created : 0;
+    out2.push({ id, parentID, updated });
   }
   return out2;
+}
+function createdSessionID(value) {
+  if (!value || typeof value !== "object") return void 0;
+  const rec = value;
+  if (typeof rec.id === "string") return rec.id;
+  if (typeof rec.data?.id === "string") return rec.data.id;
+  if (typeof rec.info?.id === "string") return rec.info.id;
+  return void 0;
+}
+function eventSession(event) {
+  const p = event.properties ?? {};
+  const sessionID = p.info?.id ?? p.sessionID ?? p.params?.sessionID;
+  return { sessionID, parentID: p.info?.parentID };
 }
 function statusOf(event, isPrimary) {
   const sessionID = event.properties?.sessionID;
@@ -21874,16 +22013,40 @@ var TelepathyPlugin = async ({ client, directory }) => {
   const pid = process.pid;
   let id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
+  registerListener(agent, pid, id);
   writeStatus(id, "idle");
   debugLog("opencode", `plugin loaded for ${id} in ${directory ?? "?"}`);
   let active;
   const children = /* @__PURE__ */ new Set();
   const busy = /* @__PURE__ */ new Set();
   let delivering = false;
+  async function openSession() {
+    const create = client.session.create;
+    if (!create) return void 0;
+    const sessionID = createdSessionID(await create({}));
+    if (!sessionID) return void 0;
+    bind(sessionID);
+    const select = client.tui?.selectSession ?? client.session.select;
+    if (select) {
+      try {
+        await select({ sessionID, body: { sessionID }, path: { id: sessionID } });
+      } catch (err) {
+        debugLog("opencode", `tui select failed: ${err.message}`);
+      }
+    }
+    return sessionID;
+  }
   async function deliver2() {
-    if (delivering || !active || busy.has(active.sessionID) || !isDeliveryOwner(id, pid)) return;
+    if (delivering || !isDeliveryOwner(id, pid)) return;
+    if (!active && pendingCount(id) === 0) return;
+    if (active && busy.has(active.sessionID)) return;
     delivering = true;
     try {
+      if (!active) {
+        const sessionID = await openSession();
+        if (!sessionID) return;
+      }
+      if (!active || busy.has(active.sessionID)) return;
       const messages = claimInbox(id);
       if (!messages.length) return;
       const target = active;
@@ -21941,16 +22104,22 @@ var TelepathyPlugin = async ({ client, directory }) => {
     watch();
     debugLog("opencode", `bound ${previous} to ${id}`);
   };
-  const argvSession = opencodeSessionFromArgv();
-  if (argvSession) bind(argvSession);
-  else if (client.session.list) {
+  const own2 = opencodeLaunchFromArgv(process.argv);
+  const inherited = opencodeLaunchFromAncestors();
+  const launch = {
+    sessionID: own2.sessionID ?? inherited.sessionID,
+    continueLast: own2.continueLast || inherited.continueLast,
+    fork: own2.fork || inherited.fork
+  };
+  if (launch.sessionID && !launch.fork) bind(launch.sessionID);
+  else if (launch.continueLast && !launch.fork && client.session.list) {
     const list = client.session.list.bind(client.session);
     const timer2 = setTimeout(() => {
       if (id !== peerId(agent, pid)) return;
       void Promise.resolve().then(() => list()).then((value) => {
         if (id !== peerId(agent, pid)) return;
-        const primary = listedSessions(value).filter((row) => !row.parentID);
-        if (primary.length === 1 && primary[0]) bind(primary[0].id);
+        const primary = listedSessions(value).filter((row) => !row.parentID).sort((a, b) => b.updated - a.updated);
+        if (primary[0]) bind(primary[0].id);
       }).catch((err) => debugLog("opencode", `session list failed: ${err.message}`));
     }, 0);
     timer2.unref();
@@ -21973,8 +22142,8 @@ var TelepathyPlugin = async ({ client, directory }) => {
     event: async ({ event }) => {
       const p = event.properties ?? {};
       if (event.type === "session.created" || event.type === "session.updated" || event.type.startsWith("tui.")) {
-        const sessionID = p.info?.id ?? p.sessionID;
-        if (sessionID && p.info?.parentID) children.add(sessionID);
+        const { sessionID, parentID } = eventSession(event);
+        if (sessionID && parentID) children.add(sessionID);
         else if (sessionID) bind(sessionID);
       }
       const status = statusOf(event, (sessionID) => !children.has(sessionID) && (!active || active.sessionID === sessionID));
@@ -22217,5 +22386,8 @@ var STATUS_EVENTS = {
 var opencode_default = { id: "telepathy", server: TelepathyPlugin, setup: setupV2 };
 export {
   opencode_default as default,
-  opencodeSessionFromArgv
+  opencodeLaunchFromAncestors,
+  opencodeLaunchFromArgv,
+  opencodeSessionFromArgv,
+  tokenizeCommandLine
 };

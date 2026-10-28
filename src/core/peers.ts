@@ -32,6 +32,11 @@ export interface SessionRecord {
   /** When this session was first registered: a Codex thread has no process of its own to tell. */
   startedAt?: string;
   updatedAt: string;
+  /**
+   * When this process was first seen to be gone. Inbox files newer than this were written after the session
+   * stopped and are not delivered on resume. Unset while a process is running.
+   */
+  exitedAt?: string;
 }
 
 export interface PresenceRecord {
@@ -95,8 +100,8 @@ export const peerId = (agent: Agent, key: number | string) => `${agent}-${key}`;
 /**
  * Codex runs many threads in one process, and OpenCode's service hosts every session. Every harness that reports
  * a durable session id is keyed by that id, not by the pid, so a resume (`claude --resume`, `codex resume`, an
- * OpenCode session that continues) is the same peer and keeps the inbox. A process that has not reported an id
- * yet is still keyed by its pid.
+ * OpenCode session that continues) is the same peer and keeps its name. A process that has not reported an id
+ * yet is still keyed by its pid. A send to a session whose process is gone fails and writes nothing.
  */
 export const sessionKey = (_agent: Agent, pid: number, sessionId: string | undefined): number | string =>
   sessionToken(sessionId) ?? pid;
@@ -219,6 +224,8 @@ export function registerSession(
     startedAt: (previous?.sessionId === fields.sessionId && previous?.startedAt) || now,
     updatedAt: now,
   };
+  // A resume is a live process again. Mail written after the previous process exited is not in flight.
+  if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);
   writeJsonAtomic(file, record);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId) as string;
@@ -230,6 +237,38 @@ export function registerSession(
     adoptHeldMessages(agent, id, fields.sessionId);
   }
   return record;
+}
+
+/**
+ * Records that this session's process is gone, once. A later resume uses the time to drop mail that was written
+ * after the process exited. Mail written before it stays: that copy was already in flight.
+ */
+export function notePeerExit(id: string, at = new Date().toISOString()): void {
+  const session = readSession(id);
+  if (!session || session.exitedAt) return;
+  writeJsonAtomic(path.join(peerDir(id), 'session.json'), { ...session, exitedAt: at });
+}
+
+/** Removes inbox files sent after `exitedAt`. Files with no `sentAt` stay. */
+function dropInboxAfter(id: string, exitedAt: string): void {
+  const cutoff = Date.parse(exitedAt);
+  if (Number.isNaN(cutoff)) return;
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(inboxDir(id));
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    const msg = readJson<{ sentAt?: string }>(path.join(inboxDir(id), file));
+    const sent = Date.parse(msg?.sentAt ?? '');
+    if (Number.isNaN(sent) || sent <= cutoff) continue;
+    try {
+      fs.rmSync(path.join(inboxDir(id), file), { force: true });
+    } catch {
+      // claimed by the resuming process
+    }
+  }
 }
 
 function moveInbox(fromId: string, toId: string): void {
@@ -249,14 +288,14 @@ function moveInbox(fromId: string, toId: string): void {
   }
 }
 
-/** How long unread messages of a session that exited wait for the session to be resumed. */
+/** How long a pid-only directory with unread mail outlives the process. Session-keyed directories use `SESSION_KEEP_MS`. */
 const HOLD_MS = 60 * 60_000;
 
 /**
- * How long the record of a session keyed by its id outlives its last registration while nothing runs it. Codex reloads
- * every thread into a new daemon when it updates, and `codex resume` reloads one, both without a hook until the next
- * prompt; a restarted OpenCode service takes its sessions back (see the plugin). Keeping the record makes the session
- * reachable again as soon as it runs.
+ * How long a session-keyed directory outlives the process. A resume reclaims the same id and name, and mail that
+ * was already in the inbox stays. A send while the process is gone writes nothing: this window is not a mailbox.
+ * Codex reloads a thread into a new daemon without a hook until the next prompt, and a restarted OpenCode service
+ * takes its sessions back, so the directory has to still be here when that process starts.
  */
 const SESSION_KEEP_MS = 24 * 60 * 60_000;
 
@@ -552,7 +591,9 @@ export function listPeers(): Peer[] {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : undefined);
     if (pid === undefined) continue; // not registered yet
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, undefined)) {
-      // The session is gone (or its pid was reused). Unread messages wait an hour for it to be resumed.
+      // The session is gone (or its pid was reused). The directory can stay so a resume reclaims the id and any
+      // mail that was already in flight. It is not a mailbox for a new send.
+      if (peer) notePeerExit(name);
       if (!holdsUnread(name) && !keepsSession(peer)) fs.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
@@ -575,8 +616,7 @@ export function listPeers(): Peer[] {
 
 /**
  * Session-keyed peers whose process has exited but whose record is still inside the keep window. `listPeers` does
- * not show them. `sendMessage` still resolves a known address here, so a message sent while the session is offline
- * lands in the same inbox the resume reads.
+ * not show them. `sendMessage` resolves the name so it can say the session is offline. It does not write an inbox.
  */
 export function keptPeers(): Peer[] {
   let names: string[] = [];

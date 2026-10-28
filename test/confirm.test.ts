@@ -130,7 +130,7 @@ describe('transcript confirmation', () => {
     assert.match(result.error, /already claimed/);
   });
 
-  test('a session that is not running keeps the inbox', async () => {
+  test('a session that is not running stores nothing', async () => {
     arm('5000', '5000');
     const fromProc = fakeAgent();
     const toProc = fakeAgent();
@@ -147,10 +147,38 @@ describe('transcript confirmation', () => {
     const result = await sendMessage(from, to.address, 'while you are closed');
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.match(result.error, /not running/);
-    assert.match(result.error, /stays in its inbox/);
-    assert.doesNotMatch(result.error, /^Message failed:/);
-    assert.equal(fs.readdirSync(inboxDir(to.id)).length, 1);
+    assert.match(result.error, /^Message failed:/);
+    assert.match(result.error, /is offline \(session not running\), so nothing was stored\./);
+    assert.equal(fs.existsSync(inboxDir(to.id)) ? fs.readdirSync(inboxDir(to.id)).length : 0, 0);
+  });
+
+  test('mail written while the session was live stays when it goes offline during the wait', async () => {
+    arm('5000', '5000');
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-inflight');
+    registerSession('codex', fromProc.pid, { sessionId: 'thread-inflight', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
+    registerPresence('claude', toProc.pid, { cwd: '/w/live' }, 'claude-live');
+    registerSession('claude', toProc.pid, { sessionId: 'live', cwd: '/w/live', source: 'hook' });
+    const from = readPeer('codex-thread-inflight');
+    const to = readPeer('claude-live');
+    assert.ok(from && to);
+    const pending = sendMessage(from, to.id, 'already handed over');
+    const file = await waitFor(() => {
+      try {
+        return fs.readdirSync(inboxDir(to.id))[0];
+      } catch {
+        return undefined;
+      }
+    });
+    await killAndWait(toProc);
+    const result = await pending;
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /^Message failed:/);
+    assert.match(result.error, /A copy already in its inbox stays/);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), true);
   });
 
   test('a held socket result is not a clean failure, and an interrupt withdraw does not say the inbox stays', async () => {
@@ -204,7 +232,7 @@ describe('transcript confirmation', () => {
     fs.rmSync(settings, { force: true });
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.match(result.error, /holding peer messages \(crossSessionInbound is hold\)/);
+    assert.match(result.error, /That session is holding peer messages \(crossSessionInbound is hold\)/);
     assert.match(result.error, /nothing was posted to its inbox socket/);
     assert.match(result.error, /The inbox copy was withdrawn/);
     assert.doesNotMatch(result.error, /no listener/);

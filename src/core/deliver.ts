@@ -15,7 +15,7 @@ import {
 } from './messages.ts';
 import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { confirmDelivery, confirmWaitEnabled, withdrawPending } from './confirm.ts';
-import { agentLabel, keptPeers, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
+import { agentLabel, keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
 
@@ -100,7 +100,8 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   if ('error' in resolved) {
     const selfMatch = resolvePeer(to, [self]);
     if ('peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
-    // A session that exited in the keep window is not listed, but a known address still reaches its inbox.
+    // A session that exited in the keep window is not listed. Naming it is what makes the offline failure
+    // specific. The inbox is not written.
     const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self.id));
     if ('peer' in offline) resolved = offline;
     else return { ok: false, error: resolved.error };
@@ -126,18 +127,21 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     };
   }
 
+  if (!isPeerAlive(recipient)) {
+    notePeerExit(recipient.id);
+    return {
+      ok: false,
+      error: `Message failed: ${peerRef(recipient)} is offline (session not running), so nothing was stored.`,
+    };
+  }
+
   const delivery = await routeDelivery(recipient, message);
   if (!confirmWaitEnabled()) {
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) {
-    // The inbox was left in place for a session that is not running. Remember the send so a retry does not
-    // stack a second copy, and do not call it a failure: the resume can still deliver it.
-    if (proof.kept) recordSent(self.id, recipient.id, body);
-    return { ok: false, error: proof.status };
-  }
+  if (!proof.confirmed) return { ok: false, error: proof.status };
   recordSent(self.id, recipient.id, body);
   return {
     ok: true,
@@ -329,10 +333,10 @@ function claudeInboundBlockedStatus(recipient: Peer, inbound: 'hold' | 'refuse')
   const ref = peerRef(recipient);
   const why =
     inbound === 'hold'
-      ? 'is holding peer messages (crossSessionInbound is hold)'
-      : 'is refusing peer messages (crossSessionInbound is refuse)';
+      ? 'That session is holding peer messages (crossSessionInbound is hold)'
+      : 'That session is refusing peer messages (crossSessionInbound is refuse)';
   return (
-    `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. ` +
+    `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. ` +
     'The inbox copy can still be withdrawn.'
   );
 }

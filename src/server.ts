@@ -64,7 +64,7 @@ function monitorCommand(): string {
  * itself. A one-prompt `claude -p` run ends anyway, so it needs neither.
  */
 function claudeWithoutMonitor(): boolean {
-  return agent === 'claude' && isStreamJsonClaude(agentPid);
+  return agent === 'claude' && isStreamJsonClaude(agentPid) && !process.env.CLAUDE_CODE_MESSAGING_SOCKET;
 }
 
 // A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).

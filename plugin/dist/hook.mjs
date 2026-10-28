@@ -463,6 +463,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
     startedAt: previous?.sessionId === fields.sessionId && previous?.startedAt || now,
     updatedAt: now
   };
+  if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);
   writeJsonAtomic(file, record);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId);
@@ -474,6 +475,30 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
     adoptHeldMessages(agent, id, fields.sessionId);
   }
   return record;
+}
+function notePeerExit(id, at = (/* @__PURE__ */ new Date()).toISOString()) {
+  const session = readSession(id);
+  if (!session || session.exitedAt) return;
+  writeJsonAtomic(path6.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
+}
+function dropInboxAfter(id, exitedAt) {
+  const cutoff = Date.parse(exitedAt);
+  if (Number.isNaN(cutoff)) return;
+  let files2 = [];
+  try {
+    files2 = fs5.readdirSync(inboxDir(id));
+  } catch {
+    return;
+  }
+  for (const file of files2) {
+    const msg = readJson(path6.join(inboxDir(id), file));
+    const sent = Date.parse(msg?.sentAt ?? "");
+    if (Number.isNaN(sent) || sent <= cutoff) continue;
+    try {
+      fs5.rmSync(path6.join(inboxDir(id), file), { force: true });
+    } catch {
+    }
+  }
 }
 function moveInbox(fromId, toId) {
   if (fromId === toId) return;
@@ -685,6 +710,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, void 0)) {
+      if (peer) notePeerExit(name);
       if (!holdsUnread(name) && !keepsSession(peer)) fs5.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
@@ -1464,11 +1490,29 @@ async function untilMarker(peer, marker, budgetMs) {
   const deadline = Date.now() + budgetMs;
   const step = confirmPollMs();
   for (; ; ) {
-    if (transcriptHasMarker(peer, marker)) return true;
+    if (transcriptHasMarker(peer, marker)) return "found";
+    if (!isPeerAlive(peer)) return "offline";
     const left = deadline - Date.now();
-    if (left <= 0) return false;
+    if (left <= 0) return "timeout";
     await sleep(Math.min(step, left));
   }
+}
+function offlineInFlight(peer, messageId) {
+  notePeerExit(peer.id);
+  cancelWake(peer.id, messageId);
+  const inbox2 = path10.join(inboxDir(peer.id), `${messageId}.json`);
+  const aside = path10.join(withdrawnDir(peer.id), `${messageId}.json`);
+  if (!fs8.existsSync(inbox2) && fs8.existsSync(aside)) {
+    try {
+      fs8.renameSync(aside, path10.join(ensureDir(inboxDir(peer.id)), `${messageId}.json`));
+    } catch {
+    }
+  }
+  const kept = fs8.existsSync(inbox2);
+  return {
+    confirmed: false,
+    status: kept ? `Message failed: ${peerRef(peer)} is offline (session not running). A copy already in its inbox stays for when that session resumes.` : `Message failed: ${peerRef(peer)} is offline (session not running), so nothing was stored.`
+  };
 }
 var UNRECALLABLE = /cannot be recalled/i;
 function signalAfterWithdraw(routeStatus, withdrawn) {
@@ -1485,17 +1529,13 @@ function signalAfterWithdraw(routeStatus, withdrawn) {
 async function confirmDelivery(peer, message, routeStatus) {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
-    return {
-      confirmed: false,
-      kept: true,
-      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
-    };
-  }
-  if (await untilMarker(peer, marker, confirmAbortMs())) {
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return offlineInFlight(peer, message.id);
+  const first = await untilMarker(peer, marker, confirmAbortMs());
+  if (first === "found") {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (first === "offline") return offlineInFlight(peer, message.id);
   const stored = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
   const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
@@ -1518,10 +1558,12 @@ async function confirmDelivery(peer, message, routeStatus) {
       wake === "cancelled" ? "The pending wake was cancelled before it was sent." : "A wake that already left cannot be recalled; its body has no message text."
     );
   }
-  if (await untilMarker(peer, marker, confirmGraceMs())) {
+  const second = await untilMarker(peer, marker, confirmGraceMs());
+  if (second === "found") {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (second === "offline") return offlineInFlight(peer, message.id);
   const look = inspectTranscript(peer, marker);
   const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
   const extra = notes.length ? ` ${notes.join(" ")}` : "";
@@ -1957,16 +1999,20 @@ async function sendMessage(self, to, body) {
       error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`
     };
   }
+  if (!isPeerAlive(recipient)) {
+    notePeerExit(recipient.id);
+    return {
+      ok: false,
+      error: `Message failed: ${peerRef(recipient)} is offline (session not running), so nothing was stored.`
+    };
+  }
   const delivery = await routeDelivery(recipient, message);
   if (!confirmWaitEnabled()) {
     recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) {
-    if (proof.kept) recordSent(self.id, recipient.id, body);
-    return { ok: false, error: proof.status };
-  }
+  if (!proof.confirmed) return { ok: false, error: proof.status };
   recordSent(self.id, recipient.id, body);
   return {
     ok: true,
@@ -2109,8 +2155,8 @@ async function waitForSocket(peerId2, messageId) {
 }
 function claudeInboundBlockedStatus(recipient, inbound) {
   const ref = peerRef(recipient);
-  const why = inbound === "hold" ? "is holding peer messages (crossSessionInbound is hold)" : "is refusing peer messages (crossSessionInbound is refuse)";
-  return `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+  const why = inbound === "hold" ? "That session is holding peer messages (crossSessionInbound is hold)" : "That session is refusing peer messages (crossSessionInbound is refuse)";
+  return `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
 }
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
@@ -2254,14 +2300,7 @@ function sessionStart(agent, agentPid, input) {
   registerStableName(agent, id);
   if (agent === "claude" && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
   if (statusFromHooks(agent)) writeStatus(id, "idle");
-  const monitor = claudeMonitorNote(agent, agentPid);
-  if (monitor) reply(hookSpecificContext(monitor, "SessionStart"));
-  else reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
-}
-function claudeMonitorNote(agent, agentPid) {
-  if (agent !== "claude" || process.env.CLAUDE_CODE_MESSAGING_SOCKET || isStreamJsonClaude(agentPid)) return void 0;
-  const cmd = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude`;
-  return `[telepathy] This session has no inbox socket, so no background monitor was started. Start this with the Monitor tool (persistent: true, description "telepathy inbox") so messages can wake you while idle: ${cmd}`;
+  reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 function refreshSession(agent, agentPid, input) {
   const { sessionId, cwd } = sessionOf(agent, input);
@@ -2286,7 +2325,7 @@ function socketOwnsDelivery(selfId) {
   return inbound !== "hold" && inbound !== "refuse";
 }
 function waiterReminder(agent, agentPid) {
-  if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
+  if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
   const waiter = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }

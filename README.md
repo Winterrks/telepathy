@@ -335,8 +335,9 @@ Each agent gets its own manifest, so none of them runs another's hooks: `plugin/
 `qwen-extension.json` and `.kimi-plugin` at the repository root; `antigravity/` for Antigravity; and the root
 `package.json` for OpenCode and Kilo Code (its default export has `setup` for OpenCode 2 and `server` for 1.x and Kilo).
 A session keyed by its harness id keeps its directory for a day after the process exits, so a resume reclaims the
-same inbox. Pid-only registrations are removed once the process is gone; their unread mail waits an hour. A known
-address still accepts a message during that day even though `list_peers` only shows sessions that are running.
+same id and any mail that was already in the inbox. That day is not a mailbox: a send while the process is gone
+returns `Message failed:` immediately and writes nothing. Pid-only registrations are removed once the process is
+gone; their unread mail waits an hour. `list_peers` only shows sessions that are running.
 
 ## Good to know
 
@@ -364,23 +365,29 @@ address still accepts a message during that day even though `list_peers` only sh
   peer messages and that nothing was posted. The post names the real sender (Codex, OpenCode, and
   the rest), which Claude shows in place of "Another Claude session". The plugin does not start its background
   monitor: a process Claude launched and that then exited is a "background task exited" notice, and a process that
-  stays up is what `/exit` asks to stop. A session with an inbox socket does not need the monitor. A session without
-  one is asked, at session start, to start it with the Monitor tool. Claude Code runs plugin monitors only in
-  interactive terminal sessions.
-  The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
-  a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
-  message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
-  runs, the hooks hand messages over at the next prompt or when a turn ends.
+  stays up is what `/exit` asks to stop. `plugin/monitors/monitors.json` is empty, because a plugin monitor cannot
+  see whether `CLAUDE_CODE_MESSAGING_SOCKET` is set. A session that exported the socket does not start an idle
+  waiter. A session that did not (bare mode, a build older than the socket, or a bind that failed and left the
+  variable unset) starts one from SessionStart, UserPromptSubmit, and Stop: `monitor.mjs --rewake` with
+  `asyncRewake` and a one-day timeout. It exits immediately when a socket is set. Without one it waits, then exits
+  2 with the message line, which is what wakes Claude. The Desktop app's Code tab, the VS Code extension, and
+  `claude -p` on current versions export a socket, so idle wake there is the post. A stream-json host with no
+  socket is still asked to start a one-shot `--once` waiter with Bash. Until that runs, the hooks hand messages
+  over at the next prompt or when a turn ends.
 - **A resumed session keeps its telepathy id and name.** The key is the harness session id (Claude's `session_id`,
   a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. OpenCode binds
-  that id when the process was given `--session`, from `session.created` / `session.updated` / a TUI event that
-  names the session, from the first `chat.message`, or from `session.list` after plugin init has returned. Plugin
-  init does not wait on that call: OpenCode cannot answer it until init returns. The name from the pid-keyed moment
-  is the one that is remembered.
-  The first name is stored under `~/.telepathy/identities/`. Messages already in the inbox, and messages sent to
-  that address while the process is gone, are waiting when it resumes; that send is not reported as `Message failed`.
-  A new session id does not receive them. `TELEPATHY_NAME` still overrides the name. Two live processes on one
-  session id share the peer; the oldest one owns delivery, and Claude delivery uses that process's socket.
+  that id from `--session` or `-s` on its own command line or a parent process (OpenCode 1.19 does not put the flag
+  on the plugin), from `--continue` or `-c` by listing sessions after plugin init returns and binding the newest
+  primary one, from `session.created`, `session.updated`, or a TUI event that names the session, or from the first
+  `chat.message`. `--fork` does not bind the source id. Plugin init does not wait on `session.list`: OpenCode cannot
+  answer it until init returns. A fresh TUI has no session yet. It is listed as
+  `no session yet, sees messages at its first prompt`, and a message that arrives first creates a session and
+  prompts it when the client can. The name from the pid-keyed moment is the one that is remembered.
+  The first name is stored under `~/.telepathy/identities/`. Mail already in the inbox when the process exited is
+  still there on resume. A send while the process is gone is `Message failed:` and is not stored. On resume, inbox
+  files whose `sentAt` is after that exit are dropped, so a copy that was not already in flight is not delivered.
+  A new session id does not receive the old inbox. `TELEPATHY_NAME` still overrides the name. Two live processes
+  on one session id share the peer; the oldest one owns delivery, and Claude delivery uses that process's socket.
 - **A stable name.** Set `TELEPATHY_NAME` or start the server with `--name my-bot`. The address becomes
   `grok:my-bot` and stays that way across restarts, and unread messages move to the new process. Two live sessions
   with the same name are called out in `list_peers` and in `[telepathy setup]`. Use the `[ref]` to pick one.
@@ -456,12 +463,13 @@ address still accepts a message during that day even though `list_peers` only sh
   and the version of each agent's installed copy of telepathy. It never reads message content from those logs, and
   stores none of it. It records which files each session edits with its edit tools (paths and times only, never
   contents), in that session's folder in `~/.telepathy`, removed when the session ends.
-- **What runs:** the MCP server while a session is open; in Claude Code, a background monitor and six hooks
+- **What runs:** the MCP server while a session is open; in Claude Code, the hooks in `plugin/hooks/claude-hooks.json`
   (SessionStart; PostToolUse/PreToolUse matched to ListAgents and SendMessage; PostToolUse matched to the file,
-  search and Bash tools, which records edited paths and adds the note above; UserPromptSubmit and Stop, which
-  act only when no monitor or waiter is running: they hand over waiting messages and, in the Claude app, remind Claude
-  to start the waiter); in the other agents, the hooks listed in their manifest. They register the session, hand
-  over messages and track edited files, nothing else.
+  search and Bash tools, which records edited paths and adds the note above; UserPromptSubmit and Stop). SessionStart,
+  UserPromptSubmit, and Stop also start an idle-wake hook when the session has no inbox socket. Those hooks hand
+  over waiting messages and, in a stream-json host without a socket, remind Claude to start a one-shot waiter. In
+  the other agents, the hooks listed in their manifest. They register the session, hand over messages and track
+  edited files, nothing else.
 - **No approval step.** Claude Code's native cross-session messages pass through `crossSessionInbound`: for example, a
   message from a bypass-permissions session to a prompting one is held for your approval. telepathy messages skip
   that check and are delivered directly.

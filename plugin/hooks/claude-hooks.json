@@ -1,5 +1,5 @@
 {
-  "description": "telepathy: register this Claude Code session, note when it reads, searches or edits files another agent session is editing, show other agents' sessions in ListAgents, deliver SendMessage calls addressed to them, and hand over messages at the next prompt or turn end in sessions without the plugin monitor (the Claude app, claude -p).",
+  "description": "telepathy: register this Claude Code session, note when it reads, searches or edits files another agent session is editing, show other agents' sessions in ListAgents, deliver SendMessage calls addressed to them, and hand over messages at the next prompt or turn end. A session without an inbox socket starts an asyncRewake idle waiter; a session with a socket does not.",
   "hooks": {
     "SessionStart": [
       {
@@ -7,6 +7,12 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude session-start"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/monitor.mjs\" --agent claude --rewake",
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
@@ -51,6 +57,12 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude inbox UserPromptSubmit",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/monitor.mjs\" --agent claude --rewake",
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }
@@ -62,6 +74,12 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/hook.mjs\" --agent claude turn-end",
             "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/dist/monitor.mjs\" --agent claude --rewake",
+            "asyncRewake": true,
+            "timeout": 86400
           }
         ]
       }

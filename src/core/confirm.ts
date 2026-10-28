@@ -5,7 +5,7 @@ import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message } from './messages.ts';
 import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir } from './paths.ts';
-import { claudeConfigDir, isPeerAlive, type Peer, peerRef } from './peers.ts';
+import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
 /**
@@ -190,22 +190,46 @@ function storedMessage(peerId: string, messageId: string): Message | undefined {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function untilMarker(peer: Peer, marker: string, budgetMs: number): Promise<boolean> {
+async function untilMarker(peer: Peer, marker: string, budgetMs: number): Promise<'found' | 'timeout' | 'offline'> {
   const deadline = Date.now() + budgetMs;
   const step = confirmPollMs();
   for (;;) {
-    if (transcriptHasMarker(peer, marker)) return true;
+    if (transcriptHasMarker(peer, marker)) return 'found';
+    if (!isPeerAlive(peer)) return 'offline';
     const left = deadline - Date.now();
-    if (left <= 0) return false;
+    if (left <= 0) return 'timeout';
     await sleep(Math.min(step, left));
   }
+}
+
+/**
+ * The process is gone. A copy written while it was live stays in the inbox for resume. A send that never wrote
+ * one says so. Either way the tool result is a failure.
+ */
+function offlineInFlight(peer: Peer, messageId: string): ConfirmOutcome {
+  notePeerExit(peer.id);
+  cancelWake(peer.id, messageId);
+  const inbox = path.join(inboxDir(peer.id), `${messageId}.json`);
+  const aside = path.join(withdrawnDir(peer.id), `${messageId}.json`);
+  if (!fs.existsSync(inbox) && fs.existsSync(aside)) {
+    try {
+      fs.renameSync(aside, path.join(ensureDir(inboxDir(peer.id)), `${messageId}.json`));
+    } catch {
+      // already gone
+    }
+  }
+  const kept = fs.existsSync(inbox);
+  return {
+    confirmed: false,
+    status: kept
+      ? `Message failed: ${peerRef(peer)} is offline (session not running). A copy already in its inbox stays for when that session resumes.`
+      : `Message failed: ${peerRef(peer)} is offline (session not running), so nothing was stored.`,
+  };
 }
 
 export interface ConfirmOutcome {
   confirmed: boolean;
   status: string;
-  /** The inbox was left in place because the session is not running and nothing unrecallable was handed off. */
-  kept?: boolean;
 }
 
 const UNRECALLABLE = /cannot be recalled/i;
@@ -233,20 +257,14 @@ function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { 
 export async function confirmDelivery(peer: Peer, message: Message, routeStatus: string): Promise<ConfirmOutcome> {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  // A session that is not running cannot write a transcript. Leaving the inbox is what makes the resume see
-  // the message. `Message failed` would mean it can never arrive, which is only true if we withdraw it.
-  // A held socket copy is the exception: those bytes can still show up, so the wait below still applies.
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
-    return {
-      confirmed: false,
-      kept: true,
-      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`,
-    };
-  }
-  if (await untilMarker(peer, marker, confirmAbortMs())) {
+  // A held socket copy can still show up after the process looks gone, so that wait runs below.
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return offlineInFlight(peer, message.id);
+  const first = await untilMarker(peer, marker, confirmAbortMs());
+  if (first === 'found') {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (first === 'offline') return offlineInFlight(peer, message.id);
 
   const stored = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
@@ -275,10 +293,12 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
     );
   }
 
-  if (await untilMarker(peer, marker, confirmGraceMs())) {
+  const second = await untilMarker(peer, marker, confirmGraceMs());
+  if (second === 'found') {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
+  if (second === 'offline') return offlineInFlight(peer, message.id);
 
   const look = inspectTranscript(peer, marker);
   const where = look.located

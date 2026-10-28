@@ -335,7 +335,8 @@ function claudeSocketArmed(id2) {
 // src/monitor.ts
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
-if (!once && process.env.CLAUDE_CODE_MESSAGING_SOCKET) {
+var rewake = argv.includes("--rewake");
+if (process.env.CLAUDE_CODE_MESSAGING_SOCKET && (rewake || !once)) {
   debugLog("monitor", "CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener");
   process.exit(0);
 }
@@ -353,7 +354,7 @@ function drain() {
     for (const msg of messages) debugLog("monitor", `delivered ${msg.id} from ${msg.from.id}`);
     if (!messages.length) return;
     const text = messages.map((msg) => formatMonitorLine(msg) + "\n").join("");
-    if (once) process.stdout.write(text, () => stop());
+    if (once || rewake) process.stdout.write(text, () => stop(rewake ? 2 : 0));
     else process.stdout.write(text);
   } finally {
     draining = false;
@@ -381,14 +382,19 @@ function ensureWatching() {
     watcher = void 0;
   }
 }
-function stop() {
+function stop(code = 0) {
   try {
     if (readJson(listenerFile2())?.pid === process.pid) fs4.rmSync(listenerFile2(), { force: true });
   } catch {
   }
-  process.exit(0);
+  process.exit(code);
+}
+function listenerHeldByOther() {
+  const existing = readJson(listenerFile2());
+  return !!existing?.pid && existing.pid !== process.pid && isSameProcess(existing.pid, existing.procStart);
 }
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, stop);
+if (rewake && listenerHeldByOther()) process.exit(0);
 if (isDeliveryOwner(id, agentPid)) registerListener(agent, agentPid, id);
 ensureWatching();
 debugLog("monitor", `listening for ${id}`);

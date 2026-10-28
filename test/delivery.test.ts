@@ -294,7 +294,7 @@ describe('Claude inbox socket', () => {
       assert.equal(blocked.ok, true);
       if (!blocked.ok) return;
       assert.equal(blocked.delivery.confirmed, false);
-      assert.match(blocked.status, /holding peer messages \(crossSessionInbound is hold\)/);
+      assert.match(blocked.status, /That session is holding peer messages \(crossSessionInbound is hold\)/);
       assert.match(blocked.status, /nothing was posted to its inbox socket/);
       assert.doesNotMatch(blocked.status, /no listener/);
       assert.match(blocked.status, /can still be withdrawn/);
@@ -327,7 +327,7 @@ describe('Claude inbox socket', () => {
       const held = await sendMessage(peer.from, peer.address, 'do not repeat');
       assert.equal(held.ok, true);
       if (!held.ok) return;
-      assert.match(held.status, /holding peer messages \(crossSessionInbound is hold\)/);
+      assert.match(held.status, /That session is holding peer messages \(crossSessionInbound is hold\)/);
       assert.match(held.status, /nothing was posted/);
       const log = path.join(sb.home, 'debug.log');
       const holdLines = () =>

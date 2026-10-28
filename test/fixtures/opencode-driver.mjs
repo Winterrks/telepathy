@@ -13,8 +13,25 @@ const client = {
     ...(listMode
       ? {
           // 'hang' never resolves. Plugin init must return without awaiting it.
+          // `id` or `id:updatedMs`, comma-separated.
           list: () =>
-            listMode === 'hang' ? new Promise(() => {}) : Promise.resolve(listMode.split(',').filter(Boolean).map((id) => ({ id }))),
+            listMode === 'hang'
+              ? new Promise(() => {})
+              : Promise.resolve(
+                  listMode
+                    .split(',')
+                    .filter(Boolean)
+                    .map((item) => {
+                      const [id, updated] = item.split(':');
+                      return updated ? { id, time: { updated: Number(updated) } } : { id };
+                    }),
+                ),
+        }
+      : {}),
+    ...(process.env.OPENCODE_TEST_CREATE
+      ? {
+          create: async () => ({ id: process.env.OPENCODE_TEST_CREATE }),
+          select: async (options) => print({ selected: options.sessionID ?? options.body?.sessionID }),
         }
       : {}),
   },

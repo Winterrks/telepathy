@@ -165,23 +165,7 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   registerStableName(agent, id);
   if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
   if (statusFromHooks(agent)) writeStatus(id, 'idle');
-  const monitor = claudeMonitorNote(agent, agentPid);
-  if (monitor) reply(hookSpecificContext(monitor, 'SessionStart'));
-  else reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
-}
-
-/**
- * Claude starts every plugin monitor, and a process that then exits is a "background task exited" notice the
- * model answers. The manifest therefore does not start one. A session with an inbox socket does not need it.
- * A session without one is asked to start it, which is the path whose stdout Claude actually reads.
- */
-function claudeMonitorNote(agent: Agent, agentPid: number): string | undefined {
-  if (agent !== 'claude' || process.env.CLAUDE_CODE_MESSAGING_SOCKET || isStreamJsonClaude(agentPid)) return undefined;
-  const cmd = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude`;
-  return (
-    '[telepathy] This session has no inbox socket, so no background monitor was started. Start this with the Monitor tool ' +
-    `(persistent: true, description "telepathy inbox") so messages can wake you while idle: ${cmd}`
-  );
+  reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
 /**
@@ -229,7 +213,8 @@ function socketOwnsDelivery(selfId: string): boolean {
  * wakes the session. Returns the reminder to start it, when this is such a session and no waiter is running.
  */
 function waiterReminder(agent: Agent, agentPid: number): string | undefined {
-  if (agent !== 'claude' || !isStreamJsonClaude(agentPid)) return undefined;
+  // A stream-json session with an inbox socket is woken by the post. The Bash waiter is for a host that has neither.
+  if (agent !== 'claude' || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return undefined;
   const waiter = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude --once`;
   return (
     "[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it " +
