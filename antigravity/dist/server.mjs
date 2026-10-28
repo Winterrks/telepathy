@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path18 from "node:path";
+import path19 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path19) {
-  if (!path19)
+function getElementAtPath(obj, path20) {
+  if (!path20)
     return obj;
-  return path19.reduce((acc, key) => acc?.[key], obj);
+  return path20.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path19, issues) {
+function prefixIssues(path20, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path19);
+    iss.path.unshift(path20);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path19 = []) => {
+  const processError = (error63, path20 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path19, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path19, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path19, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else {
-        const fullpath = [...path19, ...issue2.path];
+        const fullpath = [...path20, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path19 = []) => {
+  const processError = (error63, path20 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path19, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path19, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path19, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
       } else {
-        const fullpath = [...path19, ...issue2.path];
+        const fullpath = [...path20, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path19 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path19) {
+  const path20 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path20) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path19 = ref.slice(1).split("/").filter(Boolean);
-  if (path19.length === 0) {
+  const path20 = ref.slice(1).split("/").filter(Boolean);
+  if (path20.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path19[0] === defsKey) {
-    const key = path19[1] === void 0 ? void 0 : decodeJSONPointerSegment(path19[1]);
+  if (path20[0] === defsKey) {
+    const key = path20[1] === void 0 ? void 0 : decodeJSONPointerSegment(path20[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path19 = issue2.path.map(String);
-      const key = path19.length > 0 ? path19.join(".") : "_meta";
-      if (path19.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path20 = issue2.path.map(String);
+      const key = path20.length > 0 ? path20.join(".") : "_meta";
+      if (path20.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path19, reachable) => {
+  const visit2 = (node2, path20, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path19.length === 0) return `${pathName(path19)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path20.length === 0) return `${pathName(path20)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path19)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path19)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path20)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path20)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path19)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path20)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path19,
+        path: path20,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path19, key], reachable);
+      const fault$1 = visit2(child, [...path20, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path19, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path20, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path19) {
-  return path19.length === 0 ? "<root>" : path19.join(".");
+function pathName(path20) {
+  return path20.length === 0 ? "<root>" : path20.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path19, vendor, unsupported) {
+function walkProperty(node2, path20, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path19, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path19}.${key}`);
-  } else unsupported.push(`${path19}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path20}.${key}`);
+  } else unsupported.push(`${path20}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path19 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path19}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path20 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path20}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path19 ? `${path19}.${key}` : key;
+    const childPath = path20 ? `${path20}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -29687,6 +29687,51 @@ import path11 from "node:path";
 var home = () => os5.homedir();
 var cacheHome = () => process.env.XDG_CACHE_HOME || path11.join(home(), ".cache");
 var dataHome = () => process.env.XDG_DATA_HOME || path11.join(home(), ".local", "share");
+function resolveReal(dir) {
+  const abs = path11.resolve(dir);
+  try {
+    return fs10.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function genericDir(dir) {
+  const normalized = resolveReal(dir);
+  if (normalized === path11.parse(normalized).root) return true;
+  const generic = ["/tmp", "/var", "/private", "/private/tmp", "/var/tmp", "/private/var"];
+  if (generic.includes(normalized)) return true;
+  try {
+    const tmp = resolveReal(os5.tmpdir());
+    if (normalized === tmp || normalized === path11.dirname(tmp)) return true;
+  } catch {
+  }
+  return false;
+}
+function isolatedStateRoots() {
+  const explicit = process.env.TELEPATHY_HOME?.trim();
+  if (!explicit) return void 0;
+  const state = resolveReal(explicit);
+  let passwd = path11.resolve(os5.userInfo().homedir);
+  try {
+    passwd = fs10.realpathSync(passwd);
+  } catch {
+  }
+  if (state === path11.join(passwd, ".telepathy")) return void 0;
+  const parent = path11.dirname(state);
+  const roots = [genericDir(parent) || parent === passwd ? state : parent];
+  let apparent = path11.resolve(os5.homedir());
+  try {
+    apparent = fs10.realpathSync(apparent);
+  } catch {
+  }
+  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path11.sep));
+  if (apparent !== passwd && !covered) roots.push(apparent);
+  return roots;
+}
+function inRoots(dir, roots) {
+  const resolved = resolveReal(dir);
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path11.sep));
+}
 function readVersion(file2) {
   try {
     const version2 = JSON.parse(fs10.readFileSync(file2, "utf8")).version;
@@ -29810,6 +29855,11 @@ function findInstalls() {
     ...packageCache("opencode"),
     ...packageCache("kilo")
   ];
+}
+function installsInScope(installs = findInstalls()) {
+  const roots = isolatedStateRoots();
+  if (!roots) return installs;
+  return installs.filter((install) => inRoots(install.dir, roots));
 }
 
 // src/core/setup.ts
@@ -30725,14 +30775,37 @@ function readMessagesTool(selfId, { id, limit }) {
 // src/auto-update.ts
 import { spawn as spawn4 } from "node:child_process";
 import fs15 from "node:fs";
-import path17 from "node:path";
+import path18 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/update-all.ts
 import { spawn as spawn3 } from "node:child_process";
 import fs14 from "node:fs";
 import os6 from "node:os";
+import path17 from "node:path";
+
+// src/version-check.ts
 import path16 from "node:path";
+var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
+var cacheFile = () => path16.join(stateDir(), "github-version.json");
+function cachedGithubVersion() {
+  return readJson(cacheFile())?.version;
+}
+async function latestGithubVersion() {
+  const override = process.env.TELEPATHY_LATEST_VERSION?.trim();
+  if (override) return override;
+  const url2 = process.env.TELEPATHY_VERSION_URL?.trim() || DEFAULT_URL;
+  const res = await fetch(url2, {
+    signal: AbortSignal.timeout(8e3),
+    headers: { accept: "application/json", "user-agent": "telepathy-cli" }
+  });
+  if (!res.ok) throw new Error(`${url2} returned ${res.status}`);
+  const body = await res.json();
+  if (typeof body.version !== "string" || !body.version.trim()) throw new Error("GitHub package.json has no version");
+  return body.version.trim();
+}
+
+// src/update-all.ts
 var REPO = "https://github.com/Winterrks/telepathy";
 var STEP_TIMEOUT_MS = 18e4;
 function stepsFor(install) {
@@ -30783,13 +30856,13 @@ function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path16.join(process.env.XDG_CACHE_HOME || path16.join(os6.homedir(), ".cache"), install.agent, "packages");
-  const relative = path16.relative(packages, install.dir).split(path16.sep);
-  const entry = path16.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path16.join(path16.dirname(packages), `.telepathy-update-${Date.now()}`);
+  const packages = path17.join(process.env.XDG_CACHE_HOME || path17.join(os6.homedir(), ".cache"), install.agent, "packages");
+  const relative = path17.relative(packages, install.dir).split(path17.sep);
+  const entry = path17.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path17.join(path17.dirname(packages), `.telepathy-update-${Date.now()}`);
   fs14.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
-  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
     fs14.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
@@ -30799,18 +30872,32 @@ async function refreshPackageCache(install) {
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
+async function latestKnown() {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
+  try {
+    return await latestGithubVersion();
+  } catch {
+    return cachedGithubVersion();
+  }
+}
+var alreadyCurrent = (install, latest) => !!latest && !isNewer(latest, install.version);
 async function updateAll(options = {}) {
   const dryRun = options.dryRun === true;
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
-  const before = findInstalls();
+  const before = installsInScope();
   if (!before.length) {
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
+  const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
   if (dryRun) {
     for (const install of before) {
+      if (alreadyCurrent(install, latest)) {
+        say(`- ${agentLabel(install.agent)}: already current`);
+        continue;
+      }
       const steps = stepsFor(install);
       const how = steps === "cache" ? `clear its package cache and run \`${install.agent} debug config\` to reinstall` : steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
       say(`- ${agentLabel(install.agent)}: ${how}`);
@@ -30819,6 +30906,10 @@ async function updateAll(options = {}) {
   }
   const failures = [];
   for (const install of before) {
+    if (alreadyCurrent(install, latest)) {
+      say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
+      continue;
+    }
     if (log) log(`Updating ${agentLabel(install.agent)}\u2026`);
     else process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
     const steps = stepsFor(install);
@@ -30831,15 +30922,19 @@ async function updateAll(options = {}) {
       failures.push(agentLabel(install.agent));
     }
   }
-  const after = findInstalls();
+  const after = installsInScope();
+  let changed = false;
   say("\nInstalled versions:");
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? "not found";
+    if (install.version !== now) changed = true;
     say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
   }
-  say(
-    '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
-  );
+  if (changed) {
+    say(
+      '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
+    );
+  }
   if (failures.length) {
     say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
@@ -30861,13 +30956,13 @@ function autoUpdateEnabled() {
   const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path17.join(stateDir(), "config.json"));
+  const cfg = readJson(path18.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path17.join(stateDir(), "auto-update.json");
-var logFile = () => path17.join(stateDir(), "auto-update.log");
+var stampFile = () => path18.join(stateDir(), "auto-update.json");
+var logFile = () => path18.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -30886,9 +30981,9 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path17.dirname(fileURLToPath2(import.meta.url));
+  const dir = path18.dirname(fileURLToPath2(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path17.join(dir, name);
+    const candidate = path18.join(dir, name);
     if (fs15.existsSync(candidate)) return candidate;
   }
   return fileURLToPath2(import.meta.url);
@@ -30920,15 +31015,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path18.dirname(path18.dirname(fileURLToPath3(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path18.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path18.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path19.dirname(path19.dirname(fileURLToPath3(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path19.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path19.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path18.join(path18.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
+    const monitor = path19.join(path19.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {

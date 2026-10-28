@@ -28,6 +28,10 @@ export interface HeadlessRun {
   acpArgs?: string[];
   cwd: string;
   name: string;
+  /** Spawned process environment, including `TELEPATHY_NAME` when the plugin is the peer. */
+  env?: NodeJS.ProcessEnv;
+  /** The harness plugin already registers this name. Do not add a second host peer. */
+  pluginPeer?: boolean;
 }
 
 interface Plane {
@@ -119,9 +123,12 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   };
 
   const plane = await openPlane(options, memory, writeLog);
-  const hosted = registerHostedPeer(options.agent, options.cwd, options.name);
+  const pluginPeer = options.pluginPeer === true;
+  const hosted = pluginPeer
+    ? { peerId, slug, address: `${options.agent}:${slug}` }
+    : registerHostedPeer(options.agent, options.cwd, options.name);
   const persist = () => {
-    if (memory.id) rememberHarnessSession(hosted.peerId, memory.id);
+    if (!pluginPeer && memory.id) rememberHarnessSession(hosted.peerId, memory.id);
     const record: HeadlessRecord = {
       name: options.name,
       slug,
@@ -138,7 +145,7 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   };
   memory.changed = persist;
   persist();
-  const stopPump = startInboxPump(hosted.peerId, (text, stillPending) => plane.inject(text, stillPending));
+  const stopPump = pluginPeer ? () => {} : startInboxPump(hosted.peerId, (text, stillPending) => plane.inject(text, stillPending));
   let stopping = false;
   const shutdown = () => {
     stopping = true;
@@ -154,7 +161,7 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
     process.off('SIGTERM', shutdown);
     process.off('SIGINT', shutdown);
     stopPump();
-    clearHosted(hosted.peerId);
+    if (!pluginPeer) clearHosted(hosted.peerId);
     persist();
     log.end();
   }
@@ -172,12 +179,11 @@ function startClaude(options: HeadlessRun, memory: Memory, writeLog: (text: stri
   const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'];
   if (resume) args.push('--resume', resume);
   args.push(...options.userArgs);
-  const child = spawn(options.bin, args, { cwd: options.cwd, env: process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn(options.bin, args, { cwd: options.cwd, env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
   ignoreStdinErrors(child);
   let buf = '';
   child.stdout?.on('data', (chunk: Buffer) => {
     const text = chunk.toString();
-    process.stdout.write(text);
     writeLog(text);
     buf += text;
     for (;;) {
@@ -191,6 +197,7 @@ function startClaude(options: HeadlessRun, memory: Memory, writeLog: (text: stri
         if (typeof id === 'string' && id && id !== memory.id) {
           memory.id = id;
           memory.changed?.();
+          process.stderr.write(`telepathy: claude session ${id}\n`);
         }
       } catch {
         // a non-JSON log line
@@ -198,7 +205,6 @@ function startClaude(options: HeadlessRun, memory: Memory, writeLog: (text: stri
     }
   });
   child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk);
     writeLog(chunk.toString());
   });
   return {
@@ -245,16 +251,14 @@ function writeClaudeInterrupt(child: ChildProcess): void {
 async function startCodex(options: HeadlessRun, memory: Memory, writeLog: (text: string) => void): Promise<Plane> {
   const child = spawn(options.bin, ['app-server', ...options.userArgs], {
     cwd: options.cwd,
-    env: process.env,
+    env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   ignoreStdinErrors(child);
   child.stdout?.on('data', (chunk: Buffer) => {
-    process.stdout.write(chunk);
     writeLog(chunk.toString());
   });
   child.stderr?.on('data', (chunk: Buffer) => {
-    process.stderr.write(chunk);
     writeLog(chunk.toString());
   });
   const rpc = new LineRpc(
@@ -316,7 +320,7 @@ async function startCodex(options: HeadlessRun, memory: Memory, writeLog: (text:
 async function startOpencode(options: HeadlessRun, memory: Memory, writeLog: (text: string) => void): Promise<Plane> {
   const child = spawn(options.bin, ['serve', ...options.userArgs], {
     cwd: options.cwd,
-    env: process.env,
+    env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
   ignoreStdinErrors(child);
@@ -326,7 +330,6 @@ async function startOpencode(options: HeadlessRun, memory: Memory, writeLog: (te
     const timer = setTimeout(() => reject(new Error(`${options.bin} serve did not print a listen URL`)), 15_000);
     const take = (chunk: Buffer) => {
       const text = chunk.toString();
-      process.stdout.write(text);
       writeLog(text);
       buffered += text;
       const found = findUrl(buffered);
@@ -423,9 +426,15 @@ async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: s
     cwd: options.cwd,
     headless: true,
     resumeSessionId: memory.id,
+    env: options.env,
     emit: (line) => {
-      process.stdout.write(line + '\n');
-      writeLog(line + '\n');
+      const text = line.endsWith('\n') ? line : line + '\n';
+      process.stdout.write(text);
+      writeLog(text);
+    },
+    stream: (text) => {
+      process.stdout.write(text);
+      writeLog(text);
     },
     trace: writeLog,
   });

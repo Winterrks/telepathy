@@ -13,7 +13,14 @@ function log(event) {
   fs.appendFileSync(logFile, JSON.stringify({ cmd: name, args, pid: process.pid, ...event }) + '\n');
 }
 
-log({ event: 'start', cwd: process.cwd() });
+log({
+  event: 'start',
+  cwd: process.cwd(),
+  name: process.env.TELEPATHY_NAME,
+  home: process.env.TELEPATHY_HOME,
+  claudeConfig: process.env.CLAUDE_CONFIG_DIR,
+  pluginDirs: process.env.CLAUDE_CODE_PLUGIN_DIRS,
+});
 
 const stop = () => process.exit(0);
 process.on('SIGTERM', stop);
@@ -78,6 +85,12 @@ if (args.includes('--sleep')) {
     const port = addr && typeof addr === 'object' ? addr.port : 0;
     process.stdout.write(`opencode server listening on http://127.0.0.1:${port}\n`);
   });
+} else if (isAcp() && process.env.FAKE_ACP_DIE === '1') {
+  process.stderr.write('not logged in\n');
+  process.exit(1);
+} else if (isAcp() && process.env.FAKE_ACP_AUTH_HANG === '1') {
+  process.stderr.write('authentication required\n');
+  setInterval(() => {}, 1 << 30);
 } else if (isAcp()) {
   let permId = 0;
   let pending = null;
@@ -88,11 +101,34 @@ if (args.includes('--sleep')) {
       return;
     }
     const text = (msg.params?.prompt ?? []).map((part) => part?.text ?? '').filter(Boolean).join('\n');
-    send({
-      jsonrpc: '2.0',
-      method: 'session/update',
-      params: { sessionId: msg.params?.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } },
-    });
+    const sessionId = msg.params?.sessionId;
+    const chunk = (piece, kind = 'agent_message_chunk') =>
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: { sessionId, update: { sessionUpdate: kind, content: { type: 'text', text: piece } } },
+      });
+    if (process.env.FAKE_ACP_TOOL_FIRST === '1') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId,
+          update: { sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'shell', kind: 'execute', status: 'pending' },
+        },
+      });
+      const hold = Number(process.env.FAKE_ACP_HOLD_MS || 0);
+      if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
+      chunk(text);
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
+    if (process.env.FAKE_ACP_SPLIT === '1') {
+      chunk('Hello');
+      chunk(' there');
+    } else {
+      chunk(text);
+    }
     const hold = Number(process.env.FAKE_ACP_HOLD_MS || 0);
     if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
     send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
@@ -134,7 +170,7 @@ if (args.includes('--sleep')) {
               { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
               { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
             ],
-            toolCall: { toolCallId: 'tool-1', title: 'shell' },
+            toolCall: { toolCallId: 'tool-1', title: 'shell', rawInput: { command: 'ls' } },
           },
         });
         return;

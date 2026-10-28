@@ -272,6 +272,51 @@ var init_proc = __esm({
 import fs13 from "node:fs";
 import os5 from "node:os";
 import path15 from "node:path";
+function resolveReal(dir) {
+  const abs = path15.resolve(dir);
+  try {
+    return fs13.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function genericDir(dir) {
+  const normalized = resolveReal(dir);
+  if (normalized === path15.parse(normalized).root) return true;
+  const generic = ["/tmp", "/var", "/private", "/private/tmp", "/var/tmp", "/private/var"];
+  if (generic.includes(normalized)) return true;
+  try {
+    const tmp = resolveReal(os5.tmpdir());
+    if (normalized === tmp || normalized === path15.dirname(tmp)) return true;
+  } catch {
+  }
+  return false;
+}
+function isolatedStateRoots() {
+  const explicit = process.env.TELEPATHY_HOME?.trim();
+  if (!explicit) return void 0;
+  const state = resolveReal(explicit);
+  let passwd = path15.resolve(os5.userInfo().homedir);
+  try {
+    passwd = fs13.realpathSync(passwd);
+  } catch {
+  }
+  if (state === path15.join(passwd, ".telepathy")) return void 0;
+  const parent = path15.dirname(state);
+  const roots = [genericDir(parent) || parent === passwd ? state : parent];
+  let apparent = path15.resolve(os5.homedir());
+  try {
+    apparent = fs13.realpathSync(apparent);
+  } catch {
+  }
+  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path15.sep));
+  if (apparent !== passwd && !covered) roots.push(apparent);
+  return roots;
+}
+function inRoots(dir, roots) {
+  const resolved = resolveReal(dir);
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path15.sep));
+}
 function readVersion(file) {
   try {
     const version = JSON.parse(fs13.readFileSync(file, "utf8")).version;
@@ -387,6 +432,11 @@ function findInstalls() {
     ...packageCache("kilo")
   ];
 }
+function installsInScope(installs = findInstalls()) {
+  const roots = isolatedStateRoots();
+  if (!roots) return installs;
+  return installs.filter((install) => inRoots(install.dir, roots));
+}
 var home, cacheHome, dataHome, list, versionParts, isOpencodeNpmInstall;
 var init_installs = __esm({
   "src/core/installs.ts"() {
@@ -406,11 +456,43 @@ var init_installs = __esm({
   }
 });
 
+// src/version-check.ts
+import path16 from "node:path";
+function cachedGithubVersion() {
+  return readJson(cacheFile())?.version;
+}
+async function latestGithubVersion() {
+  const override = process.env.TELEPATHY_LATEST_VERSION?.trim();
+  if (override) return override;
+  const url = process.env.TELEPATHY_VERSION_URL?.trim() || DEFAULT_URL;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8e3),
+    headers: { accept: "application/json", "user-agent": "telepathy-cli" }
+  });
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  const body = await res.json();
+  if (typeof body.version !== "string" || !body.version.trim()) throw new Error("GitHub package.json has no version");
+  return body.version.trim();
+}
+function rememberGithubVersion(version) {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return;
+  writeJsonAtomic(cacheFile(), { version, fetchedAt: (/* @__PURE__ */ new Date()).toISOString() });
+}
+var DEFAULT_URL, cacheFile;
+var init_version_check = __esm({
+  "src/version-check.ts"() {
+    "use strict";
+    init_paths();
+    DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
+    cacheFile = () => path16.join(stateDir(), "github-version.json");
+  }
+});
+
 // src/update-all.ts
 import { spawn as spawn3 } from "node:child_process";
 import fs14 from "node:fs";
 import os6 from "node:os";
-import path16 from "node:path";
+import path17 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -459,13 +541,13 @@ function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path16.join(process.env.XDG_CACHE_HOME || path16.join(os6.homedir(), ".cache"), install.agent, "packages");
-  const relative = path16.relative(packages, install.dir).split(path16.sep);
-  const entry = path16.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path16.join(path16.dirname(packages), `.telepathy-update-${Date.now()}`);
+  const packages = path17.join(process.env.XDG_CACHE_HOME || path17.join(os6.homedir(), ".cache"), install.agent, "packages");
+  const relative = path17.relative(packages, install.dir).split(path17.sep);
+  const entry = path17.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path17.join(path17.dirname(packages), `.telepathy-update-${Date.now()}`);
   fs14.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
-  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
     fs14.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
@@ -474,18 +556,31 @@ async function refreshPackageCache(install) {
   fs14.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
+async function latestKnown() {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
+  try {
+    return await latestGithubVersion();
+  } catch {
+    return cachedGithubVersion();
+  }
+}
 async function updateAll(options = {}) {
   const dryRun = options.dryRun === true;
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
-  const before = findInstalls();
+  const before = installsInScope();
   if (!before.length) {
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
+  const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
   if (dryRun) {
     for (const install of before) {
+      if (alreadyCurrent(install, latest)) {
+        say(`- ${agentLabel(install.agent)}: already current`);
+        continue;
+      }
       const steps = stepsFor(install);
       const how = steps === "cache" ? `clear its package cache and run \`${install.agent} debug config\` to reinstall` : steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
       say(`- ${agentLabel(install.agent)}: ${how}`);
@@ -494,6 +589,10 @@ async function updateAll(options = {}) {
   }
   const failures = [];
   for (const install of before) {
+    if (alreadyCurrent(install, latest)) {
+      say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
+      continue;
+    }
     if (log) log(`Updating ${agentLabel(install.agent)}\u2026`);
     else process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
     const steps = stepsFor(install);
@@ -506,15 +605,19 @@ async function updateAll(options = {}) {
       failures.push(agentLabel(install.agent));
     }
   }
-  const after = findInstalls();
+  const after = installsInScope();
+  let changed = false;
   say("\nInstalled versions:");
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? "not found";
+    if (install.version !== now) changed = true;
     say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
   }
-  say(
-    '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
-  );
+  if (changed) {
+    say(
+      '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
+    );
+  }
   if (failures.length) {
     say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
@@ -526,47 +629,21 @@ function invokedAsUpdateAll() {
   const entry = process.argv[1] ?? "";
   return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
 }
-var REPO, STEP_TIMEOUT_MS, lastLine;
+var REPO, STEP_TIMEOUT_MS, lastLine, alreadyCurrent;
 var init_update_all = __esm({
   async "src/update-all.ts"() {
     "use strict";
     init_agents();
     init_installs();
+    init_version_check();
     REPO = "https://github.com/Winterrks/telepathy";
     STEP_TIMEOUT_MS = 18e4;
     lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
+    alreadyCurrent = (install, latest) => !!latest && !isNewer(latest, install.version);
     if (invokedAsUpdateAll()) {
       const code = await updateAll({ dryRun: process.argv.includes("--dry-run") });
       if (code !== 0) process.exitCode = code;
     }
-  }
-});
-
-// src/version-check.ts
-import path17 from "node:path";
-async function latestGithubVersion() {
-  const override = process.env.TELEPATHY_LATEST_VERSION?.trim();
-  if (override) return override;
-  const url = process.env.TELEPATHY_VERSION_URL?.trim() || DEFAULT_URL;
-  const res = await fetch(url, {
-    signal: AbortSignal.timeout(8e3),
-    headers: { accept: "application/json", "user-agent": "telepathy-cli" }
-  });
-  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
-  const body = await res.json();
-  if (typeof body.version !== "string" || !body.version.trim()) throw new Error("GitHub package.json has no version");
-  return body.version.trim();
-}
-function rememberGithubVersion(version) {
-  writeJsonAtomic(cacheFile(), { version, fetchedAt: (/* @__PURE__ */ new Date()).toISOString() });
-}
-var DEFAULT_URL, cacheFile;
-var init_version_check = __esm({
-  "src/version-check.ts"() {
-    "use strict";
-    init_paths();
-    DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path17.join(stateDir(), "github-version.json");
   }
 });
 
@@ -687,7 +764,7 @@ async function runAutoUpdate() {
       logAutoUpdate(`version check failed: ${err.message}`);
       return;
     }
-    const installs = findInstalls();
+    const installs = installsInScope();
     const stale2 = installs.filter((install) => isNewer(latest, install.version));
     if (!stale2.length) {
       logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);

@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isNewer, findInstalls } from './core/installs.ts';
+import { isNewer, installsInScope } from './core/installs.ts';
 import { ensureDir, readJson, stateDir, writeJsonAtomic } from './core/paths.ts';
 import { isAlive } from './core/proc.ts';
 import { updateAll } from './update-all.ts';
@@ -147,7 +147,7 @@ export async function runAutoUpdate(): Promise<void> {
       logAutoUpdate(`version check failed: ${(err as Error).message}`);
       return;
     }
-    const installs = findInstalls();
+    const installs = installsInScope();
     const stale = installs.filter((install) => isNewer(latest, install.version));
     if (!stale.length) {
       logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);

@@ -1,5 +1,5 @@
 import { agentLabel, type Agent } from '../core/agents.ts';
-import { findInstalls, isNewer, type Install } from '../core/installs.ts';
+import { installsInScope, isNewer, type Install } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { VERSION } from '../core/version.ts';
 import { autoUpdateCheckedAt, autoUpdateEnabled } from '../auto-update.ts';
@@ -29,7 +29,7 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
       latest = latest ?? cachedGithubVersion();
     }
   }
-  const installs = findInstalls();
+  const installs = installsInScope();
   const lines: string[] = [];
   lines.push(`telepathy CLI ${VERSION}`);
   lines.push(`state: ${stateDir()}`);

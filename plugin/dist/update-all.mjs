@@ -2,9 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/update-all.ts
 import { spawn } from "node:child_process";
-import fs2 from "node:fs";
-import os2 from "node:os";
-import path2 from "node:path";
+import fs3 from "node:fs";
+import os3 from "node:os";
+import path4 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -88,6 +88,51 @@ import path from "node:path";
 var home = () => os.homedir();
 var cacheHome = () => process.env.XDG_CACHE_HOME || path.join(home(), ".cache");
 var dataHome = () => process.env.XDG_DATA_HOME || path.join(home(), ".local", "share");
+function resolveReal(dir) {
+  const abs = path.resolve(dir);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+function genericDir(dir) {
+  const normalized = resolveReal(dir);
+  if (normalized === path.parse(normalized).root) return true;
+  const generic = ["/tmp", "/var", "/private", "/private/tmp", "/var/tmp", "/private/var"];
+  if (generic.includes(normalized)) return true;
+  try {
+    const tmp = resolveReal(os.tmpdir());
+    if (normalized === tmp || normalized === path.dirname(tmp)) return true;
+  } catch {
+  }
+  return false;
+}
+function isolatedStateRoots() {
+  const explicit = process.env.TELEPATHY_HOME?.trim();
+  if (!explicit) return void 0;
+  const state = resolveReal(explicit);
+  let passwd = path.resolve(os.userInfo().homedir);
+  try {
+    passwd = fs.realpathSync(passwd);
+  } catch {
+  }
+  if (state === path.join(passwd, ".telepathy")) return void 0;
+  const parent = path.dirname(state);
+  const roots = [genericDir(parent) || parent === passwd ? state : parent];
+  let apparent = path.resolve(os.homedir());
+  try {
+    apparent = fs.realpathSync(apparent);
+  } catch {
+  }
+  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path.sep));
+  if (apparent !== passwd && !covered) roots.push(apparent);
+  return roots;
+}
+function inRoots(dir, roots) {
+  const resolved = resolveReal(dir);
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+}
 function readVersion(file) {
   try {
     const version = JSON.parse(fs.readFileSync(file, "utf8")).version;
@@ -212,6 +257,47 @@ function findInstalls() {
     ...packageCache("kilo")
   ];
 }
+function installsInScope(installs = findInstalls()) {
+  const roots = isolatedStateRoots();
+  if (!roots) return installs;
+  return installs.filter((install) => inRoots(install.dir, roots));
+}
+
+// src/core/paths.ts
+import fs2 from "node:fs";
+import os2 from "node:os";
+import path2 from "node:path";
+function stateDir() {
+  return process.env.TELEPATHY_HOME || path2.join(os2.homedir(), ".telepathy");
+}
+function readJson(file) {
+  try {
+    return JSON.parse(fs2.readFileSync(file, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+
+// src/version-check.ts
+import path3 from "node:path";
+var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
+var cacheFile = () => path3.join(stateDir(), "github-version.json");
+function cachedGithubVersion() {
+  return readJson(cacheFile())?.version;
+}
+async function latestGithubVersion() {
+  const override = process.env.TELEPATHY_LATEST_VERSION?.trim();
+  if (override) return override;
+  const url = process.env.TELEPATHY_VERSION_URL?.trim() || DEFAULT_URL;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8e3),
+    headers: { accept: "application/json", "user-agent": "telepathy-cli" }
+  });
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  const body = await res.json();
+  if (typeof body.version !== "string" || !body.version.trim()) throw new Error("GitHub package.json has no version");
+  return body.version.trim();
+}
 
 // src/update-all.ts
 var REPO = "https://github.com/Winterrks/telepathy";
@@ -241,7 +327,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os2.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os3.homedir()) {
   return new Promise((resolve) => {
     let output = "";
     const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -264,34 +350,48 @@ function runHarnessCommand({ cmd, args }, cwd = os2.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path2.join(process.env.XDG_CACHE_HOME || path2.join(os2.homedir(), ".cache"), install.agent, "packages");
-  const relative = path2.relative(packages, install.dir).split(path2.sep);
-  const entry = path2.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path2.join(path2.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs2.renameSync(entry, aside);
+  const packages = path4.join(process.env.XDG_CACHE_HOME || path4.join(os3.homedir(), ".cache"), install.agent, "packages");
+  const relative = path4.relative(packages, install.dir).split(path4.sep);
+  const entry = path4.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path4.join(path4.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs3.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
-  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs2.rmSync(aside, { recursive: true, force: true });
+    fs3.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs2.rmSync(entry, { recursive: true, force: true });
-  fs2.renameSync(aside, entry);
+  fs3.rmSync(entry, { recursive: true, force: true });
+  fs3.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
+async function latestKnown() {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
+  try {
+    return await latestGithubVersion();
+  } catch {
+    return cachedGithubVersion();
+  }
+}
+var alreadyCurrent = (install, latest) => !!latest && !isNewer(latest, install.version);
 async function updateAll(options = {}) {
   const dryRun = options.dryRun === true;
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
-  const before = findInstalls();
+  const before = installsInScope();
   if (!before.length) {
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
+  const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
   if (dryRun) {
     for (const install of before) {
+      if (alreadyCurrent(install, latest)) {
+        say(`- ${agentLabel(install.agent)}: already current`);
+        continue;
+      }
       const steps = stepsFor(install);
       const how = steps === "cache" ? `clear its package cache and run \`${install.agent} debug config\` to reinstall` : steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
       say(`- ${agentLabel(install.agent)}: ${how}`);
@@ -300,6 +400,10 @@ async function updateAll(options = {}) {
   }
   const failures = [];
   for (const install of before) {
+    if (alreadyCurrent(install, latest)) {
+      say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
+      continue;
+    }
     if (log) log(`Updating ${agentLabel(install.agent)}\u2026`);
     else process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
     const steps = stepsFor(install);
@@ -312,15 +416,19 @@ async function updateAll(options = {}) {
       failures.push(agentLabel(install.agent));
     }
   }
-  const after = findInstalls();
+  const after = installsInScope();
+  let changed = false;
   say("\nInstalled versions:");
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? "not found";
+    if (install.version !== now) changed = true;
     say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
   }
-  say(
-    '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
-  );
+  if (changed) {
+    say(
+      '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
+    );
+  }
   if (failures.length) {
     say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);

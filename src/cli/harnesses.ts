@@ -21,8 +21,10 @@ export type RunMode = 'passthrough' | 'acp';
 export type HeadlessPlane = 'claude' | 'codex' | 'opencode' | 'acp';
 
 export interface AcpLaunch {
-  /** Binary on PATH. Adapters (`claude-code-acp`, `codex-acp`) may be absent. */
+  /** Binary on PATH. Adapters (`claude-agent-acp`, `codex-acp`) may be absent. */
   bin: string;
+  /** Tried, in order, when `bin` is not on PATH. `claude-code-acp` remains the old Claude adapter name. */
+  fallbacks?: string[];
   args: string[];
   adapter: boolean;
 }
@@ -50,7 +52,7 @@ const HARNESSES: Harness[] = [
     passthroughBin: 'claude',
     defaultMode: 'passthrough',
     headless: 'claude',
-    acp: { bin: 'claude-code-acp', args: [], adapter: true },
+    acp: { bin: 'claude-agent-acp', fallbacks: ['claude-code-acp'], args: [], adapter: true },
     install: {
       kind: 'commands',
       steps: [
@@ -227,6 +229,16 @@ export function resolvedBin(harness: Harness, env: NodeJS.ProcessEnv = process.e
   return harness.bins.find((bin) => onPath(bin, env));
 }
 
+/** `claude-agent-acp` when it is installed, otherwise the old `claude-code-acp` name. */
+export function resolvedAcpBin(acp: AcpLaunch, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return [acp.bin, ...(acp.fallbacks ?? [])].find((bin) => onPath(bin, env));
+}
+
+export function acpCommand(acp: AcpLaunch, env: NodeJS.ProcessEnv = process.env): string {
+  const bin = resolvedAcpBin(acp, env) ?? acp.bin;
+  return `${bin} ${acp.args.join(' ')}`.trim();
+}
+
 export function detectedHarnesses(env: NodeJS.ProcessEnv = process.env): Harness[] {
   return HARNESSES.filter((harness) => resolvedBin(harness, env));
 }
@@ -237,10 +249,10 @@ export function defaultRunMode(harness: Harness): RunMode {
 }
 
 export function describeRun(harness: Harness): string {
-  const mode = harness.defaultMode === 'acp' && harness.acp ? `${harness.acp.bin} ${harness.acp.args.join(' ')}`.trim() : (harness.passthroughBin ?? harness.bins[0]);
+  const mode = harness.defaultMode === 'acp' && harness.acp ? acpCommand(harness.acp) : (harness.passthroughBin ?? harness.bins[0]);
   const headless = harness.headless ? `headless: ${harness.headless}` : 'no headless plane';
   const note = harness.deliveryNote ? ` — ${harness.deliveryNote}` : harness.defaultMode === 'acp' ? ' — ACP host (no idle wake in the native TUI)' : ' — native TUI, idle wake';
-  const forced = harness.acp && harness.defaultMode !== 'acp' ? `; --acp: ${harness.acp.bin} ${harness.acp.args.join(' ')}`.trimEnd() : '';
+  const forced = harness.acp && harness.defaultMode !== 'acp' ? ` --acp: ${acpCommand(harness.acp)}` : '';
   return `${harness.agent.padEnd(12)} ${harness.defaultMode.padEnd(12)} ${mode.padEnd(28)} ${headless}${note}${forced}`;
 }
 

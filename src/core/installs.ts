@@ -17,6 +17,64 @@ const home = () => os.homedir();
 const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(home(), '.cache');
 const dataHome = () => process.env.XDG_DATA_HOME || path.join(home(), '.local', 'share');
 
+function resolveReal(dir: string): string {
+  const abs = path.resolve(dir);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    return abs;
+  }
+}
+
+/** `/tmp` and the passwd home are not a sandbox. A directory under them can be. */
+function genericDir(dir: string): boolean {
+  const normalized = resolveReal(dir);
+  if (normalized === path.parse(normalized).root) return true;
+  const generic = ['/tmp', '/var', '/private', '/private/tmp', '/var/tmp', '/private/var'];
+  if (generic.includes(normalized)) return true;
+  try {
+    const tmp = resolveReal(os.tmpdir());
+    if (normalized === tmp || normalized === path.dirname(tmp)) return true;
+  } catch {
+    // tmpdir is unreadable
+  }
+  return false;
+}
+
+/**
+ * Roots whose installs auto-update may touch. Unset when `TELEPATHY_HOME` is the user's own
+ * `~/.telepathy` (or is unset): that is the real profile, and every install on the machine is in scope.
+ * A different `TELEPATHY_HOME` is a sandbox. Installs outside it, including the real `~/.claude`, are not.
+ */
+export function isolatedStateRoots(): string[] | undefined {
+  const explicit = process.env.TELEPATHY_HOME?.trim();
+  if (!explicit) return undefined;
+  const state = resolveReal(explicit);
+  let passwd = path.resolve(os.userInfo().homedir);
+  try {
+    passwd = fs.realpathSync(passwd);
+  } catch {
+    // keep the unresolved home
+  }
+  if (state === path.join(passwd, '.telepathy')) return undefined;
+  const parent = path.dirname(state);
+  const roots = [genericDir(parent) || parent === passwd ? state : parent];
+  let apparent = path.resolve(os.homedir());
+  try {
+    apparent = fs.realpathSync(apparent);
+  } catch {
+    // keep it
+  }
+  const covered = roots.some((root) => apparent === root || apparent.startsWith(root + path.sep));
+  if (apparent !== passwd && !covered) roots.push(apparent);
+  return roots;
+}
+
+function inRoots(dir: string, roots: string[]): boolean {
+  const resolved = resolveReal(dir);
+  return roots.some((root) => resolved === root || resolved.startsWith(root + path.sep));
+}
+
 function readVersion(file: string): string | undefined {
   try {
     const version = (JSON.parse(fs.readFileSync(file, 'utf8')) as { version?: unknown }).version;
@@ -187,6 +245,16 @@ export function findInstalls(): Install[] {
     ...packageCache('opencode'),
     ...packageCache('kilo'),
   ];
+}
+
+/**
+ * Installs auto-update may change. A `TELEPATHY_HOME` other than `~/.telepathy` is a sandbox:
+ * a copy whose directory is outside that tree, including the real `~/.claude`, is left alone.
+ */
+export function installsInScope(installs: Install[] = findInstalls()): Install[] {
+  const roots = isolatedStateRoots();
+  if (!roots) return installs;
+  return installs.filter((install) => inRoots(install.dir, roots));
 }
 
 /** The newest version among the installs and `also` (the running build's). */

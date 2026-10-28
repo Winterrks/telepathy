@@ -5,6 +5,7 @@ import { installAll, parseOnly } from './cli/install.ts';
 import { runCommand } from './cli/run.ts';
 import { formatHeadlessPs, stopHeadless } from './headless/peer.ts';
 import { statusReport } from './cli/status.ts';
+import { isCliEntry } from './cli/entry.ts';
 
 const HELP = `telepathy ${VERSION}
 
@@ -31,6 +32,12 @@ State lives in TELEPATHY_HOME, or ~/.telepathy.
 `;
 
 async function main(argv: string[]): Promise<number> {
+  // The bundled CLI spawns itself for auto-update. The hook entry handles this flag too.
+  if (argv.includes('--telepathy-auto-update')) {
+    const { runAutoUpdate } = await import('./auto-update.ts');
+    await runAutoUpdate();
+    return 0;
+  }
   const [cmd, ...rest] = argv;
   if (!cmd || cmd === '--help' || cmd === '-h' || cmd === 'help') {
     console.log(HELP);
@@ -76,8 +83,7 @@ async function main(argv: string[]): Promise<number> {
 }
 
 function invokedAsCli(): boolean {
-  const entry = process.argv[1] ?? '';
-  return /(?:^|[/\\])(?:telepathy|cli)\.(?:mjs|ts|js)$/.test(entry);
+  return isCliEntry(process.argv[1] ?? '');
 }
 
 if (invokedAsCli()) {

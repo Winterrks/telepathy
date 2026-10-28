@@ -34,5 +34,7 @@ export async function latestGithubVersion(): Promise<string> {
 }
 
 export function rememberGithubVersion(version: string): void {
+  // A test override is not a GitHub response. Caching it would make later reads lie.
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return;
   writeJsonAtomic(cacheFile(), { version, fetchedAt: new Date().toISOString() } satisfies CachedVersion);
 }

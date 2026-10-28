@@ -3,7 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
-import { findInstalls, type Install, isOpencodeNpmInstall } from './core/installs.ts';
+import { installsInScope, isNewer, type Install, isOpencodeNpmInstall } from './core/installs.ts';
+import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
 
 /**
  * Updates telepathy in every agent on this machine that has it installed, each with the agent's own update
@@ -83,7 +84,7 @@ async function refreshPackageCache(install: Install): Promise<{ ok: boolean; out
   const aside = path.join(path.dirname(packages), `.telepathy-update-${Date.now()}`);
   fs.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ['debug', 'config'] });
-  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
     fs.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
@@ -109,19 +110,36 @@ export interface UpdateAllOptions {
   log?: (line: string) => void;
 }
 
+/** GitHub's version when we can see it. A forced `TELEPATHY_LATEST_VERSION` is not cached. */
+async function latestKnown(): Promise<string | undefined> {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
+  try {
+    return await latestGithubVersion();
+  } catch {
+    return cachedGithubVersion();
+  }
+}
+
+const alreadyCurrent = (install: Install, latest: string | undefined) => !!latest && !isNewer(latest, install.version);
+
 /** Updates every install. Returns 0 when every harness updated, 1 when any failed or none were found. */
 export async function updateAll(options: UpdateAllOptions = {}): Promise<number> {
   const dryRun = options.dryRun === true;
   const log = options.log;
   const say = (line: string) => (log ? log(line) : console.log(line));
-  const before = findInstalls();
+  const before = installsInScope();
   if (!before.length) {
     say('No agent on this machine has telepathy installed.');
     return 0;
   }
+  const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
   if (dryRun) {
     for (const install of before) {
+      if (alreadyCurrent(install, latest)) {
+        say(`- ${agentLabel(install.agent)}: already current`);
+        continue;
+      }
       const steps = stepsFor(install);
       const how =
         steps === 'cache'
@@ -134,6 +152,10 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
 
   const failures: string[] = [];
   for (const install of before) {
+    if (alreadyCurrent(install, latest)) {
+      say(`Updating ${agentLabel(install.agent)}… already current`);
+      continue;
+    }
     if (log) log(`Updating ${agentLabel(install.agent)}…`);
     else process.stdout.write(`Updating ${agentLabel(install.agent)}… `);
     const steps = stepsFor(install);
@@ -147,17 +169,21 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
     }
   }
 
-  const after = findInstalls();
+  const after = installsInScope();
+  let changed = false;
   say('\nInstalled versions:');
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? 'not found';
+    if (install.version !== now) changed = true;
     say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} → ${now}`}`);
   }
-  say(
-    '\nSessions that are already running keep the version they started with: restart them to load the update. ' +
-      'Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces ' +
-      'the folder their hooks run from.',
-  );
+  if (changed) {
+    say(
+      '\nSessions that are already running keep the version they started with: restart them to load the update. ' +
+        'Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces ' +
+        'the folder their hooks run from.',
+    );
+  }
   if (failures.length) {
     say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
     return 1;

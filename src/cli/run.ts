@@ -9,7 +9,8 @@ import { cachedGithubVersion } from '../version-check.ts';
 import { runHeadless } from '../headless/run.ts';
 import { clearHosted, namedPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
-import { harnessByAgent, harnesses, listRuns, onPath, resolvedBin, type Harness } from './harnesses.ts';
+import { acpCommand, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
+import { launchEnv, pluginInstalled } from './launch.ts';
 
 export interface RunArgs {
   acp: boolean;
@@ -116,26 +117,33 @@ export async function runCommand(argv: string[]): Promise<number> {
         console.error(`telepathy: ${harness.agent} has no ACP launcher.`);
         return 1;
       }
-      if (!onPath(harness.acp.bin)) return missing(harness.acp.bin, 'Install it, or run without --acp where a native plane exists.');
+      const acpBin = resolvedAcpBin(harness.acp);
+      if (!acpBin) return missingAcp(harness.acp);
+      const peerName = name ?? `${harness.agent}-headless`;
       return runHeadless({
         agent: harness.agent,
         plane: 'acp',
-        bin: harness.acp.bin,
+        bin: acpBin,
         acpArgs: harness.acp.args,
         userArgs: parsed.userArgs,
         cwd,
-        name: name ?? `${harness.agent}-headless`,
+        name: peerName,
+        env: launchEnv(harness.agent, peerName),
+        pluginPeer: pluginInstalled(harness.agent),
       });
     }
     const bin = resolvedBin(harness) ?? harness.passthroughBin ?? harness.bins[0];
     if (!onPath(bin)) return missing(bin, 'Install the CLI and try again.');
+    const peerName = name ?? `${harness.agent}-headless`;
     return runHeadless({
       agent: harness.agent,
       plane,
       bin,
       userArgs: parsed.userArgs,
       cwd,
-      name: name ?? `${harness.agent}-headless`,
+      name: peerName,
+      env: launchEnv(harness.agent, peerName),
+      pluginPeer: pluginInstalled(harness.agent),
     });
   }
 
@@ -144,47 +152,54 @@ export async function runCommand(argv: string[]): Promise<number> {
       console.error(`telepathy: ${harness.agent} has no ACP launcher. \`telepathy run ${harness.agent}\` starts its CLI.`);
       return 1;
     }
-    if (!onPath(harness.acp.bin)) {
+    const acpBin = resolvedAcpBin(harness.acp);
+    if (!acpBin) {
       return missing(
-        harness.acp.bin,
+        acpCommand(harness.acp),
         harness.acp.adapter ? 'It is an optional adapter. The native CLI does not speak ACP.' : 'Install the CLI and try again.',
       );
     }
-    return runInteractiveAcp(harness, parsed.userArgs, cwd, name);
+    return runInteractiveAcp(harness, acpBin, parsed.userArgs, cwd, name);
   }
 
   if (harness.deliveryNote) process.stderr.write(`telepathy: ${harness.deliveryNote}\n`);
   const bin = resolvedBin(harness) ?? harness.passthroughBin ?? harness.bins[0];
   if (!onPath(bin)) return missing(bin, 'Install the CLI and try again.');
-  return execPassthrough(bin, parsed.userArgs, cwd);
+  return execPassthrough(bin, parsed.userArgs, cwd, launchEnv(harness.agent, name));
 }
 
-async function runInteractiveAcp(harness: Harness, userArgs: string[], cwd: string, name?: string): Promise<number> {
+function missingAcp(acp: AcpLaunch): number {
+  return missing(acpCommand(acp), 'Install it, or run without --acp where a native plane exists.');
+}
+
+async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string[], cwd: string, name?: string): Promise<number> {
   const acp = harness.acp;
   if (!acp) return 1;
-  const resume = name ? recallHarnessSession(namedPeerId(harness.agent, name).peerId) : undefined;
+  const pluginPeer = pluginInstalled(harness.agent);
+  const resume = !pluginPeer && name ? recallHarnessSession(namedPeerId(harness.agent, name).peerId) : undefined;
   const session = await startAcpSession({
     agent: harness.agent,
-    bin: acp.bin,
+    bin,
     args: [...acp.args, ...userArgs],
     cwd,
     headless: false,
     resumeSessionId: resume,
+    env: launchEnv(harness.agent, name),
     emit: (line) => process.stdout.write(line.endsWith('\n') ? line : line + '\n'),
+    stream: (text) => process.stdout.write(text),
   });
-  const hosted = registerHostedPeer(harness.agent, cwd, name);
-  rememberHarnessSession(hosted.peerId, session.sessionId);
-  const stopPump = startInboxPump(hosted.peerId, (text, stillPending) => session.prompt(text, stillPending));
+  // The installed plugin is the named peer. A second host registration shows up beside it.
+  const hosted = pluginPeer ? undefined : registerHostedPeer(harness.agent, cwd, name);
+  if (hosted) rememberHarnessSession(hosted.peerId, session.sessionId);
+  const stopPump = hosted ? startInboxPump(hosted.peerId, (text, stillPending) => session.prompt(text, stillPending)) : () => {};
   const shutdown = () => session.close();
   process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
   try {
     return await session.exited;
   } finally {
     process.off('SIGTERM', shutdown);
-    process.off('SIGINT', shutdown);
     stopPump();
-    clearHosted(hosted.peerId);
+    if (hosted) clearHosted(hosted.peerId);
   }
 }
 
@@ -192,9 +207,9 @@ async function runInteractiveAcp(harness: Harness, userArgs: string[], cwd: stri
  * Replaces this process's stdio with the vendor CLI. SIGINT is left to the terminal's process group so a
  * keystroke is not delivered twice. SIGTERM and SIGHUP are forwarded.
  */
-function execPassthrough(bin: string, args: string[], cwd: string): Promise<number> {
+function execPassthrough(bin: string, args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<number> {
   return new Promise((resolve) => {
-    const child = spawn(bin, args, { cwd, stdio: 'inherit' });
+    const child = spawn(bin, args, { cwd, env, stdio: 'inherit' });
     const forward = (signal: NodeJS.Signals) => {
       if (child.exitCode !== null || child.signalCode) return;
       try {
