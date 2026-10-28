@@ -3,6 +3,7 @@ import type { Agent } from './agents.ts';
 import { codexActivity, codexLastResponse } from './codex-activity.ts';
 import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, type Peer } from './peers.ts';
+import { commandLine, processTable } from './proc.ts';
 
 /**
  * What a session is doing, in Claude Code's words where they exist:
@@ -50,11 +51,54 @@ function recorded(id: string): StatusInfo | undefined {
 
 const CLAUDE_STATUSES: readonly string[] = ['busy', 'shell', 'idle', 'waiting'];
 
-/** Claude Code keeps each session's status in `sessions/<pid>.json`, next to its name. Only those two fields are read. */
+/**
+ * Claude Code keeps each session's status in `sessions/<pid>.json`, next to its name. `shell` means a command
+ * it started is still running. The telepathy monitor is that command for an otherwise idle session, so it
+ * does not count: idle is reported when every descendant command is telepathy's own monitor, server, or hook.
+ */
 function claudeStatus(pid: number): StatusInfo | undefined {
   const record = readJson<{ status?: unknown; statusUpdatedAt?: unknown }>(path.join(claudeConfigDir(), 'sessions', `${pid}.json`));
   if (typeof record?.status !== 'string' || !CLAUDE_STATUSES.includes(record.status)) return undefined;
-  return { status: record.status as PeerStatus, at: typeof record.statusUpdatedAt === 'number' ? record.statusUpdatedAt : undefined };
+  let status = record.status as PeerStatus;
+  if (status === 'shell' && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = 'idle';
+  return { status, at: typeof record.statusUpdatedAt === 'number' ? record.statusUpdatedAt : undefined };
+}
+
+const TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
+
+/** True when the command lines are telepathy's monitor plus its own server and hooks, and nothing else. */
+export function shellIsTelepathyMonitorOnly(commands: string[]): boolean {
+  let monitor = false;
+  for (const command of commands) {
+    if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) {
+      if (/monitor\.mjs/.test(command)) monitor = true;
+      continue;
+    }
+    return false;
+  }
+  return monitor;
+}
+
+function descendantCommands(rootPid: number): string[] {
+  const table = processTable(0);
+  const byParent = new Map<number, number[]>();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  const commands: string[] = [];
+  const stack = [...(byParent.get(rootPid) ?? [])];
+  const seen = new Set<number>();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === undefined || seen.has(pid)) continue;
+    seen.add(pid);
+    const args = commandLine(pid) ?? table.get(pid)?.comm;
+    if (args) commands.push(args);
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return commands;
 }
 
 /**

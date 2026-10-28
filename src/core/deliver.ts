@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
-import { claudeSocketArmed, flushClaudeSocket, readClaudeSocket } from './claude-socket.ts';
+import { claudeSocketArmed, crossSessionInbound, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
 import { unapprovedCodexHooks } from './setup.ts';
 import {
@@ -190,10 +190,11 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
   const attempts: DeliveryAttempt[] = [];
   writeToInbox(message);
 
+  let socketOutcome: SocketOutcome | 'idle' | undefined;
   if (recipient.agent === 'claude' && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
-    const outcome = await flushClaudeSocket(recipient.id);
+    socketOutcome = await flushClaudeSocket(recipient.id);
     // The watcher runs in the recipient's server. This process only posted if that server is this process.
-    if (outcome === 'idle') await waitForSocket(recipient.id, message.id);
+    if (socketOutcome === 'idle') await waitForSocket(recipient.id, message.id);
     if (!stillPending(recipient.id, message.id)) {
       attempts.push({ id: 'claude-socket', result: 'confirmed', when: 'immediate' });
       return {
@@ -203,10 +204,15 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
     }
     attempts.push({
       id: 'claude-socket',
-      result: outcome === 'failed' ? 'failed' : 'armed',
+      result: socketOutcome === 'failed' ? 'failed' : 'armed',
       when: 'immediate',
-      detail: outcome === 'idle' ? 'not confirmed' : outcome,
+      detail: socketOutcome === 'idle' ? 'not confirmed' : socketOutcome,
     });
+    // A live socket plus a hold is not "no listener". The file stays until Claude approves it or someone reads it.
+    if (claudeHolding(recipient, socketOutcome)) {
+      attempts.push({ id: 'poll', result: 'armed', when: 'poll', detail: 'crossSessionInbound hold' });
+      return { status: claudeHoldStatus(recipient), report: { confirmed: false, attempts } };
+    }
   } else if (recipient.agent === 'claude') {
     attempts.push({ id: 'claude-socket', result: 'unsupported', when: 'immediate' });
   }
@@ -261,6 +267,19 @@ async function waitForSocket(peerId: string, messageId: string): Promise<void> {
   while (stillPending(peerId, messageId) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+function claudeHolding(recipient: Peer, outcome: SocketOutcome | 'idle'): boolean {
+  if (outcome === 'held') return true;
+  return crossSessionInbound(recipient) === 'hold';
+}
+
+/** Said to the sender when Claude's crossSessionInbound hold kept the socket post in the inbox. */
+function claudeHoldStatus(recipient: Peer): string {
+  return (
+    `Message stored for ${peerRef(recipient)}. Claude is holding peer messages there (crossSessionInbound is hold), ` +
+    'so this stays in the inbox until that session approves it or calls read_messages.'
+  );
 }
 
 /** Said to the sender when the recipient is stopped on a permission prompt. */

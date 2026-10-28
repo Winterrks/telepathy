@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -7,7 +8,9 @@ import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
 import { formatAgo } from '../src/core/listing.ts';
-import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
+import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
+import { processTable } from '../src/core/proc.ts';
+import { peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
 import { peerDir } from '../src/core/paths.ts';
 import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
 import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
@@ -21,6 +24,53 @@ const peer = (agent: Agent, pid: number, name: string): Peer => ({
   hasListener: true,
   hasServer: true,
 });
+
+/** A live process whose children have the given trailing argv, so Claude's process tree can be classified. */
+function sessionWithChildren(commands: string[][]): ReturnType<typeof spawn> & { pid: number } {
+  const script = `
+    const { spawn } = require('node:child_process');
+    for (const args of ${JSON.stringify(commands)}) {
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)', '--', ...args], { stdio: 'ignore' });
+    }
+    setInterval(() => {}, 1 << 30);
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore', detached: true });
+  return child as ReturnType<typeof spawn> & { pid: number };
+}
+
+function descendantCount(root: number): number {
+  const table = processTable(0);
+  const byParent = new Map<number, number[]>();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  let count = 0;
+  const stack = [...(byParent.get(root) ?? [])];
+  const seen = new Set<number>();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === undefined || seen.has(pid)) continue;
+    seen.add(pid);
+    count += 1;
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return count;
+}
+
+/** Writes Claude's session file as shell and returns the listing once that many children are visible. */
+async function shellListing(pid: number, children: number): Promise<string | undefined> {
+  const record = path.join(process.env.CLAUDE_CONFIG_DIR ?? '', 'sessions', `${pid}.json`);
+  fs.mkdirSync(path.dirname(record), { recursive: true });
+  fs.writeFileSync(record, JSON.stringify({ status: 'shell', statusUpdatedAt: Date.now() }));
+  const deadline = Date.now() + 2000;
+  for (;;) {
+    if (descendantCount(pid) >= children) return statusText(peerStatus(peer('claude', pid, 'sdk')));
+    if (Date.now() > deadline) return statusText(peerStatus(peer('claude', pid, 'sdk')));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+}
 
 describe('slugify', () => {
   test('turns titles into addressable names', () => {
@@ -138,6 +188,58 @@ describe('message formatting', () => {
     assert.ok(!line.includes('\n'));
     assert.match(line, /Schema migration finished\.\\nRebase on main is safe now\./);
     assert.match(line, /not your user/);
+  });
+
+  test('the Claude socket names the real sender, including Codex and OpenCode', () => {
+    const codex = formatForClaudeSocket({ ...msg, from: { id: 'codex-9', agent: 'codex', name: 'api', address: 'codex:api' } });
+    assert.match(codex, /from-name="Codex session codex:api \[codex-9\]"/);
+    assert.match(codex, /Message from Codex session codex:api \[codex-9\]/);
+    assert.ok(codex.startsWith('<cross-session-message '));
+    assert.ok(codex.endsWith('</cross-session-message>'));
+    const opencode = formatForClaudeSocket({
+      ...msg,
+      from: { id: 'opencode-4', agent: 'opencode', name: 'web', address: 'opencode:web' },
+    });
+    assert.match(opencode, /from-name="OpenCode session opencode:web \[opencode-4\]"/);
+    assert.doesNotMatch(opencode, /Another Claude session/);
+  });
+
+  test('a telepathy monitor is not a shell command, and any other command is', () => {
+    const monitor = 'node /plugins/telepathy/dist/monitor.mjs --agent claude';
+    const server = 'node /plugins/telepathy/dist/server.mjs --agent claude';
+    assert.equal(shellIsTelepathyMonitorOnly([monitor]), true);
+    assert.equal(shellIsTelepathyMonitorOnly([server, monitor]), true);
+    assert.equal(shellIsTelepathyMonitorOnly([monitor, 'sleep 30']), false);
+    assert.equal(shellIsTelepathyMonitorOnly([server]), false);
+    assert.equal(shellIsTelepathyMonitorOnly([]), false);
+  });
+
+  test('list_peers reports idle when the only live command is the telepathy monitor', async () => {
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'um-claude-'));
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    const monitor = sessionWithChildren([['monitor.mjs', '--agent', 'claude']]);
+    const other = sessionWithChildren([['sleep', '30']]);
+    const both = sessionWithChildren([
+      ['monitor.mjs', '--agent', 'claude'],
+      ['sleep', '30'],
+    ]);
+    try {
+      assert.equal(await shellListing(monitor.pid, 1), 'idle');
+      assert.equal(await shellListing(other.pid, 1), 'shell (not generating, but a command it started is still running)');
+      assert.equal(await shellListing(both.pid, 2), 'shell (not generating, but a command it started is still running)');
+    } finally {
+      for (const child of [monitor, other, both]) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('monitor line points long messages to read_messages', () => {

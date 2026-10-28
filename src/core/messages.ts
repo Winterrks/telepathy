@@ -144,6 +144,22 @@ export function formatAsUserTurn(msg: Message): string {
 }
 
 /**
+ * Socket body for Claude. Claude wraps a socket post as "Another Claude session sent a message" and reads
+ * `from-name` on this tag for the sender it shows. The name is the real harness and peer, so a Codex or
+ * OpenCode sender is not labeled as Claude.
+ */
+export function formatForClaudeSocket(msg: Message): string {
+  const name = `${agentLabel(msg.from.agent)} session ${peerRef(msg.from)}`
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/["<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  const body = formatAsUserTurn(msg).replace(/<(\/?cross-session-message\b)/gi, '<\\$1');
+  return `<cross-session-message from-name="${name}">\n${body}\n</cross-session-message>`;
+}
+
+/**
  * Messages handed over by a hook, as context for the next model call or as the prompt that continues a turn.
  * Hooks can't carry much (Copilot caps it at 10 KB), so long messages come as a preview plus read_messages.
  */

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { debugLog } from './debug.ts';
-import { archivePending, formatAsUserTurn, pendingMessages } from './messages.ts';
+import { archivePending, formatForClaudeSocket, pendingMessages } from './messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, type Peer, readPeer } from './peers.ts';
 import { isSameProcess, procStart } from './proc.ts';
@@ -207,6 +207,12 @@ export async function flushClaudeSocket(id: string): Promise<SocketOutcome | 'id
 export function startClaudeSocketWatcher(id: string): () => void {
   let chain: Promise<unknown> = Promise.resolve();
 
+  // A held or unconfirmed post is a message Claude already has. Posting it again on the 1s tick opens another
+  // "Held peer message" notice (Claude caps those at 100). Retry only when the socket path changes, the
+  // crossSessionInbound value changes, or a failed connect is 10s old. A failed connect never reached Claude.
+  const posted = new Map<string, { socketPath: string; inbound: string; outcome: SocketOutcome; at: number }>();
+  const FAILED_RETRY_MS = 10_000;
+
   const flush = async (): Promise<SocketOutcome | 'idle'> => {
     const sock = readClaudeSocket(id) ?? recordClaudeSocket(id);
     if (!sock) {
@@ -215,18 +221,39 @@ export function startClaudeSocketWatcher(id: string): () => void {
     }
     writeArmed(id);
     const pending = pendingMessages(id);
-    if (!pending.length) return 'idle';
+    if (!pending.length) {
+      posted.clear();
+      return 'idle';
+    }
     const inbound = crossSessionInbound(readPeer(id));
     if (inbound === 'refuse') {
       debugLog('claude-socket', `${id} crossSessionInbound is refuse; leaving ${pending.length} message(s) in the inbox`);
       return 'refused';
     }
+    const inboundKey = inbound ?? '';
+    const pendingIds = new Set(pending.map((msg) => msg.id));
+    for (const seen of posted.keys()) if (!pendingIds.has(seen)) posted.delete(seen);
     let last: SocketOutcome = 'unconfirmed';
     for (const msg of pending) {
-      const post = await postClaudeSocket(sock, formatAsUserTurn(msg));
-      last = post.outcome === 'unconfirmed' && socketConfirms(post, inbound, true) ? 'delivered' : post.outcome;
+      const prev = posted.get(msg.id);
+      if (prev && prev.socketPath === sock.path && prev.inbound === inboundKey) {
+        const failedWait = prev.outcome === 'failed' && Date.now() - prev.at < FAILED_RETRY_MS;
+        const heldBack = prev.outcome === 'unconfirmed' || prev.outcome === 'held' || prev.outcome === 'refused' || prev.outcome === 'expired';
+        if (failedWait || heldBack) {
+          last = prev.outcome;
+          continue;
+        }
+      }
+      const post = await postClaudeSocket(sock, formatForClaudeSocket(msg));
+      const confirmed = socketConfirms(post, inbound, true);
+      last = post.outcome === 'unconfirmed' && confirmed ? 'delivered' : post.outcome;
       debugLog('claude-socket', `${msg.id} ${last}${post.detail ? ` (${post.detail})` : ''}`);
-      if (socketConfirms(post, inbound, true)) archivePending(id, msg.id);
+      if (confirmed) {
+        archivePending(id, msg.id);
+        posted.delete(msg.id);
+      } else {
+        posted.set(msg.id, { socketPath: sock.path, inbound: inboundKey, outcome: post.outcome, at: Date.now() });
+      }
     }
     return last;
   };

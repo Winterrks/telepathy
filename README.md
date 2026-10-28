@@ -352,7 +352,10 @@ so they are reachable again as soon as they run.
   for the next prompt's hook, or for `read_messages`. `list_peers` and ListAgents show the session as interrupted.
 - **Claude receives through its inbox socket when the session has one.** Claude Code v2.1.224 or later (v2.1.234 on
   native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there. A message is
-  marked delivered only when Claude accepts it. A hold, refusal, or expiry leaves it in the inbox. Sessions without
+  marked delivered only when Claude accepts it. A hold, refusal, or expiry leaves it in the inbox, and the sender is
+  told that Claude is holding peer messages. The same held message is not posted again until that setting changes
+  or the session's socket changes. The post names the real sender (Codex, OpenCode, and the rest), which Claude
+  shows in place of "Another Claude session". Sessions without
   the socket, including bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in
   interactive terminal sessions.
   The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
@@ -401,7 +404,7 @@ so they are reachable again as soon as they run.
 
   | Agent | Statuses | Source |
   |---|---|---|
-  | Claude Code | busy, shell, idle, waiting | Claude Code's own session record (`~/.claude/sessions/<pid>.json`) |
+  | Claude Code | busy, shell, idle, waiting | Claude Code's own session record (`~/.claude/sessions/<pid>.json`). `shell` is idle when the only running command is telepathy's own monitor |
   | Codex | busy, idle, interrupted, waiting | The thread's rollout log; waiting from the PermissionRequest hook until Codex writes to the log again |
   | OpenCode, Kilo Code | busy, idle, waiting | The plugin's session and permission events |
   | Gemini CLI | busy, idle, waiting | Hooks; waiting from its `ToolPermission` notification |

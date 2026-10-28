@@ -19901,6 +19901,14 @@ function isSameProcess(pid, recordedStart) {
   const current = processTable(0).get(pid)?.start;
   return current === void 0 || current === recordedStart;
 }
+var commandLine = (pid) => psField(pid, "args");
+function psField(pid, field) {
+  try {
+    return execFileSync2("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+  } catch {
+    return void 0;
+  }
+}
 
 // src/core/peers.ts
 var peerId = (agent, key) => `${agent}-${key}`;
@@ -20244,7 +20252,42 @@ var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
   const record2 = readJson(path6.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
-  return { status: record2.status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
+  let status = record2.status;
+  if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
+  return { status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
+}
+var TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
+function shellIsTelepathyMonitorOnly(commands) {
+  let monitor = false;
+  for (const command of commands) {
+    if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) {
+      if (/monitor\.mjs/.test(command)) monitor = true;
+      continue;
+    }
+    return false;
+  }
+  return monitor;
+}
+function descendantCommands(rootPid) {
+  const table = processTable(0);
+  const byParent = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  const commands = [];
+  const stack = [...byParent.get(rootPid) ?? []];
+  const seen = /* @__PURE__ */ new Set();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    const args = commandLine(pid) ?? table.get(pid)?.comm;
+    if (args) commands.push(args);
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return commands;
 }
 function codexStatus(peer) {
   if (!peer.codexHome || !peer.sessionId) return void 0;
@@ -20605,6 +20648,19 @@ function readClaudeSocket(id) {
 function claudeSocketArmed(id) {
   const record2 = readJson(listenerFile(id));
   return !!record2 && isSameProcess(record2.pid, record2.procStart);
+}
+function crossSessionInbound(peer) {
+  const files = [
+    peer?.cwd ? path9.join(peer.cwd, ".claude", "settings.local.json") : "",
+    peer?.cwd ? path9.join(peer.cwd, ".claude", "settings.json") : "",
+    path9.join(claudeConfigDir(), "settings.json")
+  ].filter(Boolean);
+  let found;
+  for (const file2 of files) {
+    const value = readJson(file2)?.crossSessionInbound;
+    if (value === "accept" || value === "hold" || value === "refuse") found = value;
+  }
+  return found;
 }
 var flushImpl;
 async function flushClaudeSocket(id) {
@@ -21127,9 +21183,10 @@ async function routeCodex(recipient, message) {
 async function routeInbox(recipient, message) {
   const attempts = [];
   writeToInbox(message);
+  let socketOutcome;
   if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
-    const outcome = await flushClaudeSocket(recipient.id);
-    if (outcome === "idle") await waitForSocket(recipient.id, message.id);
+    socketOutcome = await flushClaudeSocket(recipient.id);
+    if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
     if (!stillPending(recipient.id, message.id)) {
       attempts.push({ id: "claude-socket", result: "confirmed", when: "immediate" });
       return {
@@ -21139,10 +21196,14 @@ async function routeInbox(recipient, message) {
     }
     attempts.push({
       id: "claude-socket",
-      result: outcome === "failed" ? "failed" : "armed",
+      result: socketOutcome === "failed" ? "failed" : "armed",
       when: "immediate",
-      detail: outcome === "idle" ? "not confirmed" : outcome
+      detail: socketOutcome === "idle" ? "not confirmed" : socketOutcome
     });
+    if (claudeHolding(recipient, socketOutcome)) {
+      attempts.push({ id: "poll", result: "armed", when: "poll", detail: "crossSessionInbound hold" });
+      return { status: claudeHoldStatus(recipient), report: { confirmed: false, attempts } };
+    }
   } else if (recipient.agent === "claude") {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
@@ -21186,6 +21247,13 @@ async function waitForSocket(peerId2, messageId) {
   while (stillPending(peerId2, messageId) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+function claudeHolding(recipient, outcome) {
+  if (outcome === "held") return true;
+  return crossSessionInbound(recipient) === "hold";
+}
+function claudeHoldStatus(recipient) {
+  return `Message stored for ${peerRef(recipient)}. Claude is holding peer messages there (crossSessionInbound is hold), so this stays in the inbox until that session approves it or calls read_messages.`;
 }
 var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
 function codexHeldStatus(recipient, why) {

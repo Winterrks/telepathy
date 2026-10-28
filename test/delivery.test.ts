@@ -190,8 +190,9 @@ describe('Claude inbox socket', () => {
     const claude = fakeAgent();
     const other = fakeAgent();
     agents.push(claude, other);
-    registerPresence('claude', claude.pid, { cwd: `/work/${name}` });
-    registerSession('claude', claude.pid, { sessionId: 's', cwd: `/work/${name}`, source: 'hook' });
+    const cwd = path.join(sb.home, name);
+    registerPresence('claude', claude.pid, { cwd });
+    registerSession('claude', claude.pid, { sessionId: 's', cwd, source: 'hook' });
     registerPresence('gemini', other.pid, { cwd: '/work/docs' });
     registerSession('gemini', other.pid, { sessionId: 'g', cwd: '/work/docs', source: 'hook' });
     const from = readPeer(`gemini-${other.pid}`);
@@ -232,6 +233,7 @@ describe('Claude inbox socket', () => {
       assert.match(ok.status, /through Claude's inbox socket/);
       assert.match(deliveredBuf, /\{"type":"auth","token":"socket-token-a"\}/);
       assert.match(deliveredBuf, /\{"type":"user","message":\{"role":"user","content":".*via the socket/);
+      assert.match(deliveredBuf, /from-name=\\"Gemini CLI session gemini:docs/);
       assert.equal(fs.existsSync(path.join(inboxDir(first.id), `${ok.message.id}.json`)), false);
       const log = fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8');
       assert.equal(log.includes('socket-token-a'), false);
@@ -246,6 +248,9 @@ describe('Claude inbox socket', () => {
       if (!heldResult.ok) return;
       assert.equal(heldResult.delivery.confirmed, false);
       assert.equal(heldResult.delivery.attempts.find((a) => a.id === 'claude-socket')?.detail, 'held');
+      assert.match(heldResult.status, /crossSessionInbound is hold/);
+      assert.match(heldResult.status, /read_messages/);
+      assert.doesNotMatch(heldResult.status, /no listener/);
       assert.equal(fs.existsSync(path.join(inboxDir(second.id), `${heldResult.message.id}.json`)), true);
       const read = readMessagesTool(second.id, {});
       assert.equal(read.structured?.messages[0]?.body, 'please hold');
@@ -279,10 +284,45 @@ describe('Claude inbox socket', () => {
       assert.equal(blocked.ok, true);
       if (!blocked.ok) return;
       assert.equal(blocked.delivery.confirmed, false);
+      assert.match(blocked.status, /Claude is holding peer messages there \(crossSessionInbound is hold\)/);
       assert.equal(fs.existsSync(path.join(inboxDir(held.id), `${blocked.message.id}.json`)), true);
     } finally {
       server.close();
       fs.rmSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'settings.json'), { force: true });
+      stop?.();
+      stop = undefined;
+    }
+  });
+
+  test('a held message is posted once, then once more when the hold is lifted', async () => {
+    const sock = path.join(sb.home, 'once.sock');
+    let posts = 0;
+    const server = await serve(sock, (buf) => {
+      if (!buf.includes('"type":"user"')) return undefined;
+      posts += 1;
+      return '';
+    });
+    try {
+      const settingsDir = path.join(sb.home, 'once', '.claude');
+      fs.mkdirSync(settingsDir, { recursive: true });
+      fs.writeFileSync(path.join(settingsDir, 'settings.local.json'), JSON.stringify({ crossSessionInbound: 'hold' }));
+      const peer = pair('once');
+      recordClaudeSocket(peer.id, { CLAUDE_CODE_MESSAGING_SOCKET: sock });
+      stop = startClaudeSocketWatcher(peer.id);
+      const held = await sendMessage(peer.from, peer.address, 'do not repeat');
+      assert.equal(held.ok, true);
+      if (!held.ok) return;
+      assert.match(held.status, /crossSessionInbound is hold/);
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(posts, 1);
+      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
+      fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      assert.equal(posts, 2);
+      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
+    } finally {
+      server.close();
+      fs.rmSync(path.join(sb.home, 'once', '.claude'), { recursive: true, force: true });
       stop?.();
       stop = undefined;
     }
