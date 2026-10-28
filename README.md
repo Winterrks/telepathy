@@ -361,8 +361,9 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   the settings precedence page) before writing. `hold` and `refuse` are not posted. The inbox copy stays, for a hook
   or `read_messages`, and can still be withdrawn. A socket reply of `held` means Claude already has bytes that
   cannot be recalled; the result says that, and does not start with `Message failed`. A marker that arrives in the
-  grace window moves the file from `withdrawn/` to `archive/`. A failure after a hold says the receiver is holding
-  peer messages and that nothing was posted. The post names the real sender (Codex, OpenCode, and
+  grace window moves the file from `withdrawn/` to `archive/`. A failure after a hold says nothing was posted
+  because that session is holding peer messages, and that the inbox copy was withdrawn. A failed confirm's
+  strongest signal does not say the message was delivered. The post names the real sender (Codex, OpenCode, and
   the rest), which Claude shows in place of "Another Claude session". The plugin does not start its background
   monitor: a process Claude launched and that then exited is a "background task exited" notice, and a process that
   stays up is what `/exit` asks to stop. `plugin/monitors/monitors.json` is empty, because a plugin monitor cannot
@@ -376,8 +377,8 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   over at the next prompt or when a turn ends.
 - **A resumed session keeps its telepathy id and name.** The key is the harness session id (Claude's `session_id`,
   a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. OpenCode binds
-  that id from `--session` or `-s` on its own command line or a parent process (OpenCode 1.19 does not put the flag
-  on the plugin), from `--continue` or `-c` by listing sessions after plugin init returns and binding the newest
+  that id from `--session` or `-s` on this process's command line (`ps` still has the flag when `process.argv`
+  does not) or a parent process, from `--continue` or `-c` by listing sessions after plugin init returns and binding the newest
   primary one, from `session.created`, `session.updated`, or a TUI event that names the session, or from the first
   `chat.message`. `--fork` does not bind the source id. Plugin init does not wait on `session.list`: OpenCode cannot
   answer it until init returns. A fresh TUI has no session yet. It is listed as
@@ -411,9 +412,10 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, a session running
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
   [update-all](#updating-every-agent) command). Codex's MCP server in this plugin is named `bridge`, so the tool
-  timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 120
-  seconds. A value read from `config.toml` or from a `-c` override on the Codex process is trusted. When that
-  effective value is below 120, the note names the key. When the file is readable and neither place shows the key,
+  timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 115
+  seconds (105s, then 10s), which stays inside Claude Code's about-120s move of a live tool call to the background.
+  A value read from `config.toml` or from a `-c` override on the Codex process is trusted. When that
+  effective value is below 115, the note names the key. When the file is readable and neither place shows the key,
   the note says the value could not be verified, once per session, and does not claim the key is unset. A note that
   Codex has not approved its hooks is shown only when no telepathy hook has fired for that session. Each note is
   shown once per session. If messages seem missing, the agent can call `read_messages`.

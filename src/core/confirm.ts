@@ -19,7 +19,8 @@ export function confirmWaitEnabled(): boolean {
 }
 
 export function confirmAbortMs(): number {
-  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 110_000);
+  // 105s + 10s grace stays under Claude's ~120s move of a live tool call to the background.
+  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 105_000);
 }
 
 export function confirmGraceMs(): number {
@@ -234,6 +235,14 @@ export interface ConfirmOutcome {
 
 const UNRECALLABLE = /cannot be recalled/i;
 
+/**
+ * Quoted after the marker was not found. A route status that says the message was delivered is the route's
+ * guess. The word belongs only on the success result, which is returned before this runs.
+ */
+function unconfirmedSignal(routeStatus: string): string {
+  return routeStatus.replace(/Message delivered to /g, 'Unconfirmed handoff to ');
+}
+
 /** The route promised the inbox would remain. After a withdraw, that sentence is no longer true. */
 function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { signal: string; noted: boolean } {
   if (withdrawn !== 'withdrawn') return { signal: routeStatus, noted: false };
@@ -268,7 +277,8 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
 
   const stored = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const { signal: withdrawnSignal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const signal = unconfirmedSignal(withdrawnSignal);
   const notes: string[] = [];
   if (withdrawn === 'withdrawn' && !noted && !UNRECALLABLE.test(routeStatus)) {
     notes.push('The inbox copy was withdrawn so a later turn cannot pick it up.');

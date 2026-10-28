@@ -28699,7 +28699,7 @@ function findInstalls() {
 
 // src/core/setup.ts
 var CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
-var CODEX_BRIDGE_TIMEOUT_MIN = 120;
+var CODEX_BRIDGE_TIMEOUT_MIN = 115;
 function codexBridgeTimeoutSec(config2) {
   let found;
   let inTable = false;
@@ -28756,11 +28756,11 @@ function setupNotes(self2) {
     const effective = fromArgs ?? timeout;
     if (effective !== void 0 && effective < CODEX_BRIDGE_TIMEOUT_MIN) {
       notes.push(
-        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 120s send_message waits for a transcript. Set that key to at least 120.`
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 115s send_message waits for a transcript. Set that key to at least 115.`
       );
     } else if (config2 && effective === void 0) {
       notes.push(
-        `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override was visible on this Codex process. If it is below 120, send_message can be cut off. Set that key to at least 120 if it is not already.`
+        `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override was visible on this Codex process. If it is below 115, send_message can be cut off. Set that key to at least 115 if it is not already.`
       );
     }
   }
@@ -29301,7 +29301,7 @@ function confirmWaitEnabled() {
   return v !== "0" && v !== "false";
 }
 function confirmAbortMs() {
-  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 11e4);
+  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 105e3);
 }
 function confirmGraceMs() {
   return envMs("TELEPATHY_CONFIRM_GRACE_MS", 1e4);
@@ -29469,6 +29469,9 @@ function offlineInFlight(peer, messageId) {
   };
 }
 var UNRECALLABLE = /cannot be recalled/i;
+function unconfirmedSignal(routeStatus) {
+  return routeStatus.replace(/Message delivered to /g, "Unconfirmed handoff to ");
+}
 function signalAfterWithdraw(routeStatus, withdrawn) {
   if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
   const signal = routeStatus.replace(
@@ -29492,7 +29495,8 @@ async function confirmDelivery(peer, message, routeStatus) {
   if (first === "offline") return offlineInFlight(peer, message.id);
   const stored2 = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const { signal: withdrawnSignal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const signal = unconfirmedSignal(withdrawnSignal);
   const notes = [];
   if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
     notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
@@ -30160,9 +30164,8 @@ async function waitForSocket(peerId2, messageId) {
   }
 }
 function claudeInboundBlockedStatus(recipient, inbound) {
-  const ref = peerRef(recipient);
-  const why = inbound === "hold" ? "That session is holding peer messages (crossSessionInbound is hold)" : "That session is refusing peer messages (crossSessionInbound is refuse)";
-  return `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+  const why = inbound === "hold" ? "that session is holding peer messages (crossSessionInbound is hold)" : "that session is refusing peer messages (crossSessionInbound is refuse)";
+  return `Nothing was posted to ${peerRef(recipient)}: ${why}. The inbox copy can still be withdrawn.`;
 }
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;

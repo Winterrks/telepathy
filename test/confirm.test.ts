@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { confirmDelivery } from '../src/core/confirm.ts';
+import { confirmAbortMs, confirmDelivery, confirmGraceMs } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { messageMarker } from '../src/core/messages.ts';
 import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
@@ -56,6 +56,14 @@ describe('transcript confirmation', () => {
     assert.ok(from && to);
     return { from, to };
   };
+
+  test('the default wait is 105s plus 10s, under Claude\'s background move', () => {
+    delete process.env.TELEPATHY_CONFIRM_ABORT_MS;
+    delete process.env.TELEPATHY_CONFIRM_GRACE_MS;
+    assert.equal(confirmAbortMs(), 105_000);
+    assert.equal(confirmGraceMs(), 10_000);
+    assert.ok(confirmAbortMs() + confirmGraceMs() < 120_000);
+  });
 
   test('success is the marker in the transcript', async () => {
     const dir = arm('2000', '200');
@@ -232,10 +240,23 @@ describe('transcript confirmation', () => {
     fs.rmSync(settings, { force: true });
     assert.equal(result.ok, false);
     if (result.ok) return;
-    assert.match(result.error, /That session is holding peer messages \(crossSessionInbound is hold\)/);
-    assert.match(result.error, /nothing was posted to its inbox socket/);
-    assert.match(result.error, /The inbox copy was withdrawn/);
+    assert.match(result.error, /Nothing was posted to .+: that session is holding peer messages \(crossSessionInbound is hold\)\. The inbox copy was withdrawn\./);
+    assert.doesNotMatch(result.error, /Message stored/);
+    assert.doesNotMatch(result.error, /\bdelivered\b/i);
     assert.doesNotMatch(result.error, /no listener/);
     assert.doesNotMatch(result.error, /It has no listener/);
+  });
+
+  test('a failed confirm does not call an unconfirmed handoff delivered', async () => {
+    arm('40', '20');
+    const { from, to } = pair();
+    const result = await confirmDelivery(
+      to,
+      { id: 'm-000000004-ccddee', from, to, body: 'listener only', sentAt: new Date().toISOString() },
+      'Message delivered to opencode:app [opencode-ses_x].',
+    );
+    assert.equal(result.confirmed, false);
+    assert.match(result.status, /Strongest signal: Unconfirmed handoff to opencode:app \[opencode-ses_x\]\./);
+    assert.doesNotMatch(result.status, /\bdelivered\b/i);
   });
 });

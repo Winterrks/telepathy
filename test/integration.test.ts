@@ -1038,6 +1038,50 @@ describe('telepathy plugin', () => {
       assert.equal(readPeer('opencode-ses_old'), undefined);
     });
 
+    test('ps args on this process bind --session and --continue when argv dropped the flag', async () => {
+      const driver = path.join(ROOT, 'test', 'fixtures', 'opencode-driver.mjs');
+      const plugin = path.join(DIST, 'opencode.mjs');
+      const lines: Record<string, unknown>[] = [];
+      const child = spawn(process.execPath, [driver, plugin, '/w/ps-self', '--session', 'ses_from_ps'], {
+        env: { ...sb.env, OPENCODE_TEST_HIDE_ARGV: '1' },
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      agents.push(child as ReturnType<typeof fakeAgent>);
+      let buf = '';
+      child.stdout!.on('data', (chunk) => {
+        buf += chunk;
+        for (let i = buf.indexOf('\n'); i >= 0; i = buf.indexOf('\n')) {
+          lines.push(JSON.parse(buf.slice(0, i)));
+          buf = buf.slice(i + 1);
+        }
+      });
+      await waitFor(() => lines.find((l) => 'ready' in l));
+      process.env.TELEPATHY_HOME = sb.home;
+      const bound = readPeer('opencode-ses_from_ps');
+      assert.equal(bound?.sessionId, 'ses_from_ps');
+      assert.equal(bound?.hasListener, true);
+      child.kill('SIGKILL');
+
+      const continued = spawn(process.execPath, [driver, plugin, '/w/ps-cont', '--continue'], {
+        env: { ...sb.env, OPENCODE_TEST_HIDE_ARGV: '1', OPENCODE_TEST_LIST: 'ses_old:1,ses_new:9' },
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      agents.push(continued as ReturnType<typeof fakeAgent>);
+      const more: Record<string, unknown>[] = [];
+      let buf2 = '';
+      continued.stdout!.on('data', (chunk) => {
+        buf2 += chunk;
+        for (let i = buf2.indexOf('\n'); i >= 0; i = buf2.indexOf('\n')) {
+          more.push(JSON.parse(buf2.slice(0, i)));
+          buf2 = buf2.slice(i + 1);
+        }
+      });
+      await waitFor(() => more.find((l) => 'ready' in l));
+      const newest = await waitFor(() => readPeer('opencode-ses_new'));
+      assert.equal(newest?.hasListener, true);
+      assert.equal(readPeer('opencode-ses_old'), undefined);
+    });
+
     test('mail that arrives before a session exists creates one and prompts it', async () => {
       const oc = startOpenCode('/w/fresh', { OPENCODE_TEST_CREATE: 'ses_made' });
       const ready = await oc.take('ready');
@@ -1048,6 +1092,8 @@ describe('telepathy plugin', () => {
       const claude = await connect('claude', claudeAgent.pid);
       const sent = await call(claude, 'send_message', { to: `opencode-${pid}`, message: 'before your first prompt' });
       assert.equal(sent.isError, undefined, toolText(sent));
+      const selected = await oc.take('selected');
+      assert.equal(selected.selected, 'ses_made');
       const prompt = await oc.take('prompt');
       assert.match(prompt.prompt.body.parts[0].text, /before your first prompt/);
       const made = await waitFor(() => readPeer('opencode-ses_made'));

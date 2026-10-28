@@ -9,6 +9,7 @@ import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
 import { formatAgo } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
+import { opencodeLaunchFromAncestors } from '../src/opencode.ts';
 import { processTable } from '../src/core/proc.ts';
 import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
 import { inboxDir, peerDir } from '../src/core/paths.ts';
@@ -71,6 +72,28 @@ async function shellListing(pid: number, children: number): Promise<string | und
     await new Promise((resolve) => setTimeout(resolve, 30));
   }
 }
+
+describe('opencode launch command line', () => {
+  test('reads --session from this process before its parent', () => {
+    const args = new Map<number, string>([
+      [42, 'node /usr/local/bin/opencode --session ses_self'],
+      [7, 'opencode --continue --session ses_parent'],
+    ]);
+    const launch = opencodeLaunchFromAncestors(42, (pid) => args.get(pid), (pid) => (pid === 42 ? 7 : 1));
+    assert.equal(launch.sessionID, 'ses_self');
+    assert.equal(launch.continueLast, false);
+  });
+
+  test('reads --continue from the parent when this process has no flag', () => {
+    const launch = opencodeLaunchFromAncestors(
+      42,
+      (pid) => (pid === 42 ? 'node plugin.js' : 'opencode --continue'),
+      (pid) => (pid === 42 ? 7 : 1),
+    );
+    assert.equal(launch.sessionID, undefined);
+    assert.equal(launch.continueLast, true);
+  });
+});
 
 describe('slugify', () => {
   test('turns titles into addressable names', () => {

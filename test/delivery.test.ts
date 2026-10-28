@@ -294,8 +294,9 @@ describe('Claude inbox socket', () => {
       assert.equal(blocked.ok, true);
       if (!blocked.ok) return;
       assert.equal(blocked.delivery.confirmed, false);
-      assert.match(blocked.status, /That session is holding peer messages \(crossSessionInbound is hold\)/);
-      assert.match(blocked.status, /nothing was posted to its inbox socket/);
+      assert.match(blocked.status, /Nothing was posted to .+: that session is holding peer messages \(crossSessionInbound is hold\)/);
+      assert.doesNotMatch(blocked.status, /Message stored/);
+      assert.doesNotMatch(blocked.status, /\bdelivered\b/i);
       assert.doesNotMatch(blocked.status, /no listener/);
       assert.match(blocked.status, /can still be withdrawn/);
       assert.equal(posts, before);
@@ -327,8 +328,8 @@ describe('Claude inbox socket', () => {
       const held = await sendMessage(peer.from, peer.address, 'do not repeat');
       assert.equal(held.ok, true);
       if (!held.ok) return;
-      assert.match(held.status, /That session is holding peer messages \(crossSessionInbound is hold\)/);
-      assert.match(held.status, /nothing was posted/);
+      assert.match(held.status, /Nothing was posted to .+: that session is holding peer messages \(crossSessionInbound is hold\)/);
+      assert.doesNotMatch(held.status, /Message stored/);
       const log = path.join(sb.home, 'debug.log');
       const holdLines = () =>
         (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes(`${peer.id} crossSessionInbound is hold; not posting`)).length;
@@ -790,7 +791,7 @@ describe('stable name and duplicate sessions', () => {
     assert.match(formatPeerList(self, [other]), /Use the \[ref\] to pick one/);
   });
 
-  test('setup warns with the Codex bridge timeout key when it is missing or below 120', () => {
+  test('setup warns with the Codex bridge timeout key when it is missing or below 115', () => {
     const proc = fakeAgent();
     agents.push(proc);
     registerPresence('codex', proc.pid, { cwd: '/work/cx', codexHome: sb.codexHome });

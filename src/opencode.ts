@@ -124,12 +124,12 @@ export function opencodeLaunchFromArgv(argv: readonly string[]): OpenCodeLaunch 
 }
 
 /**
- * OpenCode 1.19 runs plugins in another process, so `--session` is on an ancestor, not on `process.argv`.
- * Walks parents until a session id or `--continue` shows up. `--session` counts on any ancestor. `-s` and
- * `-c` count only when that process's command looks like the `opencode` binary.
+ * OpenCode keeps `--session` on the process command line (`ps`) after dropping it from `process.argv`, and
+ * some builds run the plugin in a child of that process. Walk this process, then its parents. `--session`
+ * counts on any of them. `-s` and `-c` count only when that process's command looks like the `opencode` binary.
  */
 export function opencodeLaunchFromAncestors(
-  startPid = process.ppid,
+  startPid = process.pid,
   readArgs: (pid: number) => string | undefined = commandLine,
   parentOf: (pid: number) => number | undefined = (pid) => processTable(0).get(pid)?.ppid,
 ): OpenCodeLaunch {
@@ -241,12 +241,14 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
    * which is that first prompt. Returns the id, or undefined when this build has no create call.
    */
   async function openSession(): Promise<string | undefined> {
-    const create = client.session.create;
+    // Methods on the OpenCode SDK client use `this`. Taking them off the object throws
+    // `this._client` inside create and select.
+    const create = client.session.create?.bind(client.session);
     if (!create) return undefined;
     const sessionID = createdSessionID(await create({}));
     if (!sessionID) return undefined;
     bind(sessionID);
-    const select = client.tui?.selectSession ?? client.session.select;
+    const select = client.tui?.selectSession?.bind(client.tui) ?? client.session.select?.bind(client.session);
     if (select) {
       try {
         await select({ sessionID, body: { sessionID }, path: { id: sessionID } });
@@ -336,8 +338,9 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   };
 
   // Do not await a client call here. OpenCode cannot answer until plugin init returns, and waiting deadlocks
-  // the TUI. `--session` is read from this process or an ancestor. `--continue` lists after init returns and
-  // binds the newest primary session. A fresh TUI has no session yet and stays on the pid until one exists.
+  // the TUI. `--session` is read from this process's `ps` args (argv often lacks it) or an ancestor.
+  // `--continue` lists after init returns and binds the newest primary session. A fresh TUI has no session
+  // yet and stays on the pid until one exists.
   const own = opencodeLaunchFromArgv(process.argv);
   const inherited = opencodeLaunchFromAncestors();
   const launch: OpenCodeLaunch = {

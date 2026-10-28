@@ -1347,7 +1347,7 @@ function confirmWaitEnabled() {
   return v !== "0" && v !== "false";
 }
 function confirmAbortMs() {
-  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 11e4);
+  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 105e3);
 }
 function confirmGraceMs() {
   return envMs("TELEPATHY_CONFIRM_GRACE_MS", 1e4);
@@ -1515,6 +1515,9 @@ function offlineInFlight(peer, messageId) {
   };
 }
 var UNRECALLABLE = /cannot be recalled/i;
+function unconfirmedSignal(routeStatus) {
+  return routeStatus.replace(/Message delivered to /g, "Unconfirmed handoff to ");
+}
 function signalAfterWithdraw(routeStatus, withdrawn) {
   if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
   const signal = routeStatus.replace(
@@ -1538,7 +1541,8 @@ async function confirmDelivery(peer, message, routeStatus) {
   if (first === "offline") return offlineInFlight(peer, message.id);
   const stored = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const { signal: withdrawnSignal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const signal = unconfirmedSignal(withdrawnSignal);
   const notes = [];
   if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
     notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
@@ -2154,9 +2158,8 @@ async function waitForSocket(peerId2, messageId) {
   }
 }
 function claudeInboundBlockedStatus(recipient, inbound) {
-  const ref = peerRef(recipient);
-  const why = inbound === "hold" ? "That session is holding peer messages (crossSessionInbound is hold)" : "That session is refusing peer messages (crossSessionInbound is refuse)";
-  return `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+  const why = inbound === "hold" ? "that session is holding peer messages (crossSessionInbound is hold)" : "that session is refusing peer messages (crossSessionInbound is refuse)";
+  return `Nothing was posted to ${peerRef(recipient)}: ${why}. The inbox copy can still be withdrawn.`;
 }
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;

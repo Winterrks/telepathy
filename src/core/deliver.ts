@@ -330,15 +330,11 @@ async function waitForSocket(peerId: string, messageId: string): Promise<void> {
  * is a different path and is what a sender reports when it never looked at the setting.
  */
 function claudeInboundBlockedStatus(recipient: Peer, inbound: 'hold' | 'refuse'): string {
-  const ref = peerRef(recipient);
   const why =
     inbound === 'hold'
-      ? 'That session is holding peer messages (crossSessionInbound is hold)'
-      : 'That session is refusing peer messages (crossSessionInbound is refuse)';
-  return (
-    `Message stored for ${ref}. ${why}, and nothing was posted to its inbox socket. ` +
-    'The inbox copy can still be withdrawn.'
-  );
+      ? 'that session is holding peer messages (crossSessionInbound is hold)'
+      : 'that session is refusing peer messages (crossSessionInbound is refuse)';
+  return `Nothing was posted to ${peerRef(recipient)}: ${why}. The inbox copy can still be withdrawn.`;
 }
 
 /**
