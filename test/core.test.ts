@@ -127,7 +127,7 @@ describe('resolvePeer', () => {
     peer('codex', 103, 'Billing migration'),
     peer('claude', 201, 'billing-review'),
     peer('claude', 202, 'pi-server'),
-    peer('gemini', 301, 'docs'),
+    peer('qwen', 301, 'docs'),
     peer('pi', 401, 'ui'),
   ];
   const ok = (to: string) => {
@@ -144,7 +144,7 @@ describe('resolvePeer', () => {
     assert.equal(ok('Billing migration'), 'codex-103');
     assert.equal(ok('claude:billing'), 'claude-201');
     assert.equal(ok('billing-r'), 'claude-201');
-    assert.equal(ok('gemini:docs'), 'gemini-301');
+    assert.equal(ok('qwen:docs'), 'qwen-301');
     assert.equal(ok('pi-401'), 'pi-401');
     assert.equal(ok('pi:ui'), 'pi-401');
   });
@@ -181,7 +181,8 @@ describe('agents', () => {
   test('recognizes native binaries by name, scripts by command line, generic names by path', () => {
     assert.ok(isAgentProcess('codex', '/opt/homebrew/bin/codex', none));
     assert.ok(isAgentProcess('claude', 'claude', none));
-    assert.ok(isAgentProcess('gemini', '/opt/homebrew/opt/node/bin/node', () => 'node /opt/homebrew/bin/gemini --yolo'));
+    assert.ok(isAgentProcess('antigravity', 'agy', none));
+    assert.ok(isAgentProcess('antigravity', '/usr/local/bin/antigravity', none));
     assert.ok(isAgentProcess('qwen', 'node', () => 'node /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js'));
     assert.ok(isAgentProcess('kimi', 'kimi-code', none)); // Kimi Code sets its process title
     assert.ok(isAgentProcess('cursor', 'node', () => 'node /Users/me/.local/share/cursor-agent/versions/2026.09.18/index.js'));
@@ -191,7 +192,7 @@ describe('agents', () => {
     assert.ok(!isAgentProcess('cursor', '/opt/homebrew/bi', cursorArgs, () => 'bash'));
     assert.ok(isAgentProcess('grok', '/Users/me/.grok/bin/agent', none));
     assert.ok(!isAgentProcess('cursor', '/Users/me/.grok/bin/agent', none));
-    assert.ok(!isAgentProcess('gemini', 'node', () => 'node /usr/lib/node_modules/some-mcp-server/index.js'));
+    assert.ok(!isAgentProcess('antigravity', 'node', () => 'node /usr/lib/node_modules/some-mcp-server/index.js'));
     assert.ok(!isAgentProcess('pi', 'node', () => 'node /tmp/pipeline.js'));
   });
 
@@ -336,13 +337,13 @@ describe('registry', () => {
   test('a reused pid is not mistaken for the old session', async () => {
     const agent = fakeAgent();
     try {
-      registerSession('gemini', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
+      registerSession('qwen', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
       const stale = 'Mon Jan  1 00:00:00 2001';
-      const sessionFile = path.join(peerDir('gemini-t'), 'session.json');
+      const sessionFile = path.join(peerDir('qwen-t'), 'session.json');
       const record = JSON.parse(fs.readFileSync(sessionFile, 'utf8')) as { procStart?: string };
       record.procStart = stale;
       fs.writeFileSync(sessionFile, JSON.stringify(record));
-      const ownersFile = path.join(peerDir('gemini-t'), 'owners.json');
+      const ownersFile = path.join(peerDir('qwen-t'), 'owners.json');
       const owners = JSON.parse(fs.readFileSync(ownersFile, 'utf8')) as { procStart?: string }[];
       owners[0].procStart = stale;
       fs.writeFileSync(ownersFile, JSON.stringify(owners));
@@ -927,7 +928,6 @@ describe('installed copies', () => {
       assert.deepEqual(found, {
         claude: '0.6.0@telepathy',
         codex: '0.10.0@telepathy', // the newest folder, compared as versions, not text
-        gemini: '0.4.4',
         qwen: '0.4.3',
         copilot: '0.4.2@telepathy',
         devin: '0.4.1',

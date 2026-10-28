@@ -72,7 +72,6 @@ var AGENT_IDS = [
   "codex",
   "opencode",
   "kilo",
-  "gemini",
   "qwen",
   "copilot",
   "cursor",
@@ -91,14 +90,6 @@ var SPECS = {
   codex: { id: "codex", label: "Codex", names: ["codex"] },
   opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    names: ["gemini"],
-    script: /(^|[\s/])gemini(\.js)?(\s|$)/,
-    env: ["GEMINI_CLI"],
-    nextTurnHook: true
-  },
   qwen: {
     id: "qwen",
     label: "Qwen Code",
@@ -133,6 +124,7 @@ var SPECS = {
     nextTurnHook: true
   },
   devin: { id: "devin", label: "Devin CLI", names: ["devin"], env: ["DEVIN_PLUGIN_ROOT", "DEVIN_PROJECT_DIR"], nextTurnHook: true },
+  // One plugin for the App, CLI, and IDE. The CLI TUI is turn-boundary only. The App sidecar wakes idle chats.
   antigravity: { id: "antigravity", label: "Antigravity", names: ["agy", "antigravity"], nextTurnHook: true },
   hermes: { id: "hermes", label: "Hermes Agent", names: ["hermes"], script: /(^|[\s/])hermes(\s|$)/ },
   openclaw: { id: "openclaw", label: "OpenClaw", names: ["openclaw"], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },

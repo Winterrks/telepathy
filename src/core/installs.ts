@@ -148,7 +148,7 @@ function codex(): Install[] {
   return newest ? [newest] : [];
 }
 
-function extension(agent: 'gemini' | 'qwen'): Install[] {
+function extension(agent: 'qwen'): Install[] {
   const dir = path.join(home(), `.${agent}`, 'extensions', 'telepathy');
   const version = readVersion(path.join(dir, `${agent}-extension.json`));
   return version ? [{ agent, version, dir }] : [];
@@ -179,10 +179,22 @@ function devin(): Install[] {
   return newest ? [newest] : [];
 }
 
+/**
+ * The same plugin loads in the App, CLI, and IDE. `agy plugin install` stages a copy under the CLI plugins
+ * directory; a manual install lives in `~/.gemini/config/plugins/telepathy`. The newest of those is the copy
+ * update and status report. A leftover Gemini CLI extension is not an install.
+ */
 function antigravity(): Install[] {
-  const dir = path.join(home(), '.gemini', 'config', 'plugins', 'telepathy');
-  const version = builtVersion(dir);
-  return version ? [{ agent: 'antigravity', version, dir }] : [];
+  const dirs = [
+    path.join(home(), '.gemini', 'config', 'plugins', 'telepathy'),
+    path.join(home(), '.gemini', 'antigravity-cli', 'plugins', 'telepathy'),
+  ];
+  const found = dirs.flatMap((dir) => {
+    const version = builtVersion(dir);
+    return version ? [{ agent: 'antigravity' as const, version, dir }] : [];
+  });
+  const newest = newestOf(found);
+  return newest ? [newest] : [];
 }
 
 /**
@@ -237,7 +249,6 @@ export function findInstalls(): Install[] {
   return [
     ...claude(),
     ...codex(),
-    ...extension('gemini'),
     ...extension('qwen'),
     ...copilot(),
     ...devin(),

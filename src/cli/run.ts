@@ -3,13 +3,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { scheduleAutoUpdate } from '../auto-update.ts';
 import { startAcpSession } from '../acp/host.ts';
-import { agentLabel, isAgent } from '../core/agents.ts';
+import { ensureAgyApiKey } from './agy-auth.ts';
+import { agentLabel } from '../core/agents.ts';
 import { findInstalls, isNewer } from '../core/installs.ts';
 import { cachedGithubVersion } from '../version-check.ts';
 import { runHeadless } from '../headless/run.ts';
 import { clearHosted, namedPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
-import { acpCommand, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
+import { acpCommand, canonicalRunAgent, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
 
 export interface RunArgs {
@@ -89,15 +90,23 @@ export async function runCommand(argv: string[]): Promise<number> {
     console.log(listRuns());
     return 0;
   }
-  if (!parsed.agent || !isAgent(parsed.agent)) {
+  const agent = canonicalRunAgent(parsed.agent);
+  if (!agent) {
     console.error(
-      `Unknown agent ${JSON.stringify(parsed.agent ?? '')}. Known: ${harnesses().map((harness) => harness.agent).join(', ')}.\n` +
+      `Unknown agent ${JSON.stringify(parsed.agent ?? '')}. Known: ${harnesses().map((harness) => harness.agent).join(', ')} (agy is antigravity).\n` +
         'Run `telepathy run --list` to see how each one starts.',
     );
     return 1;
   }
-  const harness = harnessByAgent(parsed.agent);
+  const harness = harnessByAgent(agent);
   if (!harness) return 1;
+  if (harness.agent === 'antigravity' && (parsed.headless || parsed.acp)) {
+    const auth = ensureAgyApiKey();
+    if (!auth.ok) {
+      console.error(auth.warning);
+      return 1;
+    }
+  }
   if (!(await prepare(harness.agent))) return 1;
   const cwd = parsed.cwd ? path.resolve(parsed.cwd) : process.cwd();
   const name = parsed.name;

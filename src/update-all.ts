@@ -3,6 +3,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
+import {
+  enableAntigravitySidecar,
+  leftoverGeminiExtension,
+  LEFTOVER_GEMINI_NOTE,
+  removeLeftoverGeminiExtension,
+} from './core/antigravity.ts';
 import { installsInScope, isNewer, type Install, isOpencodeNpmInstall } from './core/installs.ts';
 import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
 
@@ -10,8 +16,8 @@ import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
  * Updates telepathy in every agent on this machine that has it installed, each with the agent's own update
  * command:
  *   node update-all.mjs [--dry-run]
- * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Gemini CLI and
- * Qwen Code ask to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
+ * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Qwen Code
+ * asks to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
  * keep the version they started with until they restart.
  */
 
@@ -34,9 +40,8 @@ function stepsFor(install: Install): Step[] | 'cache' {
       ];
     case 'codex':
       return [{ cmd: 'codex', args: ['plugin', 'marketplace', 'upgrade', marketplace] }];
-    case 'gemini':
     case 'qwen':
-      return [{ cmd: install.agent, args: ['extensions', 'update', 'telepathy'] }];
+      return [{ cmd: 'qwen', args: ['extensions', 'update', 'telepathy'] }];
     case 'copilot':
       return [{ cmd: 'copilot', args: ['plugin', 'update', `telepathy@${marketplace}`] }];
     case 'devin':
@@ -51,7 +56,7 @@ function stepsFor(install: Install): Step[] | 'cache' {
   }
 }
 
-/** Runs one step, answering "y" to any confirmation prompt (Gemini and Qwen ask on every update). */
+/** Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). */
 export function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let output = '';
@@ -128,12 +133,15 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   const log = options.log;
   const say = (line: string) => (log ? log(line) : console.log(line));
   const before = installsInScope();
+  if (before.some((install) => install.agent === 'antigravity') && !dryRun) enableAntigravitySidecar();
   if (!before.length) {
+    mentionLeftoverGemini(dryRun, say);
     say('No agent on this machine has telepathy installed.');
     return 0;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
+  mentionLeftoverGemini(dryRun, say);
   if (dryRun) {
     for (const install of before) {
       if (alreadyCurrent(install, latest)) {
@@ -189,6 +197,17 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
     return 1;
   }
   return 0;
+}
+
+function mentionLeftoverGemini(dryRun: boolean, say: (line: string) => void): void {
+  const dir = leftoverGeminiExtension();
+  if (!dir) return;
+  if (dryRun) {
+    say(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
+    return;
+  }
+  removeLeftoverGeminiExtension();
+  say(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 
 /** True when this file is the process entry (`node update-all.mjs`), not a bundled import. */

@@ -452,13 +452,13 @@ describe('telepathy plugin', () => {
 
       // A newer copy installed for this agent: a restart loads it. Older copies elsewhere: update-all fixes them.
       fs.mkdirSync(path.join(sb.codexHome, 'plugins', 'cache', 'telepathy', 'telepathy', '99.1.0'), { recursive: true });
-      const gemini = path.join(sb.env.HOME, '.gemini', 'extensions', 'telepathy');
-      fs.mkdirSync(gemini, { recursive: true });
-      fs.writeFileSync(path.join(gemini, 'gemini-extension.json'), JSON.stringify({ name: 'telepathy', version: '0.1.0' }));
+      const qwen = path.join(sb.env.HOME, '.qwen', 'extensions', 'telepathy');
+      fs.mkdirSync(qwen, { recursive: true });
+      fs.writeFileSync(path.join(qwen, 'qwen-extension.json'), JSON.stringify({ name: 'telepathy', version: '0.1.0' }));
       const notes = toolText(await call(codex, 'read_messages')).split('\n').filter((l) => l.startsWith('[telepathy setup]'));
       assert.deepEqual(notes, [
         `[telepathy setup] This session runs telepathy ${notes[0].match(/runs telepathy ([\d.]+)/)?.[1]}, but 99.1.0 is installed, so messages may not reach this session as they should. Tell your user to restart this session to load the update.`,
-        `[telepathy setup] Some agents have an older telepathy installed than 99.1.0: Gemini CLI 0.1.0. Tell your user; with their OK, you can update them all with: node "${path.join(DIST, 'update-all.mjs')}"`,
+        `[telepathy setup] Some agents have an older telepathy installed than 99.1.0: Qwen Code 0.1.0. Tell your user; with their OK, you can update them all with: node "${path.join(DIST, 'update-all.mjs')}"`,
       ]);
     } finally {
       fs.rmSync(config, { force: true });
@@ -476,17 +476,19 @@ describe('telepathy plugin', () => {
       fs.writeFileSync(file, content);
     };
     const manifest = (version: string) => JSON.stringify({ name: 'telepathy', version });
-    const geminiManifest = path.join(home, '.gemini', 'extensions', 'telepathy', 'gemini-extension.json');
+    const leftover = path.join(home, '.gemini', 'extensions', 'telepathy', 'gemini-extension.json');
+    const agyBundle = path.join(home, '.gemini', 'config', 'plugins', 'telepathy', 'dist', 'server.mjs');
     const opencodePkg = path.join(home, '.cache', 'opencode', 'packages', 'telepathy@git+https:', 'github.com', 'Winterrks', 'telepathy.git', 'node_modules', 'telepathy', 'package.json');
     const kiloPkg = path.join(home, '.cache', 'kilo', 'packages', 'git', 'git_github.com_Winterrks_telepathy-abc', 'package.json');
-    write(geminiManifest, manifest('0.4.4'));
+    write(leftover, manifest('0.4.4'));
+    write(agyBundle, 'var VERSION = true ? "0.4.4" : "0.0.0-dev";\n');
     write(opencodePkg, manifest('0.2.0'));
     write(kiloPkg, manifest('0.1.0'));
     write(path.join(home, '.local', 'share', 'devin', 'cli', 'plugins', 'cache', 'github.com_Winterrks_telepathy_plugin-1', '0.4.1', '.devin-plugin', 'plugin.json'), manifest('0.4.1'));
-    // Gemini updates only once its confirmation prompt gets a "y"; OpenCode reinstalls into its emptied cache;
-    // Kilo's config load doesn't reinstall anything; Devin isn't on PATH.
+    // Antigravity reinstalls by rewriting the bundled version; OpenCode reinstalls into its emptied cache;
+    // Kilo's config load doesn't reinstall anything; Devin isn't on PATH. The leftover Gemini extension is not updated.
     const script = (body: string) => `#!/usr/bin/env node\nconst fs = require('node:fs');\n${body}\n`;
-    write(path.join(bin, 'gemini'), script(`let input = ''; process.stdin.on('data', (d) => (input += d)).on('end', () => { process.stdout.write('Do you want to continue? [Y/n]: '); if (input.startsWith('y')) fs.writeFileSync(${JSON.stringify(geminiManifest)}, ${JSON.stringify(manifest('0.6.0'))}); });`));
+    write(path.join(bin, 'agy'), script(`let text = fs.readFileSync(${JSON.stringify(agyBundle)}, 'utf8'); fs.writeFileSync(${JSON.stringify(agyBundle)}, text.replace('0.4.4', '0.6.0'));`));
     write(path.join(bin, 'opencode'), script(`fs.mkdirSync(${JSON.stringify(path.dirname(opencodePkg))}, { recursive: true }); fs.writeFileSync(${JSON.stringify(opencodePkg)}, ${JSON.stringify(manifest('0.6.0'))});`));
     write(path.join(bin, 'kilo'), script(''));
     for (const f of fs.readdirSync(bin)) fs.chmodSync(path.join(bin, f), 0o755);
@@ -494,17 +496,21 @@ describe('telepathy plugin', () => {
     try {
       const dry = spawnSync(process.execPath, [path.join(DIST, 'update-all.mjs'), '--dry-run'], { env, encoding: 'utf8' });
       assert.equal(dry.status, 0, dry.stderr);
-      assert.match(dry.stdout, /^telepathy is installed in: Gemini CLI 0\.4\.4, Devin CLI 0\.4\.1, OpenCode 0\.2\.0, Kilo Code 0\.1\.0\.\n/);
-      assert.match(dry.stdout, /- Gemini CLI: `gemini extensions update telepathy`\n/);
+      assert.match(dry.stdout, /^telepathy is installed in: Devin CLI 0\.4\.1, Antigravity 0\.4\.4, OpenCode 0\.2\.0, Kilo Code 0\.1\.0\.\n/);
+      assert.match(dry.stdout, /- Antigravity: `agy plugin install https:\/\/github.com\/Winterrks\/telepathy\/tree\/main\/antigravity`\n/);
+      assert.match(dry.stdout, /Leftover Gemini CLI extension/);
       assert.match(dry.stdout, /- OpenCode: clear its package cache and run `opencode debug config` to reinstall\n/);
-      assert.equal(fs.readFileSync(geminiManifest, 'utf8'), manifest('0.4.4'), 'a dry run changes nothing');
+      assert.equal(fs.existsSync(leftover), true, 'a dry run leaves the Gemini extension');
+      assert.match(fs.readFileSync(agyBundle, 'utf8'), /0\.4\.4/);
 
       const res = spawnSync(process.execPath, [path.join(DIST, 'update-all.mjs')], { env, encoding: 'utf8' });
       assert.equal(res.status, 1, 'Kilo and Devin were not updated');
-      assert.match(res.stdout, /Updating Gemini CLI… done\n/);
+      assert.match(res.stdout, /Updating Antigravity… done\n/);
+      assert.match(res.stdout, /Removed leftover Gemini CLI extension/);
+      assert.equal(fs.existsSync(leftover), false);
       assert.match(res.stdout, /Updating Devin CLI… failed: `devin` is not on PATH\n/);
       assert.match(res.stdout, /Updating Kilo Code… failed: it didn't reinstall telepathy, so the old copy was kept\./);
-      assert.match(res.stdout, /Installed versions:\n- Gemini CLI: 0\.4\.4 → 0\.6\.0\n- Devin CLI: 0\.4\.1\n- OpenCode: 0\.2\.0 → 0\.6\.0\n- Kilo Code: 0\.1\.0\n/);
+      assert.match(res.stdout, /Installed versions:\n- Devin CLI: 0\.4\.1\n- Antigravity: 0\.4\.4 → 0\.6\.0\n- OpenCode: 0\.2\.0 → 0\.6\.0\n- Kilo Code: 0\.1\.0\n/);
       assert.match(res.stdout, /Not updated: Devin CLI, Kilo Code\./);
       assert.equal(fs.readFileSync(kiloPkg, 'utf8'), manifest('0.1.0'));
       assert.deepEqual(fs.readdirSync(path.join(home, '.cache', 'opencode', 'packages')), ['telepathy@git+https:'], 'the old OpenCode copy is removed');
@@ -709,26 +715,26 @@ describe('telepathy plugin', () => {
       assert.match(rowFor(claudeAgent.pid, 'thread-p'), /  ·  interactive  ·  idle  ·  /);
     });
 
-    test('hook-only agents: idle at start, busy from a prompt or tool call, waiting on Gemini\'s permission notification, idle at turn end', () => {
+    test('hook-only agents: idle at start, busy from a prompt or tool call, waiting on a permission notification, idle at turn end', () => {
       const claudeAgent = spawnAgent();
-      const gemini = spawnAgent();
+      const qwen = spawnAgent();
       const row = () => rowFor(claudeAgent.pid, 'g');
-      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g', cwd: '/w/docs' });
+      runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g', cwd: '/w/docs' });
       assert.match(row(), /  ·  interactive  ·  idle  ·  /);
-      runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g' }, 'BeforeAgent');
+      runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g' }, 'BeforeAgent');
       assert.match(row(), /  ·  interactive  ·  busy  ·  /);
-      const notified = runHook(sb, 'gemini', gemini.pid, 'status', { session_id: 'g', notification_type: 'ToolPermission', message: 'Allow shell?' }, 'waiting');
+      const notified = runHook(sb, 'qwen', qwen.pid, 'status', { session_id: 'g', notification_type: 'ToolPermission', message: 'Allow shell?' }, 'waiting');
       assert.equal(notified.stdout, '');
       assert.match(row(), /  ·  interactive  ·  waiting on a permission prompt for its user  ·  /);
-      runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g', tool_name: 'run_shell_command', tool_input: { command: 'ls' } }, 'AfterTool');
+      runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g', tool_name: 'run_shell_command', tool_input: { command: 'ls' } }, 'AfterTool');
       assert.match(row(), /  ·  interactive  ·  busy  ·  /);
-      runHook(sb, 'gemini', gemini.pid, 'turn-end', { session_id: 'g' });
+      runHook(sb, 'qwen', qwen.pid, 'turn-end', { session_id: 'g' });
       assert.match(row(), /  ·  interactive  ·  idle  ·  /);
-      runHook(sb, 'gemini', gemini.pid, 'status', { session_id: 'g', notification_type: 'SomethingElse' }, 'waiting');
+      runHook(sb, 'qwen', qwen.pid, 'status', { session_id: 'g', notification_type: 'SomethingElse' }, 'waiting');
       assert.match(row(), /  ·  interactive  ·  idle  ·  /, 'only permission notifications mean waiting');
 
       // An interrupt often runs no hook, so a busy status with no hook activity for a while is shown as uncertain.
-      fs.writeFileSync(path.join(sb.home, 'peers', 'gemini-g', 'status.json'), JSON.stringify({ status: 'busy', at: new Date(Date.now() - 20 * 60_000).toISOString() }));
+      fs.writeFileSync(path.join(sb.home, 'peers', 'qwen-g', 'status.json'), JSON.stringify({ status: 'busy', at: new Date(Date.now() - 20 * 60_000).toISOString() }));
       assert.match(row(), /  ·  interactive  ·  busy\? \(no activity for 20m\)  ·  /);
     });
   });
@@ -828,14 +834,14 @@ describe('telepathy plugin', () => {
       assert.match(noteOf(grep), /edited daemon\/server\.ts /);
     });
 
-    test('each agent\'s own tool shapes: Copilot\'s JSON toolArgs, Gemini\'s read_file', () => {
+    test('each agent\'s own tool shapes: Copilot\'s JSON toolArgs, Qwen\'s read_file', () => {
       const copilot = spawnAgent();
       runHook(sb, 'copilot', copilot.pid, 'session-start', { sessionId: 'cp', cwd: '/w/app' });
       runHook(sb, 'copilot', copilot.pid, 'inbox', { sessionId: 'cp', toolName: 'edit', toolArgs: JSON.stringify({ path: '/w/app/sdk/client.ts' }) }, 'postToolUse');
 
-      const gemini = spawnAgent();
-      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g', cwd: '/w/app' });
-      const res = runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g', tool_name: 'read_file', tool_input: { absolute_path: '/w/app/sdk/client.ts' } }, 'AfterTool');
+      const qwen = spawnAgent();
+      runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g', cwd: '/w/app' });
+      const res = runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g', tool_name: 'read_file', tool_input: { absolute_path: '/w/app/sdk/client.ts' } }, 'AfterTool');
       assert.match(noteOf(res), new RegExp(`^\\[telepathy note\\] Another session, ${named('copilot', 'app', 'cp')} \\[copilot-cp\\], edited sdk/client\\.ts `));
     });
   });
@@ -1253,22 +1259,22 @@ describe('telepathy plugin', () => {
       return JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason as string;
     };
 
-    test('Gemini gets messages as context at its next prompt or tool call, once', () => {
-      const gemini = spawnAgent();
-      runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'g-1', cwd: '/w/docs', hook_event_name: 'SessionStart' });
-      const status = sendFromClaude('gemini:docs', 'Is the API reference current?');
+    test('Qwen gets messages as context at its next prompt or tool call, once', () => {
+      const qwen = spawnAgent();
+      runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g-1', cwd: '/w/docs', hook_event_name: 'SessionStart' });
+      const status = sendFromClaude('qwen:docs', 'Is the API reference current?');
       assert.equal(
         status,
-        `Message stored for ${named('gemini', 'docs', 'g-1')} [gemini-g-1]. It can't be woken while idle, so it will see it at its next turn. ` +
-          "(Sent by telepathy: SendMessage can't reach Gemini CLI, so this shows as an error. Don't resend.)",
+        `Message stored for ${named('qwen', 'docs', 'g-1')} [qwen-g-1]. It can't be woken while idle, so it will see it at its next turn. ` +
+          "(Sent by telepathy: SendMessage can't reach Qwen Code, so this shows as an error. Don't resend.)",
       );
-      const res = runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1', hook_event_name: 'AfterTool' }, 'AfterTool');
+      const res = runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-1', hook_event_name: 'AfterTool' }, 'AfterTool');
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.hookEventName, 'AfterTool');
       assert.match(out.additionalContext, /^\[telepathy\] A new message from another AI agent session \(not your user\)/);
       assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
       assert.match(out.additionalContext, /Is the API reference current\?$/);
-      assert.equal(runHook(sb, 'gemini', gemini.pid, 'inbox', { session_id: 'g-1' }, 'BeforeAgent').stdout, '');
+      assert.equal(runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-1' }, 'BeforeAgent').stdout, '');
     });
 
     test('Codex gets queued messages after a tool call or with the next prompt, and they leave its queue', () => {
@@ -1306,7 +1312,6 @@ describe('telepathy plugin', () => {
 
     test('a turn that ends with messages pending goes on with them, in each agent\'s own shape', () => {
       const cases: [Agent, (res: ReturnType<typeof runHook>) => string][] = [
-        ['gemini', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
         ['qwen', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
         ['grok', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
         ['devin', (r) => JSON.parse(r.stdout).decision === 'block' && JSON.parse(r.stdout).reason],
@@ -1463,8 +1468,9 @@ describe('telepathy plugin', () => {
       const cursor = spawnAgent();
       const cguide = JSON.parse(runHook(sb, 'cursor', cursor.pid, 'session-start', { conversation_id: 'y' }).stdout);
       assert.match(cguide.additional_context, /come from another AI agent, not your user/);
-      const gemini = spawnAgent();
-      assert.equal(runHook(sb, 'gemini', gemini.pid, 'session-start', { session_id: 'z' }).stdout, '');
+      const agy = spawnAgent();
+      const aguide = JSON.parse(runHook(sb, 'antigravity', agy.pid, 'session-start', { conversationId: 'z', workspacePaths: ['/w/a'] }).stdout);
+      assert.match(aguide.injectSteps[0].systemMessage.systemMessage, /come from another AI agent, not your user/);
     });
   });
 });

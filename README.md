@@ -3,14 +3,14 @@
 </p>
 
 <p align="center">
-  Claude Code, Codex, OpenCode, Gemini CLI, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and
+  Claude Code, Codex, OpenCode, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and
   Kilo Code sessions on the same machine message each other, and a message can wake the receiving agent up on its own.
 </p>
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
   <img alt="version 0.9.0" src="https://img.shields.io/badge/version-0.9.0-6d28d9">
-  <img alt="12 agents" src="https://img.shields.io/badge/agents-12-6d28d9">
+  <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
 
@@ -48,7 +48,6 @@ you (in Claude Code) › ask the codex session working on the API whether the au
    - [OpenCode](#opencode)
    - [Kilo Code](#kilo-code)
    - [Copilot CLI](#github-copilot-cli)
-   - [Gemini CLI](#gemini-cli)
    - [Qwen Code](#qwen-code)
    - [Grok](#grok-build-cli)
    - [Devin](#devin-cli)
@@ -73,7 +72,7 @@ asks the daemon session, which builds it and replies. You don't relay a thing.
 
 Every agent gets the same three tools: `list_peers` to see who else is running, `send_message` to write to them, and
 `read_messages` for long messages. Addresses look like `codex:api-c3f` or `opencode:shop-ui-o1a`, so any session can reach any
-other: Codex to Codex, OpenCode to Claude, Gemini to Copilot. Claude Code also sees the other agents' sessions in its
+other: Codex to Codex, OpenCode to Claude, Antigravity to Copilot. Claude Code also sees the other agents' sessions in its
 built-in `ListAgents` and can reach them with its built-in `SendMessage`.
 
 The receiving side is what makes it feel like telepathy. Where the agent allows it, an incoming message starts a turn
@@ -90,8 +89,9 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
 | **GitHub Copilot CLI** | Next turn (hooks) | ✅ |
 | **Grok Build CLI** | Wakes an idle session (Grok runs the telepathy monitor from its first prompt on) | ✅ (see [Grok](#grok-build-cli)) |
 | **Devin CLI** | Next turn (hooks) | ✅ |
-| **Antigravity CLI** | Next turn (hooks) | ✅ |
-| **Gemini CLI** | Next turn (hooks) | ✅ |
+| **Antigravity App** | Wakes an idle conversation (the `telepathy-wake` sidecar calls `agentapi send-message`) | Not live-tested on 1.4.9 |
+| **Antigravity CLI** | Next turn (hooks). No inject API while the TUI is idle | Hooks on CLI 1.2.9; 1.4.9 contract from the docs |
+| **Antigravity IDE** | TBD | — |
 | **Qwen Code** | Next turn (hooks) | ✅ |
 | **Cursor CLI** | After its next tool call (hooks) | ✅ |
 | **Kimi Code** | Next turn (hooks) | Registers, hooks and tools ✅; no model run yet |
@@ -101,10 +101,11 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
   while the agent is working, the turn keeps going with it instead of stopping. An idle session sees it when you next
   prompt it; senders are told so.
 
-Not supported yet: the Cursor and Kilo Code IDE extensions and the Antigravity desktop app (one process hosts many
-chats, so they share one address); Claude Cowork (it runs in a VM, which can't see the other sessions); Hermes Agent,
-OpenClaw and Pi. The ChatGPT app's Codex threads get addresses of their own like the CLI's, but delivery to them is
-untested.
+Not supported yet: the Cursor and Kilo Code IDE extensions; the Antigravity IDE (hooks may load, idle wake is not
+wired); Claude Cowork (it runs in a VM, which can't see the other sessions); Hermes Agent, OpenClaw and Pi. The
+ChatGPT app's Codex threads get addresses of their own like the CLI's, but delivery to them is untested. Gemini CLI
+is deprecated. Its successor is Antigravity (`agy`). A leftover `~/.gemini/extensions/telepathy` is removed by
+`telepathy install` and `telepathy update` so `agy plugin import gemini` does not install telepathy twice.
 
 ## Quick start
 
@@ -198,14 +199,6 @@ copilot plugin marketplace add Winterrks/telepathy && copilot plugin install tel
 Update: `copilot plugin update telepathy@telepathy`. Tested with Copilot CLI 1.0.88. Copilot asks before a tool
 runs for the first time, telepathy's included.
 
-### Gemini CLI
-
-```sh
-gemini extensions install https://github.com/Winterrks/telepathy --auto-update
-```
-
-With `--auto-update`, Gemini updates telepathy on its own. Otherwise: `gemini extensions update telepathy`. Gemini only starts extension MCP servers in trusted folders.
-
 ### Qwen Code
 
 ```sh
@@ -240,12 +233,36 @@ Update: `devin plugins update telepathy`. Tested with Devin CLI 3000.11.3.
 
 ### Antigravity
 
+One plugin loads in the App, the CLI, and the IDE. Install it from the `antigravity` folder, not the repository
+root: at the root, `agy` would also install the other agents' folders.
+
 ```sh
 agy plugin install https://github.com/Winterrks/telepathy/tree/main/antigravity
 ```
 
-Install from the `antigravity` folder, not the repository root: at the root, `agy` would also install the other
-agents' plugin folder. Reinstall to update. Tested with the Antigravity CLI 1.2.9.
+A copy placed in `~/.gemini/config/plugins/telepathy/` is the same plugin. The CLI also stages installs under
+`~/.gemini/antigravity-cli/plugins/telepathy/`. Reinstall to update.
+
+`telepathy install` and `telepathy update` enable the App sidecar `telepathy/telepathy-wake` in
+`~/.gemini/config/config.json`. That sidecar watches App conversations and wakes an idle one with
+`agentapi send-message <conversation_id> <prompt>`. The CLI TUI has no inject API: hooks deliver at the next
+invocation (`injectSteps`) or by continuing a turn that was about to stop (`decision: "continue"`). The IDE is
+not woken while idle.
+
+`SessionStart` registers the peer from `conversationId`. The same id, including `agy --conversation <uuid>`,
+keeps the address and the name. `/fork` is a new id and a new peer. The transcript path says which surface it
+is: `~/.gemini/antigravity` is the App, `antigravity-cli` the CLI, `antigravity-ide` the IDE.
+
+`telepathy run antigravity` (alias `agy`) is the interactive TUI. `telepathy run --headless antigravity` keeps a
+long-lived `agy --input-format stream-json --output-format stream-json` and writes prompts on stdin. It does not
+wrap `agy -p`. Headless and ACP require `GEMINI_API_KEY` and `"modelProvider": "gemini"` in
+`~/.gemini/antigravity-cli/settings.json`. A consumer login alone is refused: Google's FAQ says driving a
+consumer account from third-party software, or wrapping `agy -p`, can suspend the account. There is no
+`agy --acp`. `telepathy run --acp antigravity` uses the official `antigravity-acp` binary (`agy_acp_server.par`
+if that is the name on PATH) and the same API-key check.
+
+Hooks were exercised on Antigravity CLI 1.2.9. The App sidecar, surface detection, and headless stream follow
+the 1.4.9 docs and are not live-tested here.
 
 ### Cursor
 
@@ -277,7 +294,7 @@ node ~/.claude/plugins/cache/telepathy/telepathy/<version>/dist/update-all.mjs
 ```
 
 Any installed copy's `dist/update-all.mjs` works the same; add `--dry-run` to see what it would run. It needs the
-network (the agents fetch from GitHub), answers yes to Gemini's and Qwen's update confirmation, and reinstalls OpenCode 1.x
+network (the agents fetch from GitHub), answers yes to Qwen's update confirmation, and reinstalls OpenCode 1.x
 and Kilo Code by clearing their package cache (OpenCode 2 updates with its own `opencode plugin update`). Restart running sessions afterwards to load the new version. Grok and
 Cursor load Claude Code's copy, so they follow Claude Code. When an agent's copy is older than the newest one on this
 machine, telepathy's tools say so in a `[telepathy setup]` note that includes this command.
@@ -301,9 +318,9 @@ telepathy ps
 telepathy stop box
 ```
 
-`telepathy run claude`, `codex`, `opencode`, and `kilo` exec that CLI with your arguments and a full terminal. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. `gemini` and `copilot` start an ACP host (`gemini --acp`, `copilot --acp`) so an incoming message can be injected while the session is idle. `telepathy run --acp <agent>` forces ACP where a launcher exists (`opencode acp`, or `claude-agent-acp` / `codex-acp` if those adapters are on PATH; `claude-code-acp` is the older Claude adapter name). Other known harnesses start their own CLI and print one line when a message will not wake them.
+`telepathy run claude`, `codex`, `opencode`, `kilo`, and `antigravity` (alias `agy`) exec that CLI with your arguments and a full terminal. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. `copilot` starts an ACP host (`copilot --acp`) so an incoming message can be injected while the session is idle. `telepathy run --acp <agent>` forces ACP where a launcher exists (`opencode acp`, `antigravity-acp`, or `claude-agent-acp` / `codex-acp` if those adapters are on PATH; `claude-code-acp` is the older Claude adapter name; `agy_acp_server.par` is the older Antigravity adapter name). Other known harnesses start their own CLI and print one line when a message will not wake them.
 
-`telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Gemini, Copilot, and Qwen use the ACP host. The terminal shows a short status line. The harness's raw stream is appended to a log under the telepathy state directory. Model text is written as normal output, not one line per chunk. `--name` is the only peer: when the agent already has the telepathy plugin, that plugin's server is given `TELEPATHY_NAME` and the host does not register a second peer. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An ACP turn that starts with a tool call or a permission request counts as delivered. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted. Ctrl-C during an interactive ACP turn cancels that turn; Ctrl-C while idle, or a second Ctrl-C, exits.
+`telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Antigravity is a long-lived `agy --input-format stream-json --output-format stream-json` (not `agy -p`), and it refuses to start on a consumer login. Copilot and Qwen use the ACP host. The terminal shows a short status line. The harness's raw stream is appended to a log under the telepathy state directory. Model text is written as normal output, not one line per chunk. `--name` is the only peer: when the agent already has the telepathy plugin, that plugin's server is given `TELEPATHY_NAME` and the host does not register a second peer. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An ACP turn that starts with a tool call or a permission request counts as delivered. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted. Ctrl-C during an interactive ACP turn cancels that turn; Ctrl-C while idle, or a second Ctrl-C, exits.
 
 Auto-update runs at most once a day, from a session-start hook and from the MCP server, in a detached process. It does not block the session. Failures are written to `auto-update.log` in the state directory (`TELEPATHY_HOME`, or `~/.telepathy`). `TELEPATHY_AUTO_UPDATE=0` wins, and each harness's MCP config forwards that variable (Codex only forwards names listed in `env_vars`). A `TELEPATHY_HOME` other than `~/.telepathy` is a sandbox: auto-update does not touch installs outside it. `telepathy update` skips a copy that is already the current version, and it prints the Codex restart note only when a version changed.
 
@@ -350,6 +367,7 @@ Messages over 4,000 characters come with a preview and are read in full with `re
                                   └──▶ inbox/<msg>.json ──▶ mid-turn: the next tool call hands it over
  to Claude Code:      send_message ──▶ inbox/<msg>.json ──▶ monitor prints a line ──▶ Claude starts a turn
  to OpenCode / Kilo:  send_message ──▶ inbox/<msg>.json ──▶ plugin calls session.prompt(Async) ──▶ a turn starts
+ to Antigravity App:  send_message ──▶ inbox/<msg>.json ──▶ sidecar calls `agentapi send-message`
  to the others:       send_message ──▶ inbox/<msg>.json ──▶ the next prompt, tool call or turn end hands it over
 ```
 
@@ -365,8 +383,8 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions to the ListAgents result, in its own row format. Message those sessions with `send_message`. `SendMessage` only reaches Claude sessions. A PreToolUse hook stops a `SendMessage` aimed at another harness; that tool result is an error (deny is the only decision that prevents the native call). Claude-to-Claude `SendMessage` is left alone |
 
 Each agent gets its own manifest, so none of them runs another's hooks: `plugin/.claude-plugin`, `.codex-plugin`,
-`.grok-plugin`, `.github/plugin` (Copilot), `.cursor-plugin` and `.devin-plugin`; `gemini-extension.json`,
-`qwen-extension.json` and `.kimi-plugin` at the repository root; `antigravity/` for Antigravity; and the root
+`.grok-plugin`, `.github/plugin` (Copilot), `.cursor-plugin` and `.devin-plugin`;
+`qwen-extension.json` and `.kimi-plugin` at the repository root; `antigravity/` for Antigravity (plugin, hooks, MCP, skill, and the App sidecar); and the root
 `package.json` for OpenCode and Kilo Code (its default export has `setup` for OpenCode 2 and `server` for 1.x and Kilo).
 A session keyed by its harness id keeps its directory for a day after the process exits, so a resume reclaims the
 same id and any mail that was already in the inbox. That day is not a mailbox: a send while the process is gone
@@ -379,8 +397,10 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   (`Message failed: … has no thread yet; prompt it once`) and nothing is written or queued. `codex resume <id>` is
   already that thread, keeps the name from the last time that thread was seen, and can be queued under the same
   110s confirm rules as any other thread. A bare `codex resume` stays `no thread yet` until SessionStart reports
-  the id. Two windows in the same directory stay two rows until each one has a thread id. Copilot and Antigravity
-  still register their folder name at the first prompt; before that they show up as `session-<pid>`.
+  the id. Two windows in the same directory stay two rows until each one has a thread id. Copilot
+  still registers its folder name at the first prompt; before that it shows up as `session-<pid>`.
+  Antigravity registers from `SessionStart`'s `conversationId`, so a resume with `--conversation` is the same
+  peer and `/fork` is a new one.
 - **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
   result. That is the mid-turn path. `codex queue` only runs the message after the turn ends, so it is the fallback
   when no further tool call happens. Whichever comes first wins: a message handed over mid-turn (or read with
@@ -461,8 +481,9 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   Codex has not approved its hooks is shown only when no telepathy hook has fired for that session. Each note is
   shown once per session. If messages seem missing, the agent can call `read_messages`.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
-  dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
-  whichever chat runs its hooks next.
+  dashboard, Copilot's backgrounded sessions), they share one address, and a message goes to
+  whichever chat runs its hooks next. An Antigravity conversation is its own peer: the id is `conversationId`,
+  not the process. The App sidecar wakes that conversation. The CLI and IDE deliver on the next hook boundary.
 - **A SendMessage to another agent shows up as an error line in Claude's UI.** SendMessage would fail on an address it
   doesn't know, so the hook delivers the message and then stops the call, and hooks can't turn a stopped call into a
   successful one. The error text says the message was delivered and not to resend it. The plugin's `send_message`
@@ -478,8 +499,7 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   | Claude Code | busy, shell, idle, waiting | Claude Code's own session record (`~/.claude/sessions/<pid>.json`). `shell` is idle when the only running command is telepathy's own monitor |
   | Codex | busy, idle, interrupted, waiting | The thread's rollout log; waiting from the PermissionRequest hook until Codex writes to the log again |
   | OpenCode, Kilo Code | busy, idle, waiting | The plugin's session and permission events |
-  | Gemini CLI | busy, idle, waiting | Hooks; waiting from its `ToolPermission` notification |
-  | The others | busy, idle | Hooks: busy from a prompt or tool call, idle when the turn ends |
+  | The others, including Antigravity | busy, idle | Hooks: busy from a prompt or tool call, idle when the turn ends |
 
   Hooks can miss the end of a turn (an interrupt often runs none), so a hook-reported busy or waiting with no hook
   activity for 15 minutes shows with a `?` and how long it has been quiet.
@@ -557,7 +577,7 @@ claude --plugin-dir ./plugin      # try it in one Claude Code session without in
 - `test/integration.test.ts`: drives the built plugin through the official MCP client SDK, runs the real hooks,
   monitor and OpenCode plugin, and uses a fake `codex` binary that records what `codex queue` would receive.
 
-`npm run bundle` builds `plugin/dist` and also writes every agent's generated files (manifest versions, the Antigravity and Gemini copies, rule
+`npm run bundle` builds `plugin/dist` and also writes every agent's generated files (manifest versions, the Antigravity copy, rule
 files). Agents cache installed plugins by version, so bump the version in `package.json` when you change the plugin.
 
 ## License

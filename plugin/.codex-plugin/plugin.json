@@ -1,7 +1,7 @@
 {
   "name": "telepathy",
   "version": "0.9.0",
-  "description": "Telepathy for your coding agents: this Codex session can message Claude Code, OpenCode, Gemini CLI and other agent sessions on this machine, and their messages start a turn here. Everything stays on this machine in ~/.telepathy; no network calls, no telemetry.",
+  "description": "Telepathy for your coding agents: this Codex session can message Claude Code, OpenCode, Antigravity and other agent sessions on this machine, and their messages start a turn here. Everything stays on this machine in ~/.telepathy; no network calls, no telemetry.",
   "author": {
     "name": "Winterrks"
   },
@@ -11,7 +11,7 @@
   "keywords": [
     "claude-code",
     "opencode",
-    "gemini-cli",
+    "antigravity",
     "messaging",
     "multi-agent",
     "cross-session",
@@ -23,7 +23,7 @@
   "interface": {
     "displayName": "Telepathy",
     "shortDescription": "Message other agent sessions",
-    "longDescription": "Lets this Codex session find, message and be messaged by the other coding-agent sessions on this machine: Claude Code, other Codex sessions, OpenCode, Gemini CLI, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and Kilo Code. Incoming messages start a new turn here, so two agents can coordinate on their own, for example a UI session asking the backend session for an API change. Local only: messages go through ~/.telepathy on this machine, with no network calls and no telemetry.",
+    "longDescription": "Lets this Codex session find, message and be messaged by the other coding-agent sessions on this machine: Claude Code, other Codex sessions, OpenCode, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and Kilo Code. Incoming messages start a new turn here, so two agents can coordinate on their own, for example a UI session asking the backend session for an API change. Local only: messages go through ~/.telepathy on this machine, with no network calls and no telemetry.",
     "developerName": "Winterrks",
     "category": "Developer Tools",
     "capabilities": [

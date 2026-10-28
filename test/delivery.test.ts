@@ -238,11 +238,11 @@ describe('Claude inbox socket', () => {
     agents.push(claude, other);
     const cwd = path.join(sb.home, name);
     const id = `claude-${name}`;
-    const fromId = `gemini-g-${name}`;
+    const fromId = `qwen-g-${name}`;
     registerPresence('claude', claude.pid, { cwd }, id);
     registerSession('claude', claude.pid, { sessionId: name, cwd, source: 'hook' });
-    registerPresence('gemini', other.pid, { cwd: '/work/docs' }, fromId);
-    registerSession('gemini', other.pid, { sessionId: `g-${name}`, cwd: '/work/docs', source: 'hook' });
+    registerPresence('qwen', other.pid, { cwd: '/work/docs' }, fromId);
+    registerSession('qwen', other.pid, { sessionId: `g-${name}`, cwd: '/work/docs', source: 'hook' });
     const from = readPeer(fromId);
     assert.ok(from);
     return { id, from, address: `claude:${name}` };
@@ -281,7 +281,7 @@ describe('Claude inbox socket', () => {
       assert.match(ok.status, /through Claude's inbox socket/);
       assert.match(deliveredBuf, /\{"type":"auth","token":"socket-token-a"\}/);
       assert.match(deliveredBuf, /\{"type":"user","message":\{"role":"user","content":".*via the socket/);
-      assert.match(deliveredBuf, /from-name=\\"Gemini CLI session gemini:docs/);
+      assert.match(deliveredBuf, /from-name=\\"Qwen Code session qwen:docs/);
       assert.equal(fs.existsSync(path.join(inboxDir(first.id), `${ok.message.id}.json`)), false);
       const log = fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8');
       assert.equal(log.includes('socket-token-a'), false);

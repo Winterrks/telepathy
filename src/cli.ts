@@ -23,7 +23,7 @@ Usage:
   telepathy --version
 
 \`run\` execs the vendor CLI when that CLI can wake an idle session (Claude Code, Codex, OpenCode, Kilo).
-Gemini CLI and Copilot CLI start an ACP host instead. \`--acp\` forces ACP where a launcher exists.
+Copilot CLI starts an ACP host instead. \`agy\` is an alias for antigravity. \`--acp\` forces ACP where a launcher exists.
 \`--headless\` keeps a peer up until \`telepathy stop\`: Claude stream-json, Codex app-server,
 OpenCode serve, or ACP. \`--name\` reuses the same peer id after a restart.
 

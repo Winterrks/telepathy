@@ -64,10 +64,10 @@ describe('transcript confirmation', () => {
     const key = `g${n++}`;
     registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-tx');
     registerSession('codex', fromProc.pid, { sessionId: 'thread-tx', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
-    registerPresence('gemini', toProc.pid, { cwd: '/w/docs' }, `gemini-${key}`);
-    registerSession('gemini', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
+    registerPresence('qwen', toProc.pid, { cwd: '/w/docs' }, `qwen-${key}`);
+    registerSession('qwen', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
     const from = readPeer('codex-thread-tx');
-    const to = readPeer(`gemini-${key}`);
+    const to = readPeer(`qwen-${key}`);
     assert.ok(from && to);
     return { from, to };
   };

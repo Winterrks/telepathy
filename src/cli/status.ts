@@ -1,4 +1,5 @@
 import { agentLabel, type Agent } from '../core/agents.ts';
+import { ANTIGRAVITY_SIDECAR_ID, antigravitySidecarEnabled, leftoverGeminiExtension, LEFTOVER_GEMINI_NOTE } from '../core/antigravity.ts';
 import { installsInScope, isNewer, type Install } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { VERSION } from '../core/version.ts';
@@ -62,6 +63,11 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
     }
     const idle = detectedHarnesses().filter((harness) => !installs.some((install: Install) => install.agent === harness.agent));
     if (idle.length) lines.push(`On PATH with no copy of their own: ${idle.map((harness) => harness.agent).join(', ')}.`);
+    lines.push(
+      `Antigravity App sidecar (${ANTIGRAVITY_SIDECAR_ID}): ${antigravitySidecarEnabled() ? 'enabled' : 'not enabled in ~/.gemini/config/config.json'}`,
+    );
+    const leftover = leftoverGeminiExtension();
+    if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy update\` removes it.`);
   }
   return { text: lines.join('\n'), code: 0 };
 }

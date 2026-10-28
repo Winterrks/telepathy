@@ -136,7 +136,7 @@ export interface AgentProcess {
 }
 
 /**
- * Finds the agent process (the `claude`, `codex`, `gemini`… CLI) this process belongs to: the nearest
+ * Finds the agent process (the `claude`, `codex`, `agy`… CLI) this process belongs to: the nearest
  * ancestor that is one. MCP servers, hooks and monitors are all descendants of it, so its pid is the one
  * identifier they share. The agent named on the command line only breaks ties and serves as the fallback,
  * because some agents run other agents' plugins (Qwen Code installs Claude Code plugins, for one).

@@ -3,11 +3,12 @@
     "telepathy": {
       "command": "node",
       "args": [
-        "dist/server.mjs",
+        "${PLUGIN_ROOT}/dist/server.mjs",
         "--agent",
         "antigravity"
       ],
       "env": {
+        "PLUGIN_ROOT": "${PLUGIN_ROOT}",
         "TELEPATHY_HOME": "${TELEPATHY_HOME}",
         "TELEPATHY_AUTO_UPDATE": "${TELEPATHY_AUTO_UPDATE}",
         "TELEPATHY_NAME": "${TELEPATHY_NAME}",

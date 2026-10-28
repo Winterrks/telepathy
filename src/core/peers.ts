@@ -32,6 +32,10 @@ export interface SessionRecord {
   codexHome?: string;
   /** When this session was first registered: a Codex thread has no process of its own to tell. */
   startedAt?: string;
+  /** Antigravity surface, from the transcript path (`app`, `cli`, or `ide`). */
+  surface?: 'app' | 'cli' | 'ide';
+  /** `transcript.jsonl` for this Antigravity conversation, when a hook reported it. */
+  transcriptPath?: string;
   updatedAt: string;
   /**
    * When this process was first seen to be gone. Inbox files newer than this were written after the session
@@ -209,7 +213,14 @@ export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(
 export function registerSession(
   agent: Agent,
   pid: number,
-  fields: { sessionId?: string; cwd?: string; source: SessionRecord['source']; codexHome?: string },
+  fields: {
+    sessionId?: string;
+    cwd?: string;
+    source: SessionRecord['source'];
+    codexHome?: string;
+    surface?: SessionRecord['surface'];
+    transcriptPath?: string;
+  },
   id = sessionPeerId(agent, pid, fields.sessionId),
 ): SessionRecord {
   const file = path.join(peerDir(id), 'session.json');
@@ -224,6 +235,8 @@ export function registerSession(
     ...fields,
     startedAt: (previous?.sessionId === fields.sessionId && previous?.startedAt) || now,
     updatedAt: now,
+    surface: fields.surface ?? previous?.surface,
+    transcriptPath: fields.transcriptPath ?? previous?.transcriptPath,
   };
   // A resume is a live process again. Mail written after the previous process exited is not in flight.
   if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);

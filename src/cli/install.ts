@@ -3,13 +3,23 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import { agentLabel, isAgent } from '../core/agents.ts';
+import {
+  enableAntigravitySidecar,
+  leftoverGeminiExtension,
+  LEFTOVER_GEMINI_NOTE,
+  removeLeftoverGeminiExtension,
+} from '../core/antigravity.ts';
 import { findInstalls } from '../core/installs.ts';
 import { runHarnessCommand } from '../update-all.ts';
 import { detectedHarnesses, harnessByAgent, harnesses, OPENCODE_SPEC, type CommandStep, type Harness } from './harnesses.ts';
 
 export function parseOnly(value: string | undefined): Agent[] | undefined {
   if (!value) return undefined;
-  const ids = value.split(',').map((part) => part.trim()).filter(Boolean);
+  const ids = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((id) => (id === 'agy' ? 'antigravity' : id));
   const bad = ids.filter((id) => !isAgent(id));
   if (bad.length) throw new Error(`Unknown agent in --only: ${bad.join(', ')}. Known: ${harnesses().map((h) => h.agent).join(', ')}`);
   return ids as Agent[];
@@ -78,6 +88,7 @@ export async function installAll(options: { dryRun?: boolean; only?: Agent[]; lo
   const present = options.only ? chosen : detectedHarnesses().filter((harness) => !options.only || options.only.includes(harness.agent));
   if (!present.length) {
     log(options.only ? `No harness in --only was recognized.` : 'No supported agent CLI is on PATH.');
+    reportLeftoverGemini(options.dryRun === true, log);
     return options.only ? 1 : 0;
   }
   let failed = false;
@@ -89,6 +100,7 @@ export async function installAll(options: { dryRun?: boolean; only?: Agent[]; lo
       continue;
     }
     if (alreadyInstalled(harness.agent) && harness.install.kind !== 'manual') {
+      if (harness.agent === 'antigravity' && !options.dryRun) enableAntigravitySidecar();
       log(`- ${label}: already installed${options.dryRun ? `; would run ${how}` : ''}`);
       continue;
     }
@@ -111,19 +123,41 @@ export async function installAll(options: { dryRun?: boolean; only?: Agent[]; lo
       continue;
     }
     const result = await runSteps(harness.install.steps);
-    if (result.ok) log(`- ${label}: installed. ${harness.install.note ?? ''}`.trim());
+    if (result.ok) {
+      if (harness.agent === 'antigravity' && !options.dryRun) enableAntigravitySidecar();
+      log(`- ${label}: installed. ${harness.install.note ?? ''}`.trim());
+    }
     else {
       const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'failed';
       log(`- ${label}: failed: ${tail}`);
       failed = true;
     }
   }
+  reportLeftoverGemini(options.dryRun === true, log);
   return failed ? 1 : 0;
+}
+
+function reportLeftoverGemini(dryRun: boolean, log: (line: string) => void): void {
+  const dir = leftoverGeminiExtension();
+  if (!dir) return;
+  if (dryRun) {
+    log(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
+    return;
+  }
+  removeLeftoverGeminiExtension();
+  log(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 
 /** Installs one harness before `telepathy run` execs it. A manual install is a warning, not a failure. */
 export async function ensureInstalled(agent: Agent): Promise<{ ok: boolean; note?: string }> {
-  if (alreadyInstalled(agent)) return { ok: true };
+  if (alreadyInstalled(agent)) {
+    if (agent === 'antigravity') {
+      enableAntigravitySidecar();
+      const removed = removeLeftoverGeminiExtension();
+      if (removed) process.stderr.write(`telepathy: removed leftover Gemini CLI extension at ${removed}. ${LEFTOVER_GEMINI_NOTE}\n`);
+    }
+    return { ok: true };
+  }
   const harness = harnessByAgent(agent);
   if (!harness) return { ok: false, note: `Unknown harness ${agent}.` };
   if (harness.install.kind === 'manual' || harness.install.kind === 'none') {
@@ -138,6 +172,11 @@ export async function ensureInstalled(agent: Agent): Promise<{ ok: boolean; note
   if (!result.ok) {
     const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'install failed';
     return { ok: false, note: tail };
+  }
+  if (agent === 'antigravity') {
+    enableAntigravitySidecar();
+    const removed = removeLeftoverGeminiExtension();
+    if (removed) process.stderr.write(`telepathy: removed leftover Gemini CLI extension at ${removed}. ${LEFTOVER_GEMINI_NOTE}\n`);
   }
   if (harness.install.note) process.stderr.write(`telepathy: ${harness.install.note}\n`);
   if (!alreadyInstalled(agent) && harness.install.kind === 'commands') {

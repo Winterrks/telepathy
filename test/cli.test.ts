@@ -21,7 +21,7 @@ const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-bins-'));
 const REAL_STATE = '/home/ubuntu/.telepathy';
 const realStateBefore = fs.existsSync(REAL_STATE);
 
-for (const name of ['claude', 'codex', 'opencode', 'kilo', 'gemini', 'copilot', 'qwen', 'grok', 'devin', 'claude-agent-acp', 'claude-code-acp', 'codex-acp']) {
+for (const name of ['claude', 'codex', 'opencode', 'kilo', 'agy', 'copilot', 'qwen', 'grok', 'devin', 'claude-agent-acp', 'claude-code-acp', 'codex-acp', 'antigravity-acp']) {
   const file = path.join(BIN_DIR, name);
   fs.writeFileSync(file, `#!/usr/bin/env node\nprocess.env.FAKE_ARGV0 = ${JSON.stringify(name)};\nimport(process.env.FAKE_HARNESS_FILE);\n`);
   fs.chmodSync(file, 0o755);
@@ -117,10 +117,10 @@ function plantCodex(sb: Sandbox): void {
   fs.mkdirSync(path.join(sb.codexHome, 'plugins', 'cache', 'telepathy', 'telepathy', '0.9.0'), { recursive: true });
 }
 
-function plantGemini(home: string): void {
-  const dir = path.join(home, '.gemini', 'extensions', 'telepathy');
+function plantCopilot(home: string): void {
+  const dir = path.join(home, '.copilot', 'installed-plugins', 'telepathy', 'telepathy', '.github', 'plugin');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'gemini-extension.json'), JSON.stringify({ version: '0.9.0' }));
+  fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({ name: 'telepathy', version: '0.9.0' }));
 }
 
 function run(args: string[], env: NodeJS.ProcessEnv, cwd?: string) {
@@ -198,7 +198,10 @@ test('help, version, list, and an unknown agent', () => {
     assert.equal(version.stdout.trim(), '0.0.0-dev');
     const list = run(['run', '--list'], w.env);
     assert.equal(list.status, 0);
-    assert.match(list.stdout, /gemini\s+acp/);
+    assert.match(list.stdout, /antigravity\s+passthrough/);
+    assert.match(list.stdout, /headless: antigravity/);
+    assert.match(list.stdout, /agy is an alias/);
+    assert.doesNotMatch(list.stdout, /gemini/);
     assert.match(list.stdout, /headless: claude/);
     assert.match(list.stdout, /claude-agent-acp/);
     assert.doesNotMatch(list.stdout, /turn\.;/);
@@ -383,7 +386,7 @@ test('headless opencode prompts the served session', async () => {
 test('headless ACP adds telepathy only when that harness has no install, and confirms on an early update', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
     const created = w.readLog().find((entry) => entry.method === 'session/new');
@@ -395,7 +398,7 @@ test('headless ACP adds telepathy only when that harness has no install, and con
     assert.ok(servers?.[0]?.env?.some((item) => item.name === 'TELEPATHY_HOME'));
     const self = sender();
     const started = Date.now();
-    const sent = await sendMessage(self, 'gemini:gem', 'early update');
+    const sent = await sendMessage(self, 'copilot:gem', 'early update');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     assert.ok(Date.now() - started < 3000);
   } finally {
@@ -407,13 +410,13 @@ test('headless ACP adds telepathy only when that harness has no install, and con
 test('a failed headless send drops an ACP prompt that is still queued', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const first = await sendMessage(self, 'gemini:gem', 'first turn');
+    const first = await sendMessage(self, 'copilot:gem', 'first turn');
     assert.equal(first.ok, true, first.ok ? '' : first.error);
-    const second = await sendMessage(self, 'gemini:gem', 'queued turn');
+    const second = await sendMessage(self, 'copilot:gem', 'queued turn');
     assert.equal(second.ok, false);
     if (!second.ok) assert.match(second.error, /Message failed/);
     await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -421,7 +424,7 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
     assert.equal(prompts.length, 1);
     assert.match(JSON.stringify(prompts[0]?.params), /first turn/);
     assert.equal(JSON.stringify(w.readLog()).includes('queued turn'), false);
-    const record = readHeadlessRecord('gemini', 'gem');
+    const record = readHeadlessRecord('copilot', 'gem');
     assert.ok(record);
     const dir = inboxDir(record.peerId);
     assert.equal(fs.existsSync(dir) ? fs.readdirSync(dir).length : 0, 0);
@@ -433,16 +436,16 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
 
 test('an installed ACP harness gets an empty mcpServers list', async () => {
   const w = world();
-  plantGemini(w.env.HOME as string);
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  plantCopilot(w.env.HOME as string);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
     const created = w.readLog().find((entry) => entry.method === 'session/new');
     const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
     assert.deepEqual(servers, []);
-    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'gemini');
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
     assert.equal(started?.name, 'gem');
-    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'gemini-h-gem', 'hosted.json')), false);
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
   } finally {
     await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();
@@ -492,7 +495,7 @@ test('TELEPATHY_HEADLESS_APPROVE allows every permission, not one', async () => 
 
 test('interactive ACP takes a stdin prompt and exits when stdin closes', async () => {
   const w = world();
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('hello interactive\n');
@@ -535,12 +538,12 @@ test('the bundled CLI starts with a shebang when the bundle has been built', () 
 test('a tool call confirms an ACP turn before the turn finishes', async () => {
   const w = world({ FAKE_ACP_TOOL_FIRST: '1', FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
     const started = Date.now();
-    const sent = await sendMessage(self, 'gemini:tool', 'run a tool');
+    const sent = await sendMessage(self, 'copilot:tool', 'run a tool');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     assert.ok(Date.now() - started < 3000);
   } finally {
@@ -552,11 +555,11 @@ test('a tool call confirms an ACP turn before the turn finishes', async () => {
 test('ACP text chunks are one stream, not one line each', async () => {
   const w = world({ FAKE_ACP_SPLIT: '1' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'chunks', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'chunks', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const sent = await sendMessage(self, 'gemini:chunks', 'hi');
+    const sent = await sendMessage(self, 'copilot:chunks', 'hi');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     await waitFor(() => (launched.out().includes('Hello there') ? true : undefined));
     assert.doesNotMatch(launched.out(), /Hello\n/);
@@ -568,7 +571,7 @@ test('ACP text chunks are one stream, not one line each', async () => {
 
 test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '8000' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('hold this turn\n');
@@ -592,7 +595,7 @@ test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
 
 test('a cancelled permission does not consume the next line', async () => {
   const w = world({ FAKE_ACP_PERMISSION: '1' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('first prompt\n');
@@ -614,7 +617,7 @@ test('a cancelled permission does not consume the next line', async () => {
 
 test('an ACP agent that fails to authenticate exits instead of waiting', async () => {
   const w = world({ FAKE_ACP_AUTH_HANG: '1' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     const result = await Promise.race([
       launched.done,
@@ -782,7 +785,6 @@ test('every harness MCP config forwards TELEPATHY_AUTO_UPDATE and TELEPATHY_NAME
     'plugin/grok.mcp.json',
     'plugin/devin.mcp.json',
     'antigravity/mcp_config.json',
-    'gemini-extension.json',
     'qwen-extension.json',
     '.kimi-plugin/plugin.json',
   ];
@@ -796,6 +798,44 @@ test('every harness MCP config forwards TELEPATHY_AUTO_UPDATE and TELEPATHY_NAME
   assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_AUTO_UPDATE'));
   assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_HOME'));
   assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_NAME'));
+});
+
+test('agy is the antigravity alias, and headless refuses a consumer login', () => {
+  const w = world();
+  try {
+    const listed = parseRunArgs(['agy', '--conversation', 'abc']);
+    assert.equal(listed.agent, 'agy');
+    const refused = run(['run', '--headless', '--name', 'box', 'agy'], w.env);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /consumer login/);
+    assert.match(refused.stderr, /GEMINI_API_KEY/);
+    assert.equal(w.readLog().some((entry) => entry.event === 'start'), false);
+  } finally {
+    w.restore();
+  }
+});
+
+test('headless agy uses stream-json and an API key, not agy -p', async () => {
+  const w = world({ GEMINI_API_KEY: 'test-key' });
+  const launched = spawnCli(['run', '--headless', '--name', 'box', 'antigravity', '--conversation', 'conv-kept'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const started = await waitFor(() => w.readLog().find((entry) => entry.event === 'start' && entry.args?.includes('stream-json')));
+    assert.ok(started?.args?.includes('--input-format'));
+    assert.ok(started?.args?.includes('stream-json'));
+    assert.equal(started?.args?.includes('-p'), false);
+    assert.ok(started?.args?.includes('--conversation'));
+    assert.ok(started?.args?.includes('conv-kept'));
+    const settings = path.join(w.env.HOME as string, '.gemini', 'antigravity-cli', 'settings.json');
+    assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).modelProvider, 'gemini');
+    const self = sender();
+    const sent = await sendMessage(self, 'antigravity:box', 'hello agy');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    await waitFor(() => (w.readLog().some((entry) => entry.event === 'stdin' && entry.line?.includes('telepathy-id:')) ? true : undefined));
+  } finally {
+    await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
 });
 
 test('the real home state directory is untouched', () => {

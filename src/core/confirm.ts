@@ -5,7 +5,7 @@ import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message } from './messages.ts';
 import { archiveDir, ensureDir, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
-import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef } from './peers.ts';
+import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
 /**
@@ -112,7 +112,7 @@ function inspectHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
   if (peer.agent === 'claude') return claudeTranscript(peer, marker);
   if (peer.agent === 'codex') return codexTranscript(peer, marker);
   if (peer.agent === 'opencode' || peer.agent === 'kilo') return opencodeTranscript(marker);
-  if (peer.agent === 'gemini') return geminiTranscript(marker);
+  if (peer.agent === 'antigravity') return antigravityTranscript(peer, marker);
   if (peer.agent === 'copilot' && peer.sessionId) {
     const file = path.join(os.homedir(), '.copilot', 'session-state', peer.sessionId, 'events.jsonl');
     if (!fs.existsSync(file)) return { located: false, found: false };
@@ -167,11 +167,24 @@ function opencodeTranscript(marker: string): TranscriptLook {
   return { located: false, found: false };
 }
 
-function geminiTranscript(marker: string): TranscriptLook {
-  const home = process.env.GEMINI_CLI_HOME || path.join(os.homedir(), '.gemini');
-  const tmp = path.join(home, 'tmp');
-  if (!fs.existsSync(tmp)) return { located: false, found: false };
-  return { located: true, found: treeHas(tmp, marker, 4) };
+/**
+ * Antigravity writes `<app_data_dir>/brain/<conversation id>/.system_generated/logs/transcript.jsonl`.
+ * The hook's `transcriptPath` wins. Otherwise each surface's brain directory is tried.
+ */
+function antigravityTranscript(peer: Peer, marker: string): TranscriptLook {
+  const recorded = readSession(peer.id)?.transcriptPath;
+  if (recorded) {
+    if (!fs.existsSync(recorded)) return { located: false, found: false };
+    return { located: true, found: fileHas(recorded, marker) };
+  }
+  if (!peer.sessionId) return { located: false, found: false };
+  const root = path.join(os.homedir(), '.gemini');
+  const files = (['antigravity', 'antigravity-cli', 'antigravity-ide'] as const).map((dir) =>
+    path.join(root, dir, 'brain', peer.sessionId as string, '.system_generated', 'logs', 'transcript.jsonl'),
+  );
+  const existing = files.filter((file) => fs.existsSync(file));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
 
 function treeHas(dir: string, marker: string, depth: number): boolean {

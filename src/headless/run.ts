@@ -22,7 +22,7 @@ import {
 export interface HeadlessRun {
   agent: Agent;
   /** Which control plane. `acp` uses `acpBin` / `acpArgs`; the others spawn `bin`. */
-  plane: 'claude' | 'codex' | 'opencode' | 'acp';
+  plane: 'claude' | 'codex' | 'opencode' | 'acp' | 'antigravity';
   bin: string;
   userArgs: string[];
   acpArgs?: string[];
@@ -171,7 +171,96 @@ async function openPlane(options: HeadlessRun, memory: Memory, writeLog: (text: 
   if (options.plane === 'claude') return startClaude(options, memory, writeLog);
   if (options.plane === 'codex') return startCodex(options, memory, writeLog);
   if (options.plane === 'opencode') return startOpencode(options, memory, writeLog);
+  if (options.plane === 'antigravity') return startAntigravity(options, memory, writeLog);
   return startAcp(options, memory, writeLog);
+}
+
+const AGY_AUTH_RE = /not logged in|login required|authentication (?:failed|required)|please run \S+ login|unauthorized|invalid api key|credentials? (?:not found|missing|expired)/i;
+
+function conversationFlag(args: string[]): string | undefined {
+  const index = args.indexOf('--conversation');
+  const value = index >= 0 ? args[index + 1] : undefined;
+  return value && !value.startsWith('--') ? value : undefined;
+}
+
+/**
+ * Long-lived `agy --input-format stream-json --output-format stream-json`. Prompts are `user` events on stdin.
+ * There is no `agy --acp`. Do not wrap `agy -p`: that is the consumer-login path the FAQ warns against.
+ * `--conversation <uuid>` resumes the same conversation. A later init with a different id is a new conversation.
+ */
+function startAntigravity(options: HeadlessRun, memory: Memory, writeLog: (text: string) => void): Plane {
+  const args: string[] = [];
+  if (!options.userArgs.includes('--input-format')) args.push('--input-format', 'stream-json', '--output-format', 'stream-json');
+  const explicit = conversationFlag(options.userArgs);
+  const resume = explicit ?? memory.id;
+  if (resume && !explicit) args.push('--conversation', resume);
+  args.push(...options.userArgs);
+  const child = spawn(options.bin, args, { cwd: options.cwd, env: options.env ?? process.env, stdio: ['pipe', 'pipe', 'pipe'] });
+  ignoreStdinErrors(child);
+  let buf = '';
+  let stderr = '';
+  let ready = false;
+  let authFailed = false;
+  const failAuth = (text: string) => {
+    if (ready || authFailed || !AGY_AUTH_RE.test(text)) return;
+    authFailed = true;
+    if (child.exitCode === null) child.kill('SIGTERM');
+  };
+  const take = (chunk: Buffer, stream: 'stdout' | 'stderr') => {
+    const text = chunk.toString();
+    writeLog(text);
+    if (stream === 'stderr') {
+      stderr += text;
+      failAuth(stderr);
+      return;
+    }
+    buf += text;
+    for (;;) {
+      const nl = buf.indexOf('\n');
+      if (nl < 0) break;
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      try {
+        const msg = JSON.parse(line) as {
+          event?: string;
+          conversation_id?: unknown;
+          step_update?: { text_delta?: unknown; conversation_id?: unknown };
+          result?: { conversation_id?: unknown };
+        };
+        const id = msg.conversation_id ?? msg.step_update?.conversation_id ?? msg.result?.conversation_id;
+        if (typeof id === 'string' && id && id !== memory.id) {
+          memory.id = id;
+          memory.changed?.();
+          ready = true;
+          process.stderr.write(`telepathy: antigravity conversation ${id}\n`);
+        }
+        if (msg.event === 'init') ready = true;
+        const delta = msg.step_update?.text_delta;
+        if (typeof delta === 'string' && delta) process.stdout.write(delta);
+      } catch {
+        // a non-JSON log line
+      }
+    }
+  };
+  child.stdout?.on('data', (chunk: Buffer) => take(chunk, 'stdout'));
+  child.stderr?.on('data', (chunk: Buffer) => take(chunk, 'stderr'));
+  return {
+    child,
+    exited: exitCode(child).then((code) => (authFailed ? 1 : code)),
+    inject: (text, stillPending) => writeAgyTurn(child, text, stillPending),
+  };
+}
+
+function writeAgyTurn(child: ChildProcess, text: string, stillPending: () => boolean): Promise<boolean> {
+  if (!stillPending() || !child.stdin?.writable || child.exitCode !== null) return Promise.resolve(false);
+  const line = JSON.stringify({ event: 'user', message: { content: text } }) + '\n';
+  return new Promise((resolve) => {
+    if (!stillPending()) {
+      resolve(false);
+      return;
+    }
+    child.stdin?.write(line, (err) => resolve(!err && child.exitCode === null && stillPending()));
+  });
 }
 
 function startClaude(options: HeadlessRun, memory: Memory, writeLog: (text: string) => void): Plane {

@@ -29,7 +29,14 @@ process.on('SIGINT', stop);
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
 
 function isAcp() {
-  return args.includes('--acp') || args[0] === 'acp' || name === 'claude-code-acp' || name === 'codex-acp';
+  return (
+    args.includes('--acp') ||
+    args[0] === 'acp' ||
+    name === 'claude-code-acp' ||
+    name === 'codex-acp' ||
+    name === 'antigravity-acp' ||
+    name === 'agy_acp_server.par'
+  );
 }
 
 if (args.includes('--sleep')) {
@@ -179,6 +186,19 @@ if (args.includes('--sleep')) {
     } else if (msg.id !== undefined && msg.method) {
       send({ jsonrpc: '2.0', id: msg.id, result: {} });
     }
+  });
+} else if ((name === 'agy' || name === 'antigravity') && args.includes('stream-json')) {
+  const convIndex = args.indexOf('--conversation');
+  const conversation = (convIndex >= 0 && args[convIndex + 1]) || process.env.FAKE_AGY_CONVERSATION || 'conv-fake-1';
+  send({ event: 'init', conversation_id: conversation, init: { cwd: process.cwd(), tools: [], permission_mode: 'request-review' } });
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on('line', (line) => {
+    log({ event: 'stdin', line });
+    send({
+      event: 'step_update',
+      step_update: { conversation_id: conversation, state: 'DONE', step_type: 'agent_response', text_delta: 'ack' },
+    });
+    send({ event: 'result', result: { conversation_id: conversation, status: 'SUCCESS', response: 'ack\n', num_turns: 1 } });
   });
 } else if (name === 'claude' && args.includes('stream-json')) {
   const session = process.env.FAKE_CLAUDE_SESSION || 'sess-claude-1';

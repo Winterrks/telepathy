@@ -29,6 +29,7 @@ import {
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { statusFromHooks, writeStatus } from './core/status.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
+import { antigravitySurface, expandHomePath, type AntigravitySurface } from './core/antigravity.ts';
 
 /**
  * Hook entry point, shared by every agent with command hooks:
@@ -66,7 +67,6 @@ const PROJECT_DIR_ENV: Partial<Record<Agent, string>> = {
   cursor: 'CURSOR_PROJECT_DIR',
   copilot: 'COPILOT_PROJECT_DIR',
   grok: 'GROK_WORKSPACE_ROOT',
-  gemini: 'GEMINI_PROJECT_DIR',
   qwen: 'QWEN_PROJECT_DIR',
 };
 
@@ -124,7 +124,6 @@ const SHAPES: Partial<Record<Agent, HookShape>> = {
   claude: { context: hookSpecificContext, turnEnd: blockStop },
   // Codex has no turn-end hook here: its queue starts a turn with anything still unread once the turn ends.
   codex: { context: hookSpecificContext, turnEnd: blockStop },
-  gemini: { context: hookSpecificContext, turnEnd: blockStop },
   qwen: { context: hookSpecificContext, turnEnd: blockStop },
   devin: { context: hookSpecificContext, turnEnd: blockStop },
   grok: { context: hookSpecificContext, turnEnd: blockStop },
@@ -141,6 +140,7 @@ const SHAPES: Partial<Record<Agent, HookShape>> = {
   antigravity: {
     context: (text) => json({ injectSteps: [{ userMessage: text }] }),
     turnEnd: (text) => json({ decision: 'continue', reason: text }),
+    sessionStart: (text) => json({ injectSteps: [{ systemMessage: { systemMessage: text } }] }),
   },
   // Kimi Code adds a UserPromptSubmit hook's plain stdout to the context; a Stop hook continues on exit code 2.
   kimi: { context: (text) => ({ stdout: text }), turnEnd: (text) => ({ stderr: text, exitCode: 2 }) },
@@ -165,6 +165,7 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     ...sessionOf(agent, input),
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
+    ...(agent === 'antigravity' ? antigravitySessionFields(input) : {}),
   });
   registerStableName(agent, id);
   if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
@@ -172,9 +173,19 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
+/** Antigravity's transcript path names the surface and the file confirm searches. */
+function antigravitySessionFields(input: HookInput): { surface?: AntigravitySurface; transcriptPath?: string } {
+  const raw = firstString(input, ['transcriptPath', 'transcript_path']);
+  if (!raw) return {};
+  const transcriptPath = expandHomePath(raw);
+  const surface = antigravitySurface(transcriptPath);
+  return { transcriptPath, ...(surface ? { surface } : {}) };
+}
+
 /**
- * Keeps the registration current from any hook: some agents have no session-start event (Antigravity), and
- * `/clear` or a resume can switch the session in the same process without one.
+ * Keeps the registration current from any hook. `/clear`, `--conversation`, or `/fork` can switch the
+ * conversation in the same process. A new Antigravity conversation id (a `/fork`) is a new peer; the same
+ * id (a `--conversation` resume) keeps the peer and its name.
  */
 function refreshSession(agent: Agent, agentPid: number, input: HookInput): void {
   const { sessionId, cwd } = sessionOf(agent, input);
@@ -185,12 +196,22 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   if (agent === 'claude' && isDeliveryOwner(idOf(agent, agentPid, input), agentPid)) {
     recordClaudeSocket(idOf(agent, agentPid, input), process.env, agentPid);
   }
-  if (existing?.source === 'hook' && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
+  const extra = agent === 'antigravity' ? antigravitySessionFields(input) : {};
+  if (
+    existing?.source === 'hook' &&
+    sameHost &&
+    (!sessionId || existing.sessionId === sessionId) &&
+    (existing.cwd || !cwd) &&
+    (!extra.transcriptPath || existing.transcriptPath === extra.transcriptPath)
+  ) {
+    return;
+  }
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,
     cwd: cwd ?? existing?.cwd,
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
+    ...extra,
   });
 }
 
@@ -316,9 +337,8 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
 }
 
 /**
- * A permission prompt is waiting for the user: Codex's PermissionRequest hook, or Gemini's Notification hook (whose
- * only notification type so far is ToolPermission). Prints nothing: a PermissionRequest hook's output could answer
- * the prompt, and that is the user's call alone.
+ * A permission prompt is waiting for the user: Codex's PermissionRequest hook. Prints nothing: a PermissionRequest
+ * hook's output could answer the prompt, and that is the user's call alone.
  */
 function waiting(agent: Agent, agentPid: number, input: HookInput): void {
   const type = input.notification_type;
