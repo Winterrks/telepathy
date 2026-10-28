@@ -37,7 +37,7 @@ export const TOOLS = {
   send_message: {
     title: 'Message another agent session',
     description:
-      "Message another coding-agent session on this machine (see list_peers). It doesn't share your context, so make the message self-contained.",
+      "Message another coding-agent session on this machine (see list_peers). It waits until the recipient's transcript shows the message, and it succeeds only then. It doesn't share your context, so make the message self-contained. For a session that is not Claude Code, use this tool rather than SendMessage.",
     args: {
       to: z.string().describe('Recipient address like "codex:fix-auth", or its [ref] like "codex-4242", from list_peers'),
       message: z.string().describe('The message text'),

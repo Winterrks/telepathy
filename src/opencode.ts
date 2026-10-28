@@ -8,7 +8,7 @@ import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
-import { isPeerAlive, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer } from './core/peers.ts';
+import { isDeliveryOwner, isPeerAlive, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { startWakeFlusher } from './core/wake.ts';
@@ -66,7 +66,7 @@ const out = (r: ToolResult) => (r.isError ? `Error: ${r.text}` : r.text);
 const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
   const agent: Agent = /kilo/i.test(path.basename(process.execPath)) ? 'kilo' : 'opencode';
   const pid = process.pid;
-  const id = peerId(agent, pid);
+  let id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
   writeStatus(id, 'idle');
   debugLog('opencode', `plugin loaded for ${id} in ${directory ?? '?'}`);
@@ -78,7 +78,7 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
 
   /** Hands pending messages to the active session once it's idle; promptAsync then starts a turn. */
   async function deliver(): Promise<void> {
-    if (delivering || !active || busy.has(active.sessionID)) return;
+    if (delivering || !active || busy.has(active.sessionID) || !isDeliveryOwner(id, pid)) return;
     delivering = true;
     try {
       const messages = claimInbox(id);
@@ -119,7 +119,7 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     void deliver();
   }, 2000).unref();
 
-  const self = () => selfPeer(agent, pid);
+  const self = () => selfPeer(agent, pid, id);
   const toolArgs = new Map<string, unknown>(); // by call id, from before a tool runs until it has run
 
   return {
@@ -136,8 +136,14 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
       const changed = active?.sessionID !== input.sessionID;
       active = { sessionID: input.sessionID, agent: input.agent, model: input.model };
       if (changed) {
+        // The ses_ id is the peer. A continued session reclaims that id, not the process pid.
+        id = sessionPeerId(agent, pid, input.sessionID);
         registerSession(agent, pid, { sessionId: input.sessionID, cwd: directory, source: 'plugin' });
-        registerListener(agent, pid); // from now on a message has a session to wake
+        registerPresence(agent, pid, { cwd: directory }, id);
+        registerListener(agent, pid, id);
+        watcher?.close();
+        watcher = undefined;
+        watch();
       }
     },
 
@@ -290,7 +296,7 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
   const delivering = new Set<string>();
   /** Hands pending messages to the session as a prompt; `steer` starts a turn, or joins the running one. */
   async function deliver(sessionID: string): Promise<void> {
-    if (delivering.has(sessionID)) return;
+    if (delivering.has(sessionID) || !isDeliveryOwner(idOf(sessionID), pid)) return;
     delivering.add(sessionID);
     try {
       const messages = claimInbox(idOf(sessionID));

@@ -133,9 +133,13 @@ const describeSender = (from: Party) => `${agentLabel(from.agent)} session ${pee
  * up where the user's own prompts do, so the header says plainly that another agent wrote it, mirroring how
  * Claude Code labels cross-session messages.
  */
+/** A token copied into every delivered rendering so a transcript search can prove this message arrived. */
+export const messageMarker = (id: string) => `telepathy-id:${id}`;
+
 export function formatAsUserTurn(msg: Message): string {
   return [
     `[telepathy] Message from ${describeSender(msg.from)}.`,
+    messageMarker(msg.id),
     `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` +
       `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`,
     '',
@@ -186,7 +190,7 @@ export function formatForContext(messages: Message[], { lead: withLead = true, i
 /** One stdout line for the Claude Code monitor; each line becomes one notification for Claude. */
 export function formatMonitorLine(msg: Message, inlineLimit = 4000): string {
   const header =
-    `[telepathy] New message ${msg.id} from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
+    `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
     `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
   const flat = (s: string) => s.replace(/\r\n|\r|\n/g, '\\n');
   if (msg.body.length <= inlineLimit) {
@@ -203,6 +207,7 @@ export function formatMonitorLine(msg: Message, inlineLimit = 4000): string {
 export function formatForReading(msg: Message): string {
   return [
     `--- ${msg.id} · from ${describeSender(msg.from)} · ${msg.sentAt}`,
+    messageMarker(msg.id),
     `(reply with send_message to: "${msg.from.address}")`,
     msg.body,
   ].join('\n');

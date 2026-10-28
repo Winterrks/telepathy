@@ -66,6 +66,30 @@ function claudeStatus(pid: number): StatusInfo | undefined {
 
 const TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
 
+/** `ps` and processes younger than this are not a session's own command. Claude samples `ps` for a moment. */
+export function transientChildMs(): number {
+  const n = Number(process.env.TELEPATHY_TRANSIENT_CHILD_MS);
+  return Number.isFinite(n) && n >= 0 ? n : 2_000;
+}
+
+/** A short-lived `ps` (or any process younger than {@link transientChildMs}) is not the session's work. */
+export function ignoredShellChild(command: string, ageMs: number | undefined): boolean {
+  const token = command.trim().split(/\s+/)[0] ?? '';
+  const base = token.replace(/^["']|["']$/g, '').split(/[/\\]/).pop() ?? '';
+  if (base === 'ps' || base === '(ps)') return true;
+  // A telepathy monitor that just started is still the session's monitor. Ignoring it would leave an idle session
+  // looking like `shell` for the first two seconds.
+  if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) return false;
+  return ageMs !== undefined && ageMs >= 0 && ageMs < transientChildMs();
+}
+
+function processAgeMs(start: string | undefined): number | undefined {
+  if (!start) return undefined;
+  const at = Date.parse(start);
+  if (Number.isNaN(at)) return undefined;
+  return Date.now() - at;
+}
+
 /** True when the command lines are telepathy's monitor plus its own server and hooks, and nothing else. */
 export function shellIsTelepathyMonitorOnly(commands: string[]): boolean {
   let monitor = false;
@@ -94,8 +118,9 @@ function descendantCommands(rootPid: number): string[] {
     const pid = stack.pop();
     if (pid === undefined || seen.has(pid)) continue;
     seen.add(pid);
-    const args = commandLine(pid) ?? table.get(pid)?.comm;
-    if (args) commands.push(args);
+    const info = table.get(pid);
+    const args = commandLine(pid) ?? info?.comm;
+    if (args && !ignoredShellChild(args, processAgeMs(info?.start))) commands.push(args);
     for (const child of byParent.get(pid) ?? []) stack.push(child);
   }
   return commands;

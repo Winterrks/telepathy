@@ -16,7 +16,7 @@ const TURN_EVENTS: Record<string, CodexActivity> = { task_started: 'busy', task_
  * Codex writes each thread to `<codexHome>/sessions/YYYY/MM/DD/rollout-<time>-<threadId>.jsonl`, and a long
  * thread goes on in further segments, `rollout-<time>-<threadId>_<segmentId>.jsonl`. The newest one is current.
  */
-function findRollout(codexHome: string, threadId: string): string | undefined {
+export function findRollout(codexHome: string, threadId: string): string | undefined {
   const isRollout = (f: string) =>
     f.startsWith('rollout-') && (f.endsWith(`-${threadId}.jsonl`) || (f.includes(`-${threadId}_`) && f.endsWith('.jsonl')));
   const sorted = (dir: string) => {

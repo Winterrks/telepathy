@@ -8,11 +8,11 @@ import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
 import { formatAgo } from '../src/core/listing.ts';
-import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
+import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
 import { processTable } from '../src/core/proc.ts';
-import { peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
-import { peerDir } from '../src/core/paths.ts';
-import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
+import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
+import { inboxDir, peerDir } from '../src/core/paths.ts';
+import { isDeliveryOwner, listPeers, type Peer, readPeer, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
 import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
@@ -212,12 +212,20 @@ describe('message formatting', () => {
     assert.equal(shellIsTelepathyMonitorOnly([monitor, 'sleep 30']), false);
     assert.equal(shellIsTelepathyMonitorOnly([server]), false);
     assert.equal(shellIsTelepathyMonitorOnly([]), false);
+    assert.equal(ignoredShellChild('ps aux', 10_000), true);
+    assert.equal(ignoredShellChild('"/usr/bin/ps"', 10_000), true);
+    assert.equal(ignoredShellChild('(ps)', undefined), true);
+    assert.equal(ignoredShellChild('node server.js', 100), true);
+    assert.equal(ignoredShellChild('node server.js', 5_000), false);
+    assert.equal(ignoredShellChild('node /plugins/telepathy/dist/monitor.mjs --agent claude', 100), false);
   });
 
   test('list_peers reports idle when the only live command is the telepathy monitor', async () => {
     const prev = process.env.CLAUDE_CONFIG_DIR;
+    const prevTransient = process.env.TELEPATHY_TRANSIENT_CHILD_MS;
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'um-claude-'));
     process.env.CLAUDE_CONFIG_DIR = dir;
+    process.env.TELEPATHY_TRANSIENT_CHILD_MS = '0';
     const monitor = sessionWithChildren([['monitor.mjs', '--agent', 'claude']]);
     const other = sessionWithChildren([['sleep', '30']]);
     const both = sessionWithChildren([
@@ -238,6 +246,8 @@ describe('message formatting', () => {
       }
       if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
       else process.env.CLAUDE_CONFIG_DIR = prev;
+      if (prevTransient === undefined) delete process.env.TELEPATHY_TRANSIENT_CHILD_MS;
+      else process.env.TELEPATHY_TRANSIENT_CHILD_MS = prevTransient;
       fs.rmSync(dir, { recursive: true, force: true });
     }
   });
@@ -284,10 +294,15 @@ describe('registry', () => {
     const agent = fakeAgent();
     try {
       registerSession('gemini', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
-      const file = path.join(peerDir(`gemini-${agent.pid}`), 'session.json');
-      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      record.procStart = 'Mon Jan  1 00:00:00 2001';
-      fs.writeFileSync(file, JSON.stringify(record));
+      const stale = 'Mon Jan  1 00:00:00 2001';
+      const sessionFile = path.join(peerDir('gemini-t'), 'session.json');
+      const record = JSON.parse(fs.readFileSync(sessionFile, 'utf8')) as { procStart?: string };
+      record.procStart = stale;
+      fs.writeFileSync(sessionFile, JSON.stringify(record));
+      const ownersFile = path.join(peerDir('gemini-t'), 'owners.json');
+      const owners = JSON.parse(fs.readFileSync(ownersFile, 'utf8')) as { procStart?: string }[];
+      owners[0].procStart = stale;
+      fs.writeFileSync(ownersFile, JSON.stringify(owners));
       assert.equal(listPeers().length, 0);
     } finally {
       await killAndWait(agent);
@@ -313,6 +328,65 @@ describe('registry', () => {
       await killAndWait(agent);
     }
   });
+
+  test('a resumed session reclaims the same id, name, and inbox', async () => {
+    const first = fakeAgent();
+    const second = fakeAgent();
+    try {
+      registerSession('claude', first.pid, { sessionId: 'claude-sess', cwd: '/w/app', source: 'hook' });
+      const id = 'claude-claude-sess';
+      const firstPeer = readPeer(id);
+      assert.equal(firstPeer?.address, 'claude:app');
+      writeToInbox({
+        id: 'm-resume',
+        from: { id: 'codex-t', agent: 'codex', name: 'sender', address: 'codex:sender' },
+        to: { id, agent: 'claude', name: 'app', address: 'claude:app' },
+        body: 'waiting',
+        sentAt: new Date().toISOString(),
+      });
+      await killAndWait(first);
+      assert.equal(listPeers().some((p) => p.id === id), false);
+      assert.equal(fs.readdirSync(inboxDir(id)).length, 1);
+
+      fs.mkdirSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'sessions', `${second.pid}.json`), JSON.stringify({ name: 'other-name-ab' }));
+      registerSession('claude', second.pid, { sessionId: 'claude-sess', cwd: '/w/elsewhere', source: 'hook' });
+      const again = readPeer(id);
+      assert.equal(again?.name, 'app');
+      assert.equal(again?.address, 'claude:app');
+      assert.equal(again?.pid, second.pid);
+      assert.equal(fs.readdirSync(inboxDir(id)).length, 1);
+      assert.equal(isDeliveryOwner(id, second.pid), true);
+    } finally {
+      await killAndWait(first);
+      await killAndWait(second);
+    }
+  });
+
+  test('two live processes on one session: the first owns delivery, and TELEPATHY_NAME still wins', async () => {
+    const a = fakeAgent();
+    const b = fakeAgent();
+    const prev = process.env.TELEPATHY_NAME;
+    try {
+      registerSession('claude', a.pid, { sessionId: 'same', cwd: '/w/a', source: 'hook' });
+      registerSession('claude', b.pid, { sessionId: 'same', cwd: '/w/b', source: 'hook' });
+      const peers = listPeers().filter((p) => p.sessionId === 'same');
+      assert.equal(peers.length, 1);
+      assert.equal(peers[0]?.duplicate, true);
+      assert.equal(peers[0]?.id, 'claude-same');
+      assert.equal(isDeliveryOwner('claude-same', a.pid), true);
+      assert.equal(isDeliveryOwner('claude-same', b.pid), false);
+      process.env.TELEPATHY_NAME = 'chosen';
+      registerStableName('claude', 'claude-same');
+      assert.equal(readPeer('claude-same')?.address, 'claude:chosen');
+    } finally {
+      if (prev === undefined) delete process.env.TELEPATHY_NAME;
+      else process.env.TELEPATHY_NAME = prev;
+      await killAndWait(a);
+      await killAndWait(b);
+    }
+  });
+
 });
 
 describe('Codex threads in a shared host process', () => {

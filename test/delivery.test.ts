@@ -80,11 +80,14 @@ describe('delivery ladder', () => {
     return proc;
   };
 
+  let senderN = 0;
   const sender = () => {
     const proc = spawn();
-    registerPresence('claude', proc.pid, { cwd: '/work/me' });
-    registerSession('claude', proc.pid, { sessionId: 's', cwd: '/work/me', source: 'hook' });
-    const peer = readPeer(`claude-${proc.pid}`);
+    const sessionId = `sender-${senderN++}`;
+    const id = `claude-${sessionId}`;
+    registerPresence('claude', proc.pid, { cwd: '/work/me' }, id);
+    registerSession('claude', proc.pid, { sessionId, cwd: '/work/me', source: 'hook' });
+    const peer = readPeer(id);
     assert.ok(peer);
     return peer;
   };
@@ -191,13 +194,15 @@ describe('Claude inbox socket', () => {
     const other = fakeAgent();
     agents.push(claude, other);
     const cwd = path.join(sb.home, name);
-    registerPresence('claude', claude.pid, { cwd });
-    registerSession('claude', claude.pid, { sessionId: 's', cwd, source: 'hook' });
-    registerPresence('gemini', other.pid, { cwd: '/work/docs' });
-    registerSession('gemini', other.pid, { sessionId: 'g', cwd: '/work/docs', source: 'hook' });
-    const from = readPeer(`gemini-${other.pid}`);
+    const id = `claude-${name}`;
+    const fromId = `gemini-g-${name}`;
+    registerPresence('claude', claude.pid, { cwd }, id);
+    registerSession('claude', claude.pid, { sessionId: name, cwd, source: 'hook' });
+    registerPresence('gemini', other.pid, { cwd: '/work/docs' }, fromId);
+    registerSession('gemini', other.pid, { sessionId: `g-${name}`, cwd: '/work/docs', source: 'hook' });
+    const from = readPeer(fromId);
     assert.ok(from);
-    return { id: `claude-${claude.pid}`, from, address: `claude:${name}` };
+    return { id, from, address: `claude:${name}` };
   };
 
   const serve = (file: string, respond: (buf: string) => string | undefined) =>
@@ -295,6 +300,7 @@ describe('Claude inbox socket', () => {
   });
 
   test('a held message is posted once, then once more when the hold is lifted', async () => {
+    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
     const sock = path.join(sb.home, 'once.sock');
     let posts = 0;
     const server = await serve(sock, (buf) => {
@@ -325,6 +331,50 @@ describe('Claude inbox socket', () => {
       fs.rmSync(path.join(sb.home, 'once', '.claude'), { recursive: true, force: true });
       stop?.();
       stop = undefined;
+      delete process.env.TELEPATHY_HOLD_REPOST_DELAY_MS;
+    }
+  });
+
+  test('a lifted hold waits, and a transcript marker skips the second post', async () => {
+    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '5000';
+    const transcript = path.join(sb.home, 'transcripts');
+    fs.mkdirSync(transcript, { recursive: true });
+    process.env.TELEPATHY_TRANSCRIPT_DIR = transcript;
+    const sock = path.join(sb.home, 'delay.sock');
+    let posts = 0;
+    const server = await serve(sock, (buf) => {
+      if (!buf.includes('"type":"user"')) return undefined;
+      posts += 1;
+      return '';
+    });
+    try {
+      const settingsDir = path.join(sb.home, 'delay', '.claude');
+      fs.mkdirSync(settingsDir, { recursive: true });
+      fs.writeFileSync(path.join(settingsDir, 'settings.local.json'), JSON.stringify({ crossSessionInbound: 'hold' }));
+      const peer = pair('delay');
+      recordClaudeSocket(peer.id, { CLAUDE_CODE_MESSAGING_SOCKET: sock });
+      stop = startClaudeSocketWatcher(peer.id);
+      const held = await sendMessage(peer.from, peer.address, 'already in the transcript');
+      assert.equal(held.ok, true);
+      if (!held.ok) return;
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(posts, 1);
+      fs.writeFileSync(path.join(transcript, 'session.jsonl'), `telepathy-id:${held.message.id}\n`);
+      fs.rmSync(path.join(settingsDir, 'settings.local.json'));
+      await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(posts, 1, 'the re-post waits out the delay');
+      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
+      process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      assert.equal(posts, 1, 'the marker is the release; do not post again');
+      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
+    } finally {
+      server.close();
+      fs.rmSync(path.join(sb.home, 'delay', '.claude'), { recursive: true, force: true });
+      stop?.();
+      stop = undefined;
+      delete process.env.TELEPATHY_HOLD_REPOST_DELAY_MS;
+      delete process.env.TELEPATHY_TRANSCRIPT_DIR;
     }
   });
 });

@@ -12,6 +12,8 @@ import { startWakeFlusher } from './core/wake.ts';
 import {
   codexThreadsOf,
   defaultCodexHome,
+  isDeliveryOwner,
+  linkedPeerId,
   peerId,
   readSession,
   registerPresence,
@@ -66,15 +68,39 @@ function claudeWithoutMonitor(): boolean {
 }
 
 // A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).
-const selfId = peerId(agent, agentPid);
-if (agent !== 'codex') {
-  registerPresence(agent, agentPid, { cwd: sessionCwd() });
+// Any other harness is keyed by its session id once a hook has linked this process to one.
+function boundId(): string {
+  return linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+}
+const selfId = boundId();
+if (agent !== 'codex' && isDeliveryOwner(selfId, agentPid)) {
+  registerPresence(agent, agentPid, { cwd: sessionCwd() }, selfId);
   registerStableName(agent, selfId, flag('--name'));
 }
-if (agent === 'claude') {
-  recordClaudeSocket(selfId);
-  startClaudeSocketWatcher(selfId);
+let stopSocketWatcher: (() => void) | undefined;
+let watchingSocket: string | undefined;
+function armClaudeSocket(id: string): void {
+  if (agent !== 'claude' || watchingSocket === id) return;
+  if (!isDeliveryOwner(id, agentPid)) return;
+  stopSocketWatcher?.();
+  recordClaudeSocket(id);
+  stopSocketWatcher = startClaudeSocketWatcher(id);
+  watchingSocket = id;
 }
+armClaudeSocket(selfId);
+// The SessionStart hook may link this process after the server has started.
+let activeId = selfId;
+const relink = setInterval(() => {
+  const id = boundId();
+  if (!isDeliveryOwner(id, agentPid) || id === activeId) return;
+  if (agent !== 'codex') {
+    registerPresence(agent, agentPid, { cwd: sessionCwd() }, id);
+    registerStableName(agent, id, flag('--name'));
+  }
+  armClaudeSocket(id);
+  activeId = id;
+}, 500);
+relink.unref();
 debugLog('server', `started for ${selfId}`);
 startWakeFlusher();
 
@@ -87,7 +113,7 @@ const presenceFor = new Set<string>();
  * the hook isn't approved yet.
  */
 function selfIdFor(meta: Record<string, unknown> | undefined): string {
-  if (agent !== 'codex') return peerId(agent, agentPid);
+  if (agent !== 'codex') return boundId();
   let thread = [meta?.threadId, meta?.sessionId].find((v): v is string => typeof v === 'string' && v.length > 0);
   if (!thread) {
     // Without one, the thread this process runs, if its hooks registered exactly one.

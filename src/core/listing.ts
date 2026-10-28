@@ -56,7 +56,7 @@ export function formatPeerList(self: Peer, peers: Peer[]): string {
   lines.push(
     `Reachable sessions (${peers.length}):`,
     ...peers.map((p) => {
-      const shared = sameStableName(self, p) || peers.some((other) => sameStableName(p, other));
+      const shared = p.duplicate || sameStableName(self, p) || peers.some((other) => sameStableName(p, other));
       return shared ? `${describePeer(p)} · duplicate session` : describePeer(p);
     }),
   );

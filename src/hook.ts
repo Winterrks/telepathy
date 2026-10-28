@@ -18,6 +18,8 @@ import {
   peerId,
   readPeer,
   readSession,
+  isDeliveryOwner,
+  linkedPeerId,
   registerSession,
   registerStableName,
   selfPeer,
@@ -50,6 +52,12 @@ interface HookInput {
 const firstString = (input: HookInput, fields: string[]): string | undefined =>
   fields.map((f) => input[f]).find((v): v is string => typeof v === 'string' && v.length > 0);
 
+/** Harness session ids that live in the environment when the hook payload omits them. */
+const SESSION_ENV: Partial<Record<Agent, string>> = {
+  // Copilot CLI exports this for the running session. See agents.ts.
+  copilot: 'COPILOT_AGENT_SESSION_ID',
+};
+
 /** Agents that put the project directory in an environment variable rather than in the hook input. */
 const PROJECT_DIR_ENV: Partial<Record<Agent, string>> = {
   devin: 'DEVIN_PROJECT_DIR',
@@ -64,8 +72,9 @@ const PROJECT_DIR_ENV: Partial<Record<Agent, string>> = {
 function sessionOf(agent: Agent, input: HookInput): { sessionId?: string; cwd?: string } {
   const firstOf = (value: unknown) => (Array.isArray(value) && typeof value[0] === 'string' ? value[0] : undefined);
   const envName = PROJECT_DIR_ENV[agent];
+  const envSession = SESSION_ENV[agent] ? process.env[SESSION_ENV[agent]]?.trim() : undefined;
   return {
-    sessionId: firstString(input, ['session_id', 'sessionId', 'conversation_id', 'conversationId', 'thread_id', 'threadId']),
+    sessionId: firstString(input, ['session_id', 'sessionId', 'conversation_id', 'conversationId', 'thread_id', 'threadId']) ?? (envSession || undefined),
     cwd:
       firstString(input, ['cwd', 'workspaceRoot', 'project_dir', 'projectDir']) ??
       firstOf(input.workspace_roots) ??
@@ -74,7 +83,7 @@ function sessionOf(agent: Agent, input: HookInput): { sessionId?: string; cwd?: 
   };
 }
 
-/** The session a hook runs for: `<agent>-<pid>`, or for Codex the thread named in the input (see sessionKey). */
+/** The session a hook runs for: `<agent>-<session id>` once the harness names one, otherwise `<agent>-<pid>`. */
 const idOf = (agent: Agent, agentPid: number, input: HookInput) => sessionPeerId(agent, agentPid, sessionOf(agent, input).sessionId);
 
 async function readStdin(): Promise<HookInput> {
@@ -232,6 +241,11 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   const selfId = idOf(agent, agentPid, input);
+  // A second live process on this session (a fork, or the session open twice) must not also inject the inbox.
+  if (!isDeliveryOwner(selfId, agentPid)) {
+    debugLog('hook', `${selfId} pid ${agentPid} is not the delivery owner`);
+    return;
+  }
   // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
   if (statusFromHooks(agent) || agent === 'codex') writeStatus(selfId, 'busy');
   const overlap = touchedFilesNote(agent, agentPid, input);
@@ -267,6 +281,7 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   const selfId = idOf(agent, agentPid, input);
+  if (!isDeliveryOwner(selfId, agentPid)) return;
   const tracked = statusFromHooks(agent);
   if (tracked) writeStatus(selfId, 'idle');
   if (!endedNormally(input) || hasListener(selfId)) return;
@@ -303,8 +318,8 @@ function listAgents(agentPid: number, input: HookInput): void {
   const others = listPeers().filter((p) => p.id !== selfId && p.agent !== 'claude');
   if (!others.length) return;
   const heading =
-    `Other agents' sessions (${others.length}), reachable through the telepathy plugin with SendMessage or its ` +
-    'send_message tool (SendMessage shows an error for these, but the message is delivered):';
+    `Other agents' sessions (${others.length}), reachable through the telepathy plugin with send_message ` +
+    '(SendMessage only reaches Claude sessions; a SendMessage to one of these is stopped and shows an error):';
   const block = [heading, ...others.map((p) => listAgentsRow(p))].join('\n');
   const response = input.tool_response as { listing?: unknown } | undefined;
   if (typeof response?.listing === 'string') {
@@ -350,7 +365,9 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
     deny('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
     return;
   }
-  const result = await sendMessage(selfPeer('claude', agentPid), to, message);
+  const fromInput = idOf('claude', agentPid, input);
+  const bound = fromInput !== peerId('claude', agentPid) ? fromInput : (linkedPeerId('claude', agentPid) ?? fromInput);
+  const result = await sendMessage(selfPeer('claude', agentPid, bound), to, message);
   debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
     result.ok

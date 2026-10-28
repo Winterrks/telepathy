@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { debugLog } from './debug.ts';
-import { archivePending, formatForClaudeSocket, pendingMessages } from './messages.ts';
+import { confirmWaitEnabled, transcriptHasMarker } from './confirm.ts';
+import { archivePending, formatForClaudeSocket, messageMarker, pendingMessages } from './messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, type Peer, readPeer } from './peers.ts';
 import { isSameProcess, procStart } from './proc.ts';
@@ -210,8 +211,14 @@ export function startClaudeSocketWatcher(id: string): () => void {
   // A held or unconfirmed post is a message Claude already has. Posting it again on the 1s tick opens another
   // "Held peer message" notice (Claude caps those at 100). Retry only when the socket path changes, the
   // crossSessionInbound value changes, or a failed connect is 10s old. A failed connect never reached Claude.
-  const posted = new Map<string, { socketPath: string; inbound: string; outcome: SocketOutcome; at: number }>();
+  const posted = new Map<string, { socketPath: string; inbound: string; outcome: SocketOutcome; at: number; changeKey?: string; changeAt?: number }>();
   const FAILED_RETRY_MS = 10_000;
+  // After crossSessionInbound or the socket path changes, wait before posting again. Claude's own "Released"
+  // can land in the transcript in that gap; a second post is what shows "(2 held)" and "Dropped a peer message".
+  const holdRepostDelayMs = () => {
+    const n = Number(process.env.TELEPATHY_HOLD_REPOST_DELAY_MS);
+    return Number.isFinite(n) && n >= 0 ? n : 2_000;
+  };
 
   const flush = async (): Promise<SocketOutcome | 'idle'> => {
     const sock = readClaudeSocket(id) ?? recordClaudeSocket(id);
@@ -236,10 +243,39 @@ export function startClaudeSocketWatcher(id: string): () => void {
     let last: SocketOutcome = 'unconfirmed';
     for (const msg of pending) {
       const prev = posted.get(msg.id);
-      if (prev && prev.socketPath === sock.path && prev.inbound === inboundKey) {
+      const marker = messageMarker(msg.id);
+      const settingKey = `${sock.path}\0${inboundKey}`;
+      if (prev && (prev.socketPath !== sock.path || prev.inbound !== inboundKey)) {
+        let changeAt = prev.changeAt ?? 0;
+        if (prev.changeKey !== settingKey) {
+          changeAt = Date.now();
+          posted.set(msg.id, { ...prev, changeKey: settingKey, changeAt });
+        }
+        if (Date.now() - changeAt < holdRepostDelayMs()) {
+          last = prev.outcome;
+          continue;
+        }
+        if (transcriptHasMarker(readPeer(id), marker)) {
+          archivePending(id, msg.id);
+          posted.delete(msg.id);
+          last = 'delivered';
+          continue;
+        }
+      } else if (prev && prev.socketPath === sock.path && prev.inbound === inboundKey) {
         const failedWait = prev.outcome === 'failed' && Date.now() - prev.at < FAILED_RETRY_MS;
-        const heldBack = prev.outcome === 'unconfirmed' || prev.outcome === 'held' || prev.outcome === 'refused' || prev.outcome === 'expired';
+        const heldBack =
+          prev.outcome === 'unconfirmed' ||
+          prev.outcome === 'held' ||
+          prev.outcome === 'refused' ||
+          prev.outcome === 'expired' ||
+          prev.outcome === 'delivered';
         if (failedWait || heldBack) {
+          if (confirmWaitEnabled() && transcriptHasMarker(readPeer(id), marker)) {
+            archivePending(id, msg.id);
+            posted.delete(msg.id);
+            last = 'delivered';
+            continue;
+          }
           last = prev.outcome;
           continue;
         }
@@ -248,11 +284,17 @@ export function startClaudeSocketWatcher(id: string): () => void {
       const confirmed = socketConfirms(post, inbound, true);
       last = post.outcome === 'unconfirmed' && confirmed ? 'delivered' : post.outcome;
       debugLog('claude-socket', `${msg.id} ${last}${post.detail ? ` (${post.detail})` : ''}`);
-      if (confirmed) {
+      const inTranscript = confirmed && (!confirmWaitEnabled() || transcriptHasMarker(readPeer(id), marker));
+      if (inTranscript) {
         archivePending(id, msg.id);
         posted.delete(msg.id);
       } else {
-        posted.set(msg.id, { socketPath: sock.path, inbound: inboundKey, outcome: post.outcome, at: Date.now() });
+        posted.set(msg.id, {
+          socketPath: sock.path,
+          inbound: inboundKey,
+          outcome: confirmed ? 'delivered' : post.outcome,
+          at: Date.now(),
+        });
       }
     }
     return last;

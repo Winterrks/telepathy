@@ -526,6 +526,34 @@ export function notifyWake(peer: Peer, message: Message): WakeResult | undefined
   return { ok: true, how: target.webhook?.url ? 'webhook' : 'command', scheduled: true };
 }
 
+/**
+ * Drops one message from a wake batch that has not been posted yet.
+ * `cancelled` means the id was still on disk. `absent` means the batch was already taken (the POST may be in flight
+ * and cannot be recalled). The POST body never contains the message text.
+ */
+export function cancelWake(peerId: string, messageId: string): 'cancelled' | 'absent' {
+  let result: 'cancelled' | 'absent' = 'absent';
+  for (const file of listBatches()) {
+    withLockSync(() => {
+      const batch = readJson<WakeBatch>(file);
+      if (!batch) return;
+      const next = batch.items.filter((item) => !(item.id === messageId && item.peerId === peerId));
+      if (next.length === batch.items.length) return;
+      result = 'cancelled';
+      if (!next.length) {
+        try {
+          fs.unlinkSync(file);
+        } catch {
+          // the flusher took it
+        }
+        return;
+      }
+      writeJsonAtomic(file, { ...batch, items: next });
+    });
+  }
+  return result;
+}
+
 function listedTargets(config: DeliveryFile): { label: string; target: WakeTarget }[] {
   const out: { label: string; target: WakeTarget }[] = [];
   if (config.webhook?.url || config.command?.length) {

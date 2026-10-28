@@ -51,6 +51,13 @@ function debugLog(component, line) {
   }
 }
 
+// src/core/codex-activity.ts
+var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
+
+// src/core/codex-queue.ts
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
 // src/core/messages.ts
 import fs3 from "node:fs";
 import path5 from "node:path";
@@ -239,6 +246,20 @@ function findAgent(hint) {
 
 // src/core/peers.ts
 var peerId = (agent2, key) => `${agent2}-${key}`;
+var ownersFile = (id2) => path4.join(peerDir(id2), "owners.json");
+var linkFile = (agent2, pid) => path4.join(peerDir(peerId(agent2, pid)), "link.json");
+function sessionOwners(id2) {
+  const owners = readJson(ownersFile(id2)) ?? [];
+  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+}
+function isDeliveryOwner(id2, pid) {
+  const owners = sessionOwners(id2);
+  return owners.length === 0 || owners[0]?.pid === pid;
+}
+function linkedPeerId(agent2, pid) {
+  const link = readJson(linkFile(agent2, pid));
+  return typeof link?.id === "string" ? link.id : void 0;
+}
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
@@ -285,8 +306,9 @@ function pruneArchive(peerId2) {
   }
 }
 var describeSender = (from) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
+var messageMarker = (id2) => `telepathy-id:${id2}`;
 function formatMonitorLine(msg, inlineLimit = 4e3) {
-  const header = `[telepathy] New message ${msg.id} from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
+  const header = `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
   const flat = (s) => s.replace(/\r\n|\r|\n/g, "\\n");
   if (msg.body.length <= inlineLimit) {
     return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}`;
@@ -294,6 +316,13 @@ function formatMonitorLine(msg, inlineLimit = 4e3) {
   const preview = flat(msg.body.slice(0, 1500));
   return `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" for the full text): ${preview}\u2026`;
 }
+
+// src/core/codex-queue.ts
+var execFileAsync = promisify(execFile);
+
+// src/core/confirm.ts
+var FULL_READ = 32 * 1024 * 1024;
+var TAIL_READ = 4 * 1024 * 1024;
 
 // src/core/claude-socket.ts
 var SOCKET_LINE_MAX = 1024 * 1024;
@@ -307,11 +336,12 @@ function claudeSocketArmed(id2) {
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
-var id = peerId(agent, agentPid);
-var listenerFile2 = path7.join(peerDir(id), "listener.json");
+var id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+var listenerFile2 = () => path7.join(peerDir(id), "listener.json");
 var draining = false;
 function drain() {
   if (draining) return;
+  if (!isDeliveryOwner(id, agentPid)) return;
   if (claudeSocketArmed(id)) return;
   draining = true;
   try {
@@ -327,8 +357,15 @@ function drain() {
 }
 var watcher;
 function ensureWatching() {
+  const linked = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+  if (linked !== id) {
+    watcher?.close();
+    watcher = void 0;
+    id = linked;
+  }
+  if (!isDeliveryOwner(id, agentPid)) return;
   ensureDir(inboxDir(id));
-  if (!fs4.existsSync(listenerFile2)) registerListener(agent, agentPid);
+  if (!fs4.existsSync(listenerFile2())) registerListener(agent, agentPid, id);
   if (watcher) return;
   try {
     watcher = fs4.watch(inboxDir(id), () => drain());
@@ -342,13 +379,13 @@ function ensureWatching() {
 }
 function stop() {
   try {
-    if (readJson(listenerFile2)?.pid === process.pid) fs4.rmSync(listenerFile2, { force: true });
+    if (readJson(listenerFile2())?.pid === process.pid) fs4.rmSync(listenerFile2(), { force: true });
   } catch {
   }
   process.exit(0);
 }
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, stop);
-registerListener(agent, agentPid);
+if (isDeliveryOwner(id, agentPid)) registerListener(agent, agentPid, id);
 ensureWatching();
 debugLog("monitor", `listening for ${id}`);
 drain();

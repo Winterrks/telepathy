@@ -479,6 +479,43 @@ A PTY wrapper looks universal and is not. Mid-turn, the TUI is drawing a tool ca
 
 The conclusion for host mode follows the table. ACP `session/prompt` is uniform for processes telepathy spawned. It is not an attach API for the session already on the user's screen, except where the harness already has a side door (Claude's socket, Codex's queue, OpenCode's server). Those doors stay per-harness adapters under contract (b).
 
+## Stable identity and confirmed delivery
+
+`send_message` returns success only when the recipient's transcript contains `telepathy-id:<message id>`. The marker is part of every delivered rendering (`formatAsUserTurn`, the monitor line, the socket body, and `read_messages`). The call waits `TELEPATHY_CONFIRM_ABORT_MS` (default 110s) and then `TELEPATHY_CONFIRM_GRACE_MS` (default 10s). At the abort it renames the inbox file into `withdrawn/` (not `archive/`), asks Codex `thread/queue/delete` when a queue id was stored, and drops the id from a wake batch that is still on disk. A marker during the grace period is success. A socket reply, a queue exit code, a hook exit, or an inbox claim without the marker is unconfirmed, and the tool result starts with `Message failed:`. `TELEPATHY_CONFIRM_WAIT=0` skips the wait; that is what the tests use. Unset, the wait is on.
+
+What can be recalled, and what cannot:
+
+| Path | Proof | Abort |
+|---|---|---|
+| Claude transcript `~/.claude/projects/<project>/<session id>.jsonl` | Marker in the file. The project directory is the cwd with non-alphanumeric characters replaced by `-`. Names longer than 200 characters are truncated and hashed; the hash is not specified, so telepathy also scans one level of `projects/`. `CLAUDE_CONFIG_DIR` moves the root. `CLAUDE_CODE_PROJECT_DIR_NAME` (v2.1.234+, only when `CLAUDE_CONFIG_DIR` is set) names the directory. Hooks also receive `transcript_path`. ([Sessions](https://code.claude.com/docs/en/sessions), retrieved 28 Oct 2026.) | The inbox file can be withdrawn. Bytes already written to `CLAUDE_CODE_MESSAGING_SOCKET` cannot. A hold keeps those bytes in Claude's approval queue. |
+| Codex rollout `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-<time>-<thread id>.jsonl` (and `_segment` files) | Marker in the newest rollout. The format is not a public schema. | `thread/queue/delete` removes a queue item that has not started. `false` means the turn already took it. A missing app-server cannot be asked. |
+| OpenCode `~/.local/share/opencode/opencode.db` (and `-wal`), or legacy `storage/` | Marker in the database bytes or the legacy tree. `opencode db path` and `OPENCODE_DB` relocate it. ([Troubleshooting](https://opencode.ai/docs/troubleshooting/), retrieved 28 Oct 2026.) | Inbox withdrawal. An in-process `session.prompt` that already ran is not recalled. |
+| Gemini `~/.gemini/tmp/<project hash>/chats/` (`GEMINI_CLI_HOME` when set) | Marker under `tmp/`. The hash algorithm is not in the session-management page. ([Session management](https://github.com/google-gemini/gemini-cli/blob/main/docs/cli/session-management.md), retrieved 28 Oct 2026.) | Inbox withdrawal. No transcript file means unconfirmed, not success. |
+| Copilot `~/.copilot/session-state/<id>/events.jsonl` | Best effort only. Not an official path in the vendor docs this repo relies on. | Inbox withdrawal. |
+| Webhook / delivery command | Not proof. The body is `{id, ids, from, count, at}` with no message text. | Cancel the batch file if it is still on disk. A POST that already left cannot be recalled. |
+| Cursor, Grok, Devin, Antigravity, Kimi, Qwen, Hermes, OpenClaw, Pi | No transcript reader in this repo. | Inbox withdrawal. The failure says no transcript was found. |
+
+`read_messages` includes the marker, so a tool result that reached the model can match. A claim by itself does not.
+
+Tool-call budgets that can end the wait early: Claude Code's MCP `timeout` (milliseconds) overrides `MCP_TOOL_TIMEOUT`; unset, the default is very long, and a main-conversation call still running after about two minutes is moved to a background task (`CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS`). ([MCP](https://code.claude.com/docs/en/mcp), retrieved 28 Oct 2026.) Codex `mcp_servers.<name>.tool_timeout_sec` defaults to 60, which is shorter than 120, so a Codex sender needs `tool_timeout_sec` above 120. ([Config reference](https://developers.openai.com/codex/config-reference), retrieved 28 Oct 2026.) OpenCode's in-process tool is not MCP. The SendMessage hook timeout in `plugin/hooks/claude-hooks.json` is 150 seconds so a 120 second wait can finish and print the deny. A command hook that times out does not block the tool. ([Hooks](https://code.claude.com/docs/en/hooks), retrieved 28 Oct 2026.)
+
+There is no clean non-error way to make Claude's built-in `SendMessage` return success for a non-Claude peer on 2.1.2xx or 2.1.3xx. `PreToolUse` `permissionDecision: "deny"` is shown to Claude as the reason and prevents the call. `allow` does not replace the tool. `updatedInput` rewrites that tool's arguments, and a bad rewrite can deny the call. `defer` exists for `claude -p` and ends the turn with `tool_deferred` rather than a success result. `PostToolUse` `updatedToolOutput` runs only after the tool has already succeeded. `PostToolUseFailure` does not fire for a permission denial. An MCP tool is `mcp__server__tool` and does not replace `SendMessage`. ([Hooks](https://code.claude.com/docs/en/hooks); [issue 81340](https://github.com/anthropics/claude-code/issues/81340), 26 Jul 2026.) Telepathy therefore keeps the deny as a safety net and tells the model to call `send_message` for any peer that is not a Claude session.
+
+### How a resume is recognized
+
+The peer id is `<agent>-<session token>`. The token is the harness session id with characters outside `[A-Za-z0-9_-]` replaced, rejected when empty or longer than 180 characters. The mapping `~/.telepathy/identities/<agent>/<token>.json` stores `{name}` the first time that session is seen. `TELEPATHY_NAME` / `--name` is `identity.json` on the peer and wins. `owners.json` lists live claimants, oldest first. The first owns delivery: its hooks, monitor, and socket watcher are the ones that inject. The others are the same peer with `duplicate session` in the listing.
+
+| Harness | Session id | Resume |
+|---|---|---|
+| Claude Code | Hook field `session_id`. The transcript path is `~/.claude/projects/<project>/<session id>.jsonl`, so the id and the file move together. `SessionStart` `source` is `resume`, `continue` is the same session id via `--resume` / `--continue`. ([Hooks](https://code.claude.com/docs/en/hooks), [Sessions](https://code.claude.com/docs/en/sessions), retrieved 28 Oct 2026.) | Same `session_id` in the new process. The pid changes. Telepathy reclaims the peer. |
+| Codex | Hook `session_id` / tool-call `_meta` thread id. Rollout file name ends with `-<thread id>.jsonl`. `codex resume` reloads that thread. | Same thread id. Already session-keyed before this change. |
+| OpenCode | `ses_…` from the plugin's session id. Stored in `opencode.db`. OpenCode 2 registers `opencode-<session id>`. OpenCode 1.x does the same once `chat.message` names the session. | Same `ses_` id. |
+| Gemini CLI | Hook `session_id` when the payload has one. Chat files live under `~/.gemini/tmp/<hash>/chats/`. | Same id when the hook sends it. Without an id, the peer stays pid-keyed and a resume looks new. |
+| Copilot CLI | Hook `sessionId` / `session_id`, or `COPILOT_AGENT_SESSION_ID` when the payload omits it (the variable is already how this repo recognizes the process). | Same id when one of those is set. Otherwise pid-keyed. |
+| Grok Build, Cursor, Devin, Antigravity, Kimi, Qwen, and the rest | Whatever `session_id`, `sessionId`, `conversation_id`, `conversationId`, `thread_id`, or `threadId` the hook payload carries. | A resume that repeats that field reclaims the peer. A hook that never sends an id stays `<agent>-<pid>`. |
+
+A short-lived `ps` child, or any child younger than `TELEPATHY_TRANSIENT_CHILD_MS` (default 2s), does not count as the session's own shell command. Claude samples `ps` for a moment; that was showing an idle session as `shell`.
+
 ## Sources
 
 Primary pages, retrieved 27 October 2026 unless the row names an older date:

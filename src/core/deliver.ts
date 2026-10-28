@@ -15,7 +15,8 @@ import {
   writeToInbox,
 } from './messages.ts';
 import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { agentLabel, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
+import { confirmDelivery, confirmWaitEnabled } from './confirm.ts';
+import { agentLabel, keptPeers, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
 
@@ -96,11 +97,14 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   }
 
   const peers = listPeers().filter((p) => p.id !== self.id);
-  const resolved = resolvePeer(to, peers);
+  let resolved = resolvePeer(to, peers);
   if ('error' in resolved) {
     const selfMatch = resolvePeer(to, [self]);
     if ('peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
-    return { ok: false, error: resolved.error };
+    // A session that exited in the keep window is not listed, but a known address still reaches its inbox.
+    const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self.id));
+    if ('peer' in offline) resolved = offline;
+    else return { ok: false, error: resolved.error };
   }
   const recipient = resolved.peer;
 
@@ -124,8 +128,20 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   }
 
   const delivery = await routeDelivery(recipient, message);
+  if (!confirmWaitEnabled()) {
+    recordSent(self.id, recipient.id, body);
+    return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
+  }
+  const proof = await confirmDelivery(recipient, message, delivery.status);
+  if (!proof.confirmed) return { ok: false, error: proof.status };
   recordSent(self.id, recipient.id, body);
-  return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
+  return {
+    ok: true,
+    message,
+    recipient,
+    status: proof.status,
+    delivery: { ...delivery.report, confirmed: true },
+  };
 }
 
 interface Route {

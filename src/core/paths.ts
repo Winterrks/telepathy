@@ -11,6 +11,8 @@ export const peersDir = () => path.join(stateDir(), 'peers');
 export const peerDir = (id: string) => path.join(peersDir(), id);
 export const inboxDir = (id: string) => path.join(peerDir(id), 'inbox');
 export const archiveDir = (id: string) => path.join(peerDir(id), 'archive');
+/** Inbox files pulled back because delivery was not confirmed. Not a successful claim. */
+export const withdrawnDir = (id: string) => path.join(peerDir(id), 'withdrawn');
 
 /** Creates a directory (and parents) readable only by the current OS user. */
 export function ensureDir(dir: string): string {

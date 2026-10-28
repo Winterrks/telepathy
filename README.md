@@ -322,21 +322,21 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | Piece | Mechanism |
 |---|---|
 | Tools | One stdio MCP server built on the official TypeScript SDK v2 (`@modelcontextprotocol/server`). OpenCode and Kilo Code get the same tools as native plugin tools |
-| Session identity | The agent's own process: the MCP server, hooks and monitor walk up the process tree to the nearest agent process (`claude`, `codex`, `node …/gemini`, `kimi-code`…), so they agree on `<agent>-<pid>` without coordinating. Session hooks add the session id and folder. Codex and OpenCode 2 run many sessions in one process (Codex's app-server daemon, OpenCode's background service), so their sessions go by their own ids: Codex hooks name the thread, and so does the `_meta` of each Codex tool call. A Codex thread counts as running while a Codex process holds its `thread-writer-locks` file, whichever process that is after an update |
+| Session identity | The harness's own session id when a hook, tool call, or environment variable reports one: `<agent>-<session id>`, stored under `~/.telepathy`. A resume (`claude --resume`, `codex resume`, an OpenCode session that continues) reclaims that id, its name, and its inbox. `TELEPATHY_NAME` or `--name` still replaces the name. A process that has not reported an id yet is `<agent>-<pid>`. Two live processes on one session id are one peer; the first one owns delivery and the listing says `duplicate session` |
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s. During a turn, the PostToolUse hook hands the message over from the inbox and removes it from the queue (`thread/queue/delete` on a short-lived `codex app-server`) |
 | OpenCode receives | The plugin runs inside OpenCode. OpenCode 2: `session.prompt` with `delivery: "steer"`, which starts a turn or joins the running one. OpenCode 1.x: `client.session.promptAsync` once the session goes idle |
 | The others receive | Their hooks: before a prompt or after a tool call the pending messages go into the context; at the end of a turn they keep the turn going (`decision: block`, Cursor's `followup_message`, Antigravity's `continue`) |
 | Guidance | A few lines of instructions: MCP server instructions where the agent shows them, otherwise a session-start hook, a rule file or a system-prompt field. The `using-telepathy` skill has the full guide |
-| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions to the ListAgents result, in its own row format. A PreToolUse hook delivers a SendMessage addressed to another agent and stops the call, since SendMessage itself only reaches Claude sessions |
+| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions to the ListAgents result, in its own row format. Message those sessions with `send_message`. `SendMessage` only reaches Claude sessions. A PreToolUse hook stops a `SendMessage` aimed at another harness; that tool result is an error (deny is the only decision that prevents the native call). Claude-to-Claude `SendMessage` is left alone |
 
 Each agent gets its own manifest, so none of them runs another's hooks: `plugin/.claude-plugin`, `.codex-plugin`,
 `.grok-plugin`, `.github/plugin` (Copilot), `.cursor-plugin` and `.devin-plugin`; `gemini-extension.json`,
 `qwen-extension.json` and `.kimi-plugin` at the repository root; `antigravity/` for Antigravity; and the root
 `package.json` for OpenCode and Kilo Code (its default export has `setup` for OpenCode 2 and `server` for 1.x and Kilo).
-Registrations of exited sessions (checked by pid plus process start time) are removed automatically; unread messages
-wait an hour first, in case the session is resumed. Codex threads and OpenCode 2 sessions keep their record for a day,
-so they are reachable again as soon as they run.
+A session keyed by its harness id keeps its directory for a day after the process exits, so a resume reclaims the
+same inbox. Pid-only registrations are removed once the process is gone; their unread mail waits an hour. A known
+address still accepts a message during that day even though `list_peers` only shows sessions that are running.
 
 ## Good to know
 
@@ -352,9 +352,12 @@ so they are reachable again as soon as they run.
   for the next prompt's hook, or for `read_messages`. `list_peers` and ListAgents show the session as interrupted.
 - **Claude receives through its inbox socket when the session has one.** Claude Code v2.1.224 or later (v2.1.234 on
   native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there. A message is
-  marked delivered only when Claude accepts it. A hold, refusal, or expiry leaves it in the inbox, and the sender is
-  told that Claude is holding peer messages. The same held message is not posted again until that setting changes
-  or the session's socket changes. The post names the real sender (Codex, OpenCode, and the rest), which Claude
+  not treated as delivered just because Claude accepted the socket post. `send_message` succeeds only when the
+  recipient's transcript contains `telepathy-id:<message id>`. A hold, refusal, or expiry leaves the inbox copy,
+  and the sender is told that Claude is holding peer messages. The same held message is not posted again on the
+  next tick. After `crossSessionInbound` or the socket path changes, telepathy waits a couple of seconds
+  (`TELEPATHY_HOLD_REPOST_DELAY_MS`, default 2000) and skips the re-post when the transcript already has the marker.
+  The post names the real sender (Codex, OpenCode, and the rest), which Claude
   shows in place of "Another Claude session". Sessions without
   the socket, including bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in
   interactive terminal sessions.
@@ -362,9 +365,11 @@ so they are reachable again as soon as they run.
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
   message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
   runs, the hooks hand messages over at the next prompt or when a turn ends.
-- **Unread messages survive a restart for an hour.** A resumed session (`claude --resume`, `codex resume`) runs in a
-  new process, so it gets a new address, but it picks up the messages its previous process hadn't read yet, for up to
-  an hour, when it is the same session. A new conversation in the same folder doesn't get them.
+- **A resumed session keeps its telepathy id and name.** The key is the harness session id (Claude's `session_id`,
+  a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. The first name
+  is remembered under `~/.telepathy/identities/`. Messages already in the inbox, and messages sent to that address
+  while the process is gone, are waiting when it resumes. A new session id does not receive them. `TELEPATHY_NAME`
+  still overrides the name. Two live processes on one session id share the peer; the oldest one owns delivery.
 - **A stable name.** Set `TELEPATHY_NAME` or start the server with `--name my-bot`. The address becomes
   `grok:my-bot` and stays that way across restarts, and unread messages move to the new process. Two live sessions
   with the same name are called out in `list_peers` and in `[telepathy setup]`. Use the `[ref]` to pick one.

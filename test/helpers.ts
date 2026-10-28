@@ -42,6 +42,20 @@ export function makeSandbox(): Sandbox {
   };
   delete env.TELEPATHY_AGENT_PID;
   delete env.TELEPATHY_DEBUG;
+  // Production waits for a transcript. Tests assert the route's own status unless they opt in.
+  env.TELEPATHY_CONFIRM_WAIT = '0';
+  for (const key of [
+    'TELEPATHY_CONFIRM_ABORT_MS',
+    'TELEPATHY_CONFIRM_GRACE_MS',
+    'TELEPATHY_CONFIRM_POLL_MS',
+    'TELEPATHY_TRANSCRIPT_DIR',
+    'TELEPATHY_HOLD_REPOST_DELAY_MS',
+    'TELEPATHY_TRANSIENT_CHILD_MS',
+  ]) {
+    delete env[key];
+    delete process.env[key];
+  }
+  process.env.TELEPATHY_CONFIRM_WAIT = '0';
   return { home, codexHome, codexLog, env, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
 }
 

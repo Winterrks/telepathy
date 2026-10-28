@@ -4,7 +4,7 @@ import { claudeSocketArmed } from './core/claude-socket.ts';
 import { debugLog } from './core/debug.ts';
 import { claimInbox, formatMonitorLine } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson } from './core/paths.ts';
-import { peerId, registerListener } from './core/peers.ts';
+import { isDeliveryOwner, linkedPeerId, peerId, registerListener } from './core/peers.ts';
 import { findAgent, isAlive, parseAgent } from './core/proc.ts';
 
 /**
@@ -19,12 +19,14 @@ import { findAgent, isAlive, parseAgent } from './core/proc.ts';
 const argv = process.argv.slice(2);
 const once = argv.includes('--once');
 const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
-const id = peerId(agent, agentPid);
-const listenerFile = path.join(peerDir(id), 'listener.json');
+let id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+const listenerFile = () => path.join(peerDir(id), 'listener.json');
 
 let draining = false;
 function drain(): void {
   if (draining) return;
+  // A second process on this session must not also print the inbox.
+  if (!isDeliveryOwner(id, agentPid)) return;
   // The socket watcher is the delivery path while it is running. Claiming here would print a second copy.
   if (claudeSocketArmed(id)) return;
   draining = true;
@@ -43,8 +45,15 @@ function drain(): void {
 
 let watcher: fs.FSWatcher | undefined;
 function ensureWatching(): void {
+  const linked = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+  if (linked !== id) {
+    watcher?.close();
+    watcher = undefined;
+    id = linked;
+  }
+  if (!isDeliveryOwner(id, agentPid)) return;
   ensureDir(inboxDir(id));
-  if (!fs.existsSync(listenerFile)) registerListener(agent, agentPid);
+  if (!fs.existsSync(listenerFile())) registerListener(agent, agentPid, id);
   if (watcher) return;
   try {
     watcher = fs.watch(inboxDir(id), () => drain());
@@ -60,7 +69,7 @@ function ensureWatching(): void {
 function stop(): void {
   try {
     // Only this process's own registration: another listener may have taken over meanwhile.
-    if (readJson<{ pid?: number }>(listenerFile)?.pid === process.pid) fs.rmSync(listenerFile, { force: true });
+    if (readJson<{ pid?: number }>(listenerFile())?.pid === process.pid) fs.rmSync(listenerFile(), { force: true });
   } catch {
     // best effort
   }
@@ -69,7 +78,7 @@ function stop(): void {
 
 for (const signal of ['SIGTERM', 'SIGINT', 'SIGHUP'] as const) process.on(signal, stop);
 
-registerListener(agent, agentPid);
+if (isDeliveryOwner(id, agentPid)) registerListener(agent, agentPid, id);
 ensureWatching();
 debugLog('monitor', `listening for ${id}`);
 drain();
