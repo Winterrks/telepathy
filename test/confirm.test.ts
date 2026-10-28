@@ -57,11 +57,12 @@ describe('transcript confirmation', () => {
     return { from, to };
   };
 
-  test('the default wait is 105s plus 10s, under Claude\'s background move', () => {
+  test('the default wait is 100s plus 10s, under Claude\'s background move', () => {
     delete process.env.TELEPATHY_CONFIRM_ABORT_MS;
     delete process.env.TELEPATHY_CONFIRM_GRACE_MS;
-    assert.equal(confirmAbortMs(), 105_000);
+    assert.equal(confirmAbortMs(), 100_000);
     assert.equal(confirmGraceMs(), 10_000);
+    assert.equal(confirmAbortMs() + confirmGraceMs(), 110_000);
     assert.ok(confirmAbortMs() + confirmGraceMs() < 120_000);
   });
 
@@ -156,11 +157,12 @@ describe('transcript confirmation', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
-    assert.match(result.error, /is offline \(session not running\), so nothing was stored\./);
+    assert.match(result.error, /is offline \(session not running\)\. Nothing was left in its inbox\./);
+    assert.doesNotMatch(result.error, /\b(stays|stored|delivered)\b/i);
     assert.equal(fs.existsSync(inboxDir(to.id)) ? fs.readdirSync(inboxDir(to.id)).length : 0, 0);
   });
 
-  test('mail written while the session was live stays when it goes offline during the wait', async () => {
+  test('mail written while the session was live is withdrawn when it goes offline during the wait', async () => {
     arm('5000', '5000');
     const fromProc = fakeAgent();
     const toProc = fakeAgent();
@@ -185,8 +187,10 @@ describe('transcript confirmation', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
-    assert.match(result.error, /A copy already in its inbox stays/);
-    assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), true);
+    assert.match(result.error, /The inbox copy was withdrawn/);
+    assert.doesNotMatch(result.error, /\b(stays|stored|delivered)\b/i);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), false);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), file)), true);
   });
 
   test('a held socket result is not a clean failure, and an interrupt withdraw does not say the inbox stays', async () => {
@@ -219,6 +223,7 @@ describe('transcript confirmation', () => {
     assert.match(interrupted.status, /^Message failed:/);
     assert.match(interrupted.status, /The inbox copy was withdrawn, so the next prompt will not see it/);
     assert.doesNotMatch(interrupted.status, /It stays in the inbox/);
+    assert.doesNotMatch(interrupted.status, /\b(stays|stored|delivered)\b/i);
   });
 
   test('a hold that posts nothing fails by saying the receiver is holding, not that it has no listener', async () => {
@@ -258,5 +263,43 @@ describe('transcript confirmation', () => {
     assert.equal(result.confirmed, false);
     assert.match(result.status, /Strongest signal: Unconfirmed handoff to opencode:app \[opencode-ses_x\]\./);
     assert.doesNotMatch(result.status, /\bdelivered\b/i);
+  });
+
+  test('a failed confirm deletes a queued Codex item and withdraws the inbox', async () => {
+    arm('60', '30');
+    process.env.TELEPATHY_CODEX_BIN = sb.env.TELEPATHY_CODEX_BIN;
+    process.env.FAKE_CODEX_LOG = sb.env.FAKE_CODEX_LOG;
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    registerPresence('claude', fromProc.pid, { cwd: '/w/from' }, 'claude-qfrom');
+    registerSession('claude', fromProc.pid, { sessionId: 'qfrom', cwd: '/w/from', source: 'hook' });
+    registerPresence('codex', toProc.pid, { cwd: '/w/q', codexHome: sb.codexHome }, 'codex-thread-qdel');
+    registerSession('codex', toProc.pid, { sessionId: 'thread-qdel', cwd: '/w/q', source: 'hook', codexHome: sb.codexHome });
+    const from = readPeer('claude-qfrom');
+    const to = readPeer('codex-thread-qdel');
+    assert.ok(from && to);
+    const message = {
+      id: 'm-000000005-qdel',
+      from,
+      to,
+      body: 'queued',
+      sentAt: new Date().toISOString(),
+      codexQueueId: 'q-live',
+      codexThreadId: 'thread-qdel',
+    };
+    fs.mkdirSync(inboxDir(to.id), { recursive: true });
+    fs.writeFileSync(path.join(inboxDir(to.id), `${message.id}.json`), JSON.stringify(message));
+    fs.writeFileSync(`${sb.codexLog}.queue.json`, JSON.stringify(['q-live']));
+    const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8') : '';
+    const result = await confirmDelivery(to, message, 'Message queued for delivery to codex:q.');
+    assert.equal(result.confirmed, false);
+    assert.match(result.status, /^Message failed:/);
+    assert.match(result.status, /The Codex queue item was removed/);
+    assert.doesNotMatch(result.status, /\b(stays|stored|delivered)\b/i);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${message.id}.json`)), false);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${message.id}.json`)), true);
+    assert.match(fs.readFileSync(sb.codexLog, 'utf8').slice(before.length), /app-server/);
+    assert.deepEqual(JSON.parse(fs.readFileSync(`${sb.codexLog}.queue.json`, 'utf8')), []);
   });
 });

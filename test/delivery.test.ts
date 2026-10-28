@@ -174,26 +174,23 @@ describe('delivery ladder', () => {
     }
   });
 
-  test('an interrupted Codex is not queued and the inbox copy stays unclaimed', async () => {
+  test('an interrupted Codex fails immediately and leaves nothing', async () => {
     codexPeer('thread-stop');
     rollout('thread-stop', 'turn_aborted');
     const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).length : 0;
+    const started = Date.now();
     const result = await sendMessage(sender(), 'codex:thread-stop', 'after the stop');
-    assert.equal(result.ok, true);
-    if (!result.ok) return;
-    assert.equal(result.delivery.confirmed, false);
-    assert.equal(result.delivery.attempts.find((a) => a.id === 'codex-queue')?.result, 'unsupported');
-    assert.match(result.status, /Codex was interrupted, so its queue will not deliver this/);
-    assert.match(result.status, /next prompt/);
+    assert.ok(Date.now() - started < 2_000);
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /is interrupted, so its queue will not run this\. Nothing was left for a later prompt\./);
+    assert.doesNotMatch(result.error, /\b(stays|stored|delivered)\b/i);
     const calls = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').trim().split('\n').filter(Boolean).slice(before) : [];
     assert.equal(calls.length, 0, 'codex queue was not called');
-    const [file] = fs.readdirSync(inboxDir('codex-thread-stop'));
-    const stored = JSON.parse(fs.readFileSync(path.join(inboxDir('codex-thread-stop'), file), 'utf8')) as { body: string; codexQueueId?: string };
-    assert.equal(stored.body, 'after the stop');
-    assert.equal(stored.codexQueueId, undefined);
+    assert.equal(fs.existsSync(inboxDir('codex-thread-stop')), false);
+    assert.equal(fs.existsSync(withdrawnDir('codex-thread-stop')), false);
     const read = readMessagesTool('codex-thread-stop', {});
-    assert.match(read.text, /after the stop/);
-    assert.deepEqual(read.structured?.messages.map((m) => m.body), ['after the stop']);
+    assert.doesNotMatch(read.text, /after the stop/);
   });
 
   test('a codex queue failure leaves the message in the inbox', async () => {
@@ -833,7 +830,7 @@ describe('stable name and duplicate sessions', () => {
     assert.match(formatPeerList(self, [other]), /Use the \[ref\] to pick one/);
   });
 
-  test('setup warns with the Codex bridge timeout key when it is missing or below 115', () => {
+  test('setup warns with the Codex bridge timeout key when it is missing or below 110', () => {
     const proc = fakeAgent();
     agents.push(proc);
     registerPresence('codex', proc.pid, { cwd: '/work/cx', codexHome: sb.codexHome });

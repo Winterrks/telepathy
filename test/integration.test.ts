@@ -330,7 +330,7 @@ describe('telepathy plugin', () => {
     assert.equal(fs.readdirSync(inbox).length, 1);
     const offline = await call(sender, 'send_message', { to: 'claude:app', message: 'sent while offline' });
     assert.equal(offline.isError, true);
-    assert.match(toolText(offline), /Message failed: claude:app \[claude-claude-sess\] is offline \(session not running\), so nothing was stored\./);
+    assert.match(toolText(offline), /Message failed: claude:app \[claude-claude-sess\] is offline \(session not running\)\. Nothing was left in its inbox\./);
     assert.equal(fs.readdirSync(inbox).length, 1);
     const exited = JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', 'claude-claude-sess', 'session.json'), 'utf8')) as { exitedAt?: string };
     assert.ok(exited.exitedAt);
@@ -556,7 +556,7 @@ describe('telepathy plugin', () => {
       fs.appendFileSync(rollout, event('task_complete') + event('token_count'));
       assert.match(row(), /  ·  interactive  ·  idle  ·  started /);
       fs.appendFileSync(rollout, event('task_started') + event('turn_aborted'));
-      assert.match(row(), /  ·  interactive  ·  interrupted: gets messages only after its user sends it a prompt  ·  started /);
+      assert.match(row(), /  ·  interactive  ·  interrupted: a send fails until its user prompts it  ·  started /);
     });
 
     test('Sending to a busy or interrupted Codex says when it will see the message', async () => {
@@ -579,15 +579,12 @@ describe('telepathy plugin', () => {
       fs.appendFileSync(rollout, event('turn_aborted'));
       assert.equal(
         toolText(await call(claude, 'send_message', { to: 'codex:auth', message: 'two' })),
-        `Message stored for ${ref}. Codex was interrupted, so its queue will not deliver this. ` +
-          `It stays in the inbox for the next prompt, or until the session calls read_messages.`,
+        `Message failed: ${ref} is interrupted, so its queue will not run this. Nothing was left for a later prompt.`,
       );
-      assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · interrupted: gets messages only after its user sends it a prompt/);
+      assert.match(toolText(await call(claude, 'list_peers')), /· cwd \/w\/auth · interrupted: a send fails until its user prompts it/);
       assert.equal(codexCalls(sb).length, 1, 'the interrupted message is not queued');
-      const held = fs.readdirSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox')).map((f) => JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox', f), 'utf8')) as { body: string; codexQueueId?: string });
-      const interrupted = held.find((m) => m.body === 'two');
-      assert.ok(interrupted, 'the interrupted message stays in the inbox');
-      assert.equal(interrupted?.codexQueueId, undefined);
+      const held = fs.readdirSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox')).map((f) => JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', 'codex-thread-7', 'inbox', f), 'utf8')) as { body: string });
+      assert.equal(held.some((m) => m.body === 'two'), false);
     });
 
     test('ListAgents output of an unknown shape gets the Codex sessions as a note instead', () => {

@@ -145,9 +145,11 @@ codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@t
 ```
 
 Then open `/hooks` in a Codex session and approve telepathy's four hooks (press `t` to trust all). A launched TUI is
-listed as soon as the process is up, before any prompt, as `no thread yet`. A send then fails immediately and stores
+listed as soon as the process is up, before any prompt, as `no thread yet`. A send then fails immediately and writes
 nothing: Codex's MCP server and SessionStart run per thread, and a side `thread/start` would not be the composer on
-screen. `codex resume <id>` is that thread immediately, so a send can be queued. After the first prompt, SessionStart
+screen. Only an interactive TUI is listed (bare `codex`, a prompt, `codex resume`, `codex fork`, plus global flags).
+The ChatGPT app's `exec-server` helper is not a session, and neither is a process with a different `CODEX_HOME` or
+an app-bundle parent. `codex resume <id>` is that thread immediately, so a send can be queued. After the first prompt, SessionStart
 binds the same name to the thread. Without the hooks, a thread becomes deliverable once it has called a telepathy
 tool. PostToolUse
 and UserPromptSubmit hand messages over during a turn and with your next prompt; without them, a busy Codex gets a
@@ -348,9 +350,9 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
 ## Good to know
 
 - **A launched Codex is listed before its first prompt.** The row is `no thread yet`. A send fails immediately
-  (`Message failed: … has no thread yet; prompt it once`) and nothing is stored or queued. `codex resume <id>` is
+  (`Message failed: … has no thread yet; prompt it once`) and nothing is written or queued. `codex resume <id>` is
   already that thread, keeps the name from the last time that thread was seen, and can be queued under the same
-  115s confirm rules as any other thread. A bare `codex resume` stays `no thread yet` until SessionStart reports
+  110s confirm rules as any other thread. A bare `codex resume` stays `no thread yet` until SessionStart reports
   the id. Two windows in the same directory stay two rows until each one has a thread id. Copilot and Antigravity
   still register their folder name at the first prompt; before that they show up as `session-<pid>`.
 - **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
@@ -359,10 +361,10 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   `read_messages`) is taken back out of Codex's queue, so it doesn't arrive twice. Without the PostToolUse hook
   approved, messages wait for the turn to end.
 - **An interrupted Codex does not get the queue.** After you interrupt a turn (Esc), Codex leaves queued messages
-  paused and does not start them. Telepathy does not call `codex queue` in that state. With confirmation off, the
-  message stays in the inbox for the next prompt's hook, or for `read_messages`. With confirmation on, a wait that
-  ends without the transcript marker withdraws that inbox copy, and the result says so; it does not also say the
-  copy is still waiting. `list_peers` and ListAgents show the session as interrupted.
+  paused and does not start them, including after `codex resume`, until you prompt it. A send while that status
+  holds fails immediately (`Message failed: … is interrupted, so its queue will not run this. Nothing was left for
+  a later prompt.`) and writes nothing. The next prompt is not this call, so the confirm window is not spent
+  waiting. `list_peers` and ListAgents show the session as interrupted.
 - **Claude receives through its inbox socket when the session has one.** Claude Code v2.1.224 or later (v2.1.234 on
   native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there, and only
   the delivery owner's socket: a second window on the same session has its own path and must not replace it.
@@ -423,10 +425,11 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, a session running
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
   [update-all](#updating-every-agent) command). Codex's MCP server in this plugin is named `bridge`, so the tool
-  timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 115
-  seconds (105s, then 10s), which stays inside Claude Code's about-120s move of a live tool call to the background.
+  timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 110
+  seconds (100s, then 10s) and returns as soon as that grace period ends, which stays inside Claude Code's
+  about-120s move of a live tool call to the background.
   A value read from `config.toml` or from a `-c` override on the Codex process is trusted. When that
-  effective value is below 115, the note names the key. When the file is readable and neither place shows the key,
+  effective value is below 110, the note names the key. When the file is readable and neither place shows the key,
   the note says the value could not be verified, once per session, and does not claim the key is unset. A note that
   Codex has not approved its hooks is shown only when no telepathy hook has fired for that session. Each note is
   shown once per session. If messages seem missing, the agent can call `read_messages`.

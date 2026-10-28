@@ -1,12 +1,12 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/hook.ts
-import path15 from "node:path";
+import path16 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/claude-socket.ts
 import fs10 from "node:fs";
-import path11 from "node:path";
+import path12 from "node:path";
 
 // src/core/debug.ts
 import fs2 from "node:fs";
@@ -55,8 +55,8 @@ function debugLog(component, line) {
 
 // src/core/confirm.ts
 import fs9 from "node:fs";
-import os4 from "node:os";
-import path10 from "node:path";
+import os5 from "node:os";
+import path11 from "node:path";
 
 // src/core/codex-activity.ts
 import fs3 from "node:fs";
@@ -146,21 +146,21 @@ function codexLastResponse(codexHome, threadId) {
 
 // src/core/codex-queue.ts
 import { execFile, spawn } from "node:child_process";
-import os3 from "node:os";
-import path8 from "node:path";
+import os4 from "node:os";
+import path9 from "node:path";
 import readline from "node:readline";
 import { promisify } from "node:util";
 
 // src/core/messages.ts
 import crypto from "node:crypto";
 import fs7 from "node:fs";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/core/peers.ts
 import { createHash } from "node:crypto";
 import fs6 from "node:fs";
-import os2 from "node:os";
-import path6 from "node:path";
+import os3 from "node:os";
+import path7 from "node:path";
 
 // src/core/agents.ts
 import path4 from "node:path";
@@ -266,6 +266,8 @@ var VERSION = true ? "0.9.0" : "0.0.0-dev";
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
 import fs4 from "node:fs";
+import os2 from "node:os";
+import path5 from "node:path";
 
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
@@ -394,32 +396,8 @@ var VALUE_FLAGS = /* @__PURE__ */ new Set([
   "--remote",
   "--output-schema"
 ]);
-var NON_TUI = /* @__PURE__ */ new Set([
-  "exec",
-  "e",
-  "review",
-  "login",
-  "logout",
-  "mcp",
-  "mcp-server",
-  "app-server",
-  "app",
-  "cloud",
-  "sandbox",
-  "apply",
-  "features",
-  "completion",
-  "completions",
-  "debug",
-  "doctor",
-  "update",
-  "plugin",
-  "help",
-  "queue",
-  "delete",
-  "proto",
-  "execpolicy"
-]);
+var SUBCOMMAND = /^[a-z][a-z0-9]*(-[a-z0-9]+)*$/;
+var APP_BUNDLE = /\.app(?:\/|\s|$)/;
 var INTERPRETERS2 = /* @__PURE__ */ new Set(["node", "nodejs", "bun", "deno", "python", "python3", "bash", "sh", "zsh", "env"]);
 var THREAD_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 function tokenize(command) {
@@ -463,12 +441,52 @@ function codexTuiLaunch(command) {
     positional.push(token);
   }
   const sub = positional[0];
-  if (sub && NON_TUI.has(sub)) return void 0;
+  if (!sub) return {};
   if (sub === "resume") {
     const threadId = positional.slice(1).find((token) => THREAD_ID.test(token));
     return threadId ? { threadId } : {};
   }
+  if (sub === "fork") return {};
+  if (SUBCOMMAND.test(sub)) return void 0;
   return {};
+}
+function pluginCodexHome() {
+  return path5.resolve(process.env.CODEX_HOME || path5.join(os2.homedir(), ".codex"));
+}
+function codexHomeDiffers(codexHome) {
+  if (!codexHome) return false;
+  return path5.resolve(codexHome) !== pluginCodexHome();
+}
+function parentIsAppBundle(parent) {
+  return !!parent && APP_BUNDLE.test(parent);
+}
+function parentCommand(pid) {
+  const ppid = processTable().get(pid)?.ppid;
+  if (!ppid) return void 0;
+  const args = commandLines().get(ppid);
+  const comm = processTable().get(ppid)?.comm;
+  return [args, comm].filter((part) => !!part).join("\n") || void 0;
+}
+function processCodexHome(pid) {
+  try {
+    const raw = fs4.readFileSync(`/proc/${pid}/environ`);
+    for (const entry of raw.toString("utf8").split("\0")) {
+      if (!entry.startsWith("CODEX_HOME=")) continue;
+      return entry.slice("CODEX_HOME=".length) || void 0;
+    }
+    return void 0;
+  } catch {
+  }
+  try {
+    const out = execFileSync2("ps", ["-ww", "-p", String(pid), "-E", "-o", "command="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    });
+    const match = /(?:^|\s)CODEX_HOME=(\S*)/.exec(out);
+    return match?.[1] || void 0;
+  } catch {
+    return void 0;
+  }
 }
 function processCwd(pid) {
   try {
@@ -487,6 +505,9 @@ function processCwd(pid) {
     return void 0;
   }
 }
+function acceptTui(args, parent, codexHome) {
+  return !!codexTuiLaunch(args) && !parentIsAppBundle(parent) && !codexHomeDiffers(codexHome);
+}
 function procsFromOverride(file) {
   try {
     const parsed = JSON.parse(fs4.readFileSync(file, "utf8"));
@@ -495,7 +516,10 @@ function procsFromOverride(file) {
     for (const row of parsed) {
       if (!row || typeof row !== "object") continue;
       const rec = row;
-      if (typeof rec.pid !== "number" || typeof rec.args !== "string" || !codexTuiLaunch(rec.args)) continue;
+      if (typeof rec.pid !== "number" || typeof rec.args !== "string") continue;
+      const parent = typeof rec.parent === "string" ? rec.parent : void 0;
+      const codexHome = typeof rec.codexHome === "string" ? rec.codexHome : void 0;
+      if (!acceptTui(rec.args, parent, codexHome)) continue;
       procs.push({
         pid: rec.pid,
         args: rec.args,
@@ -514,7 +538,7 @@ function codexTuiProcesses() {
   const procs = [];
   const starts = processTable();
   for (const [pid, args] of commandLines()) {
-    if (!codexTuiLaunch(args)) continue;
+    if (!acceptTui(args, parentCommand(pid), processCodexHome(pid))) continue;
     procs.push({ pid, args, start: starts.get(pid)?.start });
   }
   return procs;
@@ -523,8 +547,8 @@ function codexTuiProcesses() {
 // src/core/codex-threads.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
 import fs5 from "node:fs";
-import path5 from "node:path";
-var locksDir = (codexHome) => path5.join(codexHome, "thread-writer-locks");
+import path6 from "node:path";
+var locksDir = (codexHome) => path6.join(codexHome, "thread-writer-locks");
 var cache2;
 function heldLocks(dir, maxAgeMs = 1e3) {
   let files2;
@@ -550,7 +574,7 @@ ${files2.sort().join("\n")}`;
         out = e.stdout ?? "";
       }
       held = new Set(
-        out.split("\n").filter((l) => l.startsWith("n")).map((l) => path5.basename(l.slice(1)).replace(/\.lock$/, ""))
+        out.split("\n").filter((l) => l.startsWith("n")).map((l) => path6.basename(l.slice(1)).replace(/\.lock$/, ""))
       );
     }
   } catch {
@@ -562,7 +586,7 @@ ${files2.sort().join("\n")}`;
 function codexThreadLoaded(codexHome, threadId) {
   const dir = locksDir(codexHome);
   if (!fs5.existsSync(dir)) return void 0;
-  if (!fs5.existsSync(path5.join(dir, `${threadId}.lock`))) return false;
+  if (!fs5.existsSync(path6.join(dir, `${threadId}.lock`))) return false;
   return heldLocks(dir)?.has(threadId) ?? true;
 }
 
@@ -576,9 +600,9 @@ function sessionToken(sessionId) {
   return /^[A-Za-z0-9]/.test(safe) ? safe : void 0;
 }
 var sessionPeerId = (agent, pid, sessionId) => peerId(agent, sessionKey(agent, pid, sessionId));
-var ownersFile = (id) => path6.join(peerDir(id), "owners.json");
-var linkFile = (agent, pid) => path6.join(peerDir(peerId(agent, pid)), "link.json");
-var rememberedFile = (agent, sessionId) => path6.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
+var ownersFile = (id) => path7.join(peerDir(id), "owners.json");
+var linkFile = (agent, pid) => path7.join(peerDir(peerId(agent, pid)), "link.json");
+var rememberedFile = (agent, sessionId) => path7.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
 function sessionOwners(id) {
   const owners = readJson(ownersFile(id)) ?? [];
   return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
@@ -614,16 +638,16 @@ function rememberedName(agent, sessionId) {
   return readJson(rememberedFile(agent, sessionId))?.name;
 }
 function markToolHook(id) {
-  const file = path6.join(peerDir(id), "tool-hook.json");
+  const file = path7.join(peerDir(id), "tool-hook.json");
   if (!fs6.existsSync(file)) writeJsonAtomic(file, { at: (/* @__PURE__ */ new Date()).toISOString() });
 }
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-var defaultCodexHome = () => process.env.CODEX_HOME || path6.join(os2.homedir(), ".codex");
-var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path6.join(os2.homedir(), ".claude");
+var defaultCodexHome = () => process.env.CODEX_HOME || path7.join(os3.homedir(), ".codex");
+var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path7.join(os3.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
-  const file = path6.join(peerDir(id), "session.json");
+  const file = path7.join(peerDir(id), "session.json");
   const previous = readJson(file);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const owner = fields.sessionId ? claimSessionOwner(id, pid) : true;
@@ -654,7 +678,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
 function notePeerExit(id, at = (/* @__PURE__ */ new Date()).toISOString()) {
   const session = readSession(id);
   if (!session || session.exitedAt) return;
-  writeJsonAtomic(path6.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
+  writeJsonAtomic(path7.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
 }
 function dropInboxAfter(id, exitedAt) {
   const cutoff = Date.parse(exitedAt);
@@ -666,11 +690,11 @@ function dropInboxAfter(id, exitedAt) {
     return;
   }
   for (const file of files2) {
-    const msg = readJson(path6.join(inboxDir(id), file));
+    const msg = readJson(path7.join(inboxDir(id), file));
     const sent = Date.parse(msg?.sentAt ?? "");
     if (Number.isNaN(sent) || sent <= cutoff) continue;
     try {
-      fs6.rmSync(path6.join(inboxDir(id), file), { force: true });
+      fs6.rmSync(path7.join(inboxDir(id), file), { force: true });
     } catch {
     }
   }
@@ -685,7 +709,7 @@ function moveInbox(fromId, toId) {
   }
   for (const file of files2) {
     try {
-      fs6.renameSync(path6.join(inboxDir(fromId), file), path6.join(ensureDir(inboxDir(toId)), file));
+      fs6.renameSync(path7.join(inboxDir(fromId), file), path7.join(ensureDir(inboxDir(toId)), file));
     } catch {
     }
   }
@@ -694,7 +718,7 @@ var HOLD_MS = 60 * 6e4;
 var SESSION_KEEP_MS = 24 * 60 * 6e4;
 var SERVICE_SESSION_ACTIVE_MS = 12 * 60 * 6e4;
 function lastActivity(id) {
-  const times = [readSession(id)?.updatedAt, readJson(path6.join(peerDir(id), "status.json"))?.at];
+  const times = [readSession(id)?.updatedAt, readJson(path7.join(peerDir(id), "status.json"))?.at];
   return Math.max(...times.map((t) => Date.parse(t ?? "")).filter((t) => !Number.isNaN(t)), 0);
 }
 function keepsSession(peer, now = Date.now()) {
@@ -702,7 +726,7 @@ function keepsSession(peer, now = Date.now()) {
 }
 function holdsUnread(id, now = Date.now()) {
   try {
-    return fs6.readdirSync(inboxDir(id)).some((f) => now - fs6.statSync(path6.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+    return fs6.readdirSync(inboxDir(id)).some((f) => now - fs6.statSync(path7.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
   } catch {
     return false;
   }
@@ -716,7 +740,7 @@ function adoptHeldMessages(agent, selfId, sessionId) {
   }
   for (const name of names) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
-    const old = readJson(path6.join(peerDir(name), "session.json"));
+    const old = readJson(path7.join(peerDir(name), "session.json"));
     if (old?.agent !== agent || old.sessionId !== sessionId || isPeerAlive(readPeer(name))) continue;
     let files2 = [];
     try {
@@ -725,7 +749,7 @@ function adoptHeldMessages(agent, selfId, sessionId) {
     }
     for (const file of files2) {
       try {
-        fs6.renameSync(path6.join(inboxDir(name), file), path6.join(ensureDir(inboxDir(selfId)), file));
+        fs6.renameSync(path7.join(inboxDir(name), file), path7.join(ensureDir(inboxDir(selfId)), file));
       } catch {
       }
     }
@@ -740,7 +764,7 @@ function configuredStableName(explicit) {
 function registerStableName(agent, id, explicit) {
   const name = configuredStableName(explicit);
   if (!name) return;
-  writeJsonAtomic(path6.join(peerDir(id), "identity.json"), { name, pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() });
+  writeJsonAtomic(path7.join(peerDir(id), "identity.json"), { name, pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() });
   adoptStableInbox(agent, id, name);
 }
 function adoptStableInbox(agent, selfId, stableName) {
@@ -752,7 +776,7 @@ function adoptStableInbox(agent, selfId, stableName) {
   }
   for (const name of names) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
-    const ident = readJson(path6.join(peerDir(name), "identity.json"));
+    const ident = readJson(path7.join(peerDir(name), "identity.json"));
     if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
     let files2 = [];
     try {
@@ -762,27 +786,27 @@ function adoptStableInbox(agent, selfId, stableName) {
     }
     for (const file of files2) {
       try {
-        fs6.renameSync(path6.join(inboxDir(name), file), path6.join(ensureDir(inboxDir(selfId)), file));
+        fs6.renameSync(path7.join(inboxDir(name), file), path7.join(ensureDir(inboxDir(selfId)), file));
       } catch {
       }
     }
   }
 }
 function readSession(id) {
-  return readJson(path6.join(peerDir(id), "session.json"));
+  return readJson(path7.join(peerDir(id), "session.json"));
 }
 function slugify(value) {
   return value.normalize("NFKD").replace(new RegExp("(\\p{Script=Latin})\\p{M}+", "gu"), "$1").normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40).replace(/[-.]+$/g, "");
 }
 function claudeSessionName(pid) {
-  const record = readJson(path6.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record = readJson(path7.join(claudeConfigDir(), "sessions", `${pid}.json`));
   return typeof record?.name === "string" && record.name ? record.name : void 0;
 }
 function codexThreadName(codexHome, sessionId) {
   if (!sessionId) return void 0;
   let text;
   try {
-    text = fs6.readFileSync(path6.join(codexHome, "session_index.jsonl"), "utf8");
+    text = fs6.readFileSync(path7.join(codexHome, "session_index.jsonl"), "utf8");
   } catch {
     return void 0;
   }
@@ -799,7 +823,7 @@ function codexThreadName(codexHome, sessionId) {
 }
 var nameSuffix = (agent, key) => agent[0] + createHash("sha1").update(String(key)).digest("hex").slice(0, 2);
 function displayName(agent, pid, key, cwd) {
-  const folder = cwd ? slugify(path6.basename(cwd)) : "";
+  const folder = cwd ? slugify(path7.basename(cwd)) : "";
   if (agent === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
   const k = /^\d+$/.test(key) ? Number(key) : key;
   return folder ? `${folder}-${nameSuffix(agent, k)}` : `session-${key}`;
@@ -831,20 +855,20 @@ function readPeer(id) {
   if (!m) return void 0;
   const agent = m[1];
   const dir = peerDir(id);
-  const session = readJson(path6.join(dir, "session.json"));
-  const presence = readJson(path6.join(dir, "presence.json"));
-  const listener = readJson(path6.join(dir, "listener.json"));
+  const session = readJson(path7.join(dir, "session.json"));
+  const presence = readJson(path7.join(dir, "presence.json"));
+  const listener = readJson(path7.join(dir, "listener.json"));
   if (!session && !presence) return void 0;
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
   const generated = displayName(agent, pid, m[2], cwd);
-  const identity = readJson(path6.join(dir, "identity.json"));
+  const identity = readJson(path7.join(dir, "identity.json"));
   const stable = identity?.name && slugify(identity.name) === identity.name ? identity.name : void 0;
   const name = stable || rememberedName(agent, session?.sessionId) || generated;
   const sessionKeyed = !!session?.sessionId && m[2] === sessionToken(session.sessionId);
   const aliases = [
-    cwd ? slugify(path6.basename(cwd)) : "",
+    cwd ? slugify(path7.basename(cwd)) : "",
     agent === "codex" ? slugify(codexThreadName(codexHome, session?.sessionId) ?? "") : "",
     stable ? slugify(generated) : ""
   ];
@@ -867,7 +891,7 @@ function readPeer(id) {
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     version: presence?.version,
     hookRan: session?.source === "hook",
-    toolHookRan: fs6.existsSync(path6.join(dir, "tool-hook.json")),
+    toolHookRan: fs6.existsSync(path7.join(dir, "tool-hook.json")),
     aliases: [...new Set(aliases)].filter((a) => a && a !== slugify(name))
   };
 }
@@ -897,7 +921,7 @@ function listPeers() {
   const ids = new Set(peers.map((p) => p.id));
   return peers.filter((p) => {
     if (p.agent === "codex" && !isThreadKeyed(p) && !!p.sessionId && threads.has(p.sessionId)) return false;
-    const link = readJson(path6.join(peerDir(p.id), "link.json"));
+    const link = readJson(path7.join(peerDir(p.id), "link.json"));
     if (typeof link?.id === "string" && link.id !== p.id && ids.has(link.id)) return false;
     return p.agent !== "codex" || isThreadKeyed(p) || !!p.sessionId && !threads.has(p.sessionId) || isLaunchedCodexTui(p);
   });
@@ -1044,10 +1068,10 @@ function newMessageId() {
   return `m-${Date.now().toString(36).padStart(9, "0")}-${crypto.randomBytes(3).toString("hex")}`;
 }
 function writeToInbox(msg) {
-  writeJsonAtomic(path7.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path8.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
 }
 function archiveMessage(msg) {
-  writeJsonAtomic(path7.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path8.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
   pruneArchive(msg.to.id);
 }
 function claimInbox(peerId2) {
@@ -1059,9 +1083,9 @@ function claimInbox(peerId2) {
   }
   const claimed = [];
   for (const file of files2) {
-    const target = path7.join(ensureDir(archiveDir(peerId2)), file);
+    const target = path8.join(ensureDir(archiveDir(peerId2)), file);
     try {
-      fs7.renameSync(path7.join(inboxDir(peerId2), file), target);
+      fs7.renameSync(path8.join(inboxDir(peerId2), file), target);
     } catch {
       continue;
     }
@@ -1078,19 +1102,19 @@ function pendingMessages(peerId2) {
   } catch {
     return [];
   }
-  return files2.map((f) => readJson(path7.join(inboxDir(peerId2), f))).filter((m) => !!m);
+  return files2.map((f) => readJson(path8.join(inboxDir(peerId2), f))).filter((m) => !!m);
 }
 function archivePending(peerId2, id) {
   try {
-    fs7.renameSync(path7.join(inboxDir(peerId2), `${id}.json`), path7.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
+    fs7.renameSync(path8.join(inboxDir(peerId2), `${id}.json`), path8.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
   } catch {
   }
 }
 function archiveSettled(peerId2, id) {
-  const dest = path7.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
+  const dest = path8.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
   for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
     try {
-      fs7.renameSync(path7.join(dir, `${id}.json`), dest);
+      fs7.renameSync(path8.join(dir, `${id}.json`), dest);
       return;
     } catch {
     }
@@ -1100,7 +1124,7 @@ function pruneArchive(peerId2) {
   try {
     const files2 = fs7.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
     for (const f of files2.slice(0, Math.max(0, files2.length - ARCHIVE_KEEP))) {
-      fs7.rmSync(path7.join(archiveDir(peerId2), f), { force: true });
+      fs7.rmSync(path8.join(archiveDir(peerId2), f), { force: true });
     }
   } catch {
   }
@@ -1138,7 +1162,7 @@ var execFileAsync = promisify(execFile);
 function codexCandidates() {
   const configured = process.env.TELEPATHY_CODEX_BIN;
   if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path8.join(os3.homedir(), ".local", "bin", "codex")];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path9.join(os4.homedir(), ".local", "bin", "codex")];
 }
 var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
 async function queueIntoCodex(threadId, text, codexHome) {
@@ -1159,18 +1183,18 @@ async function queueIntoCodex(threadId, text, codexHome) {
   }
   throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
 }
-async function deleteFromCodexQueue(threadId, queueIds, codexHome) {
+async function deleteFromCodexQueue(threadId, queueIds, codexHome, timeoutMs = 1e4) {
   if (!queueIds.length) return /* @__PURE__ */ new Map();
   for (const bin of codexCandidates()) {
     try {
-      return await appServerDeletes(bin, threadId, queueIds, codexHome);
+      return await appServerDeletes(bin, threadId, queueIds, codexHome, timeoutMs);
     } catch (err) {
       if (err.code !== "ENOENT") return void 0;
     }
   }
   return void 0;
 }
-function appServerDeletes(bin, threadId, queueIds, codexHome) {
+function appServerDeletes(bin, threadId, queueIds, codexHome, timeoutMs) {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ["app-server"], { env: codexEnv(codexHome), stdio: ["pipe", "pipe", "ignore"] });
     const results = /* @__PURE__ */ new Map();
@@ -1180,7 +1204,7 @@ function appServerDeletes(bin, threadId, queueIds, codexHome) {
       if (err) reject(err);
       else resolve(results);
     };
-    const timer2 = setTimeout(() => finish(new Error("codex app-server timed out")), 1e4);
+    const timer2 = setTimeout(() => finish(new Error("codex app-server timed out")), timeoutMs);
     child.on("error", (err) => finish(err));
     const send = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
     readline.createInterface({ input: child.stdout }).on("line", (line) => {
@@ -1236,13 +1260,13 @@ async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
 import { spawn as spawn2 } from "node:child_process";
 import crypto2 from "node:crypto";
 import fs8 from "node:fs";
-import path9 from "node:path";
+import path10 from "node:path";
 var WAKE_DEBOUNCE_MS = 400;
 var WAKE_DEBOUNCE_MAX_MS = 1500;
 var DEFAULT_TIMEOUT_MS = 8e3;
 var DEFAULT_AUTH_HEADERS = ["Authorization", "X-Automation-Key"];
-var deliveryConfigPath = () => path9.join(stateDir(), "delivery.json");
-var wakeLogPath = () => path9.join(stateDir(), "wake.log");
+var deliveryConfigPath = () => path10.join(stateDir(), "delivery.json");
+var wakeLogPath = () => path10.join(stateDir(), "wake.log");
 function wakeDebounceMs() {
   const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MS);
   if (Number.isFinite(n) && n >= 0) return n;
@@ -1253,8 +1277,8 @@ function wakeDebounceMaxMs() {
   const configured = Number.isFinite(n) && n >= 0 ? n : WAKE_DEBOUNCE_MAX_MS;
   return Math.max(configured, wakeDebounceMs());
 }
-var wakeDir = () => path9.join(stateDir(), "wake");
-var batchPath = (key) => path9.join(wakeDir(), `${key}.json`);
+var wakeDir = () => path10.join(stateDir(), "wake");
+var batchPath = (key) => path10.join(wakeDir(), `${key}.json`);
 function batchKey(target) {
   const material = JSON.stringify({ url: target.webhook?.url ?? "", command: target.command ?? [] });
   return crypto2.createHash("sha256").update(material).digest("hex").slice(0, 32);
@@ -1356,7 +1380,7 @@ function sleepSync(ms) {
 }
 function withLockSync(fn) {
   ensureDir(wakeDir());
-  const lock = path9.join(wakeDir(), ".lock");
+  const lock = path10.join(wakeDir(), ".lock");
   const start = Date.now();
   for (; ; ) {
     try {
@@ -1384,7 +1408,7 @@ function withLockSync(fn) {
 function pendingItems(items) {
   return items.filter((item) => {
     try {
-      return fs8.existsSync(path9.join(inboxDir(item.peerId), `${item.id}.json`));
+      return fs8.existsSync(path10.join(inboxDir(item.peerId), `${item.id}.json`));
     } catch {
       return false;
     }
@@ -1430,7 +1454,7 @@ async function kick() {
 }
 function listBatches() {
   try {
-    return fs8.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path9.join(wakeDir(), name));
+    return fs8.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path10.join(wakeDir(), name));
   } catch {
     return [];
   }
@@ -1511,7 +1535,7 @@ async function postWebhook(target, payload) {
 }
 function runCommand(argv, payload, timeoutMs) {
   const bin = argv[0];
-  const name = bin ? path9.basename(bin) : "command";
+  const name = bin ? path10.basename(bin) : "command";
   if (!bin) {
     logFailure("command", name, "failed: command is empty", []);
     return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
@@ -1605,7 +1629,7 @@ function confirmWaitEnabled() {
   return v !== "0" && v !== "false";
 }
 function confirmAbortMs() {
-  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 105e3);
+  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 1e5);
 }
 function confirmGraceMs() {
   return envMs("TELEPATHY_CONFIRM_GRACE_MS", 1e4);
@@ -1619,9 +1643,6 @@ function envMs(name, fallback) {
 }
 var FULL_READ = 32 * 1024 * 1024;
 var TAIL_READ = 4 * 1024 * 1024;
-function transcriptHasMarker(peer, marker) {
-  return !!peer && inspectTranscript(peer, marker).found;
-}
 function inspectTranscript(peer, marker) {
   const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
   if (override) {
@@ -1633,7 +1654,7 @@ function inspectTranscript(peer, marker) {
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "gemini") return geminiTranscript(marker);
   if (peer.agent === "copilot" && peer.sessionId) {
-    const file = path10.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
+    const file = path11.join(os5.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
     if (!fs9.existsSync(file)) return { located: false, found: false };
     return { located: true, found: fileHas(file, marker) };
   }
@@ -1641,19 +1662,19 @@ function inspectTranscript(peer, marker) {
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
-  const projects = path10.join(claudeConfigDir(), "projects");
+  const projects = path11.join(claudeConfigDir(), "projects");
   const name = `${peer.sessionId}.jsonl`;
   const files2 = /* @__PURE__ */ new Set();
   if (peer.cwd) {
     const slug = peer.cwd.replace(/[^A-Za-z0-9]/g, "-").slice(0, 200);
-    files2.add(path10.join(projects, slug, name));
+    files2.add(path11.join(projects, slug, name));
   }
   if (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CODE_PROJECT_DIR_NAME) {
-    files2.add(path10.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
+    files2.add(path11.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
   }
   try {
     for (const dir of fs9.readdirSync(projects).slice(0, 80)) {
-      files2.add(path10.join(projects, dir, name));
+      files2.add(path11.join(projects, dir, name));
     }
   } catch {
   }
@@ -1663,16 +1684,16 @@ function claudeTranscript(peer, marker) {
 }
 function codexTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
-  const home = peer.codexHome || process.env.CODEX_HOME || path10.join(os4.homedir(), ".codex");
+  const home = peer.codexHome || process.env.CODEX_HOME || path11.join(os5.homedir(), ".codex");
   const file = findRollout(home, peer.sessionId);
   if (!file) return { located: false, found: false };
   return { located: true, found: fileHas(file, marker) };
 }
 function opencodeTranscript(marker) {
-  const xdg = process.env.XDG_DATA_HOME || path10.join(os4.homedir(), ".local", "share");
-  const db = process.env.OPENCODE_DB || path10.join(xdg, "opencode", "opencode.db");
+  const xdg = process.env.XDG_DATA_HOME || path11.join(os5.homedir(), ".local", "share");
+  const db = process.env.OPENCODE_DB || path11.join(xdg, "opencode", "opencode.db");
   const files2 = [db, `${db}-wal`];
-  const legacy = path10.join(xdg, "opencode", "storage");
+  const legacy = path11.join(xdg, "opencode", "storage");
   const existing = files2.filter((file) => fs9.existsSync(file));
   const inDb = existing.some((file) => fileHas(file, marker));
   if (inDb) return { located: true, found: true };
@@ -1681,8 +1702,8 @@ function opencodeTranscript(marker) {
   return { located: false, found: false };
 }
 function geminiTranscript(marker) {
-  const home = process.env.GEMINI_CLI_HOME || path10.join(os4.homedir(), ".gemini");
-  const tmp = path10.join(home, "tmp");
+  const home = process.env.GEMINI_CLI_HOME || path11.join(os5.homedir(), ".gemini");
+  const tmp = path11.join(home, "tmp");
   if (!fs9.existsSync(tmp)) return { located: false, found: false };
   return { located: true, found: treeHas(tmp, marker, 4) };
 }
@@ -1696,7 +1717,7 @@ function treeHas(dir, marker, depth) {
   }
   for (const name of names) {
     if (name === "node_modules") continue;
-    const file = path10.join(dir, name);
+    const file = path11.join(dir, name);
     let st;
     try {
       st = fs9.statSync(file);
@@ -1726,82 +1747,55 @@ function fileHas(file, marker) {
   }
 }
 function withdrawPending(peerId2, messageId) {
-  const src = path10.join(inboxDir(peerId2), `${messageId}.json`);
-  const dest = path10.join(ensureDir(withdrawnDir(peerId2)), `${messageId}.json`);
+  const src = path11.join(inboxDir(peerId2), `${messageId}.json`);
+  const dest = path11.join(ensureDir(withdrawnDir(peerId2)), `${messageId}.json`);
   try {
     fs9.renameSync(src, dest);
     return "withdrawn";
   } catch {
-    if (fs9.existsSync(path10.join(archiveDir(peerId2), `${messageId}.json`))) return "claimed";
+    if (fs9.existsSync(path11.join(archiveDir(peerId2), `${messageId}.json`))) return "claimed";
     return "missing";
   }
 }
 function storedMessage(peerId2, messageId) {
   for (const dir of [inboxDir(peerId2), archiveDir(peerId2), withdrawnDir(peerId2)]) {
-    const msg = readJson(path10.join(dir, `${messageId}.json`));
+    const msg = readJson(path11.join(dir, `${messageId}.json`));
     if (msg) return msg;
   }
   return void 0;
 }
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+var CONFIRM_QUEUE_DELETE_MS = 2e3;
 async function untilMarker(peer, marker, budgetMs) {
   const deadline = Date.now() + budgetMs;
   const step = confirmPollMs();
+  let located = false;
   for (; ; ) {
-    if (transcriptHasMarker(peer, marker)) return "found";
-    if (!isPeerAlive(peer)) return "offline";
+    const look = inspectTranscript(peer, marker);
+    if (look.found) return { kind: "found" };
+    located = look.located;
+    if (!isPeerAlive(peer)) return { kind: "offline" };
     const left = deadline - Date.now();
-    if (left <= 0) return "timeout";
+    if (left <= 0) return { kind: "timeout", located };
     await sleep(Math.min(step, left));
   }
 }
-function offlineInFlight(peer, messageId) {
-  notePeerExit(peer.id);
-  cancelWake(peer.id, messageId);
-  const inbox2 = path10.join(inboxDir(peer.id), `${messageId}.json`);
-  const aside = path10.join(withdrawnDir(peer.id), `${messageId}.json`);
-  if (!fs9.existsSync(inbox2) && fs9.existsSync(aside)) {
-    try {
-      fs9.renameSync(aside, path10.join(ensureDir(inboxDir(peer.id)), `${messageId}.json`));
-    } catch {
-    }
-  }
-  const kept = fs9.existsSync(inbox2);
-  return {
-    confirmed: false,
-    status: kept ? `Message failed: ${peerRef(peer)} is offline (session not running). A copy already in its inbox stays for when that session resumes.` : `Message failed: ${peerRef(peer)} is offline (session not running), so nothing was stored.`
-  };
-}
 var UNRECALLABLE = /cannot be recalled/i;
-function unconfirmedSignal(routeStatus) {
-  return routeStatus.replace(/Message delivered to /g, "Unconfirmed handoff to ");
-}
-function signalAfterWithdraw(routeStatus, withdrawn) {
-  if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
-  const signal = routeStatus.replace(
+function scrubSignal(text) {
+  return text.replace(/Message delivered to /g, "Unconfirmed handoff to ").replace(/Message stored for /g, "Unconfirmed handoff to ").replace(
     "It stays in the inbox for the next prompt, or until the session calls read_messages.",
     "The inbox copy was withdrawn, so the next prompt will not see it."
   ).replace(
     "It stays in the inbox until the session calls read_messages.",
     "The inbox copy was withdrawn, so a later read will not see it."
-  ).replace("The inbox copy can still be withdrawn.", "The inbox copy was withdrawn.");
-  return { signal, noted: signal !== routeStatus };
+  ).replace("The inbox copy can still be withdrawn.", "The inbox copy was withdrawn.").replace(/\bstays\b/gi, "was set aside").replace(/\bstored\b/gi, "handed off").replace(/\bdelivered\b/gi, "handed off");
 }
-async function confirmDelivery(peer, message, routeStatus) {
-  const marker = messageMarker(message.id);
-  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return offlineInFlight(peer, message.id);
-  const first = await untilMarker(peer, marker, confirmAbortMs());
-  if (first === "found") {
-    archiveSettled(peer.id, message.id);
-    return { confirmed: true, status: delivered };
-  }
-  if (first === "offline") return offlineInFlight(peer, message.id);
-  const stored = storedMessage(peer.id, message.id);
-  const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal: withdrawnSignal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
-  const signal = unconfirmedSignal(withdrawnSignal);
+async function retract(peer, messageId, routeStatus) {
+  const stored = storedMessage(peer.id, messageId);
+  const withdrawn = withdrawPending(peer.id, messageId);
+  const signal = UNRECALLABLE.test(routeStatus) ? routeStatus : scrubSignal(routeStatus);
   const notes = [];
+  const noted = signal !== routeStatus && /was withdrawn/i.test(signal);
   if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
     notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
   }
@@ -1809,36 +1803,57 @@ async function confirmDelivery(peer, message, routeStatus) {
   const queueId = stored?.codexQueueId;
   const thread = stored?.codexThreadId ?? peer.sessionId;
   if (peer.agent === "codex" && queueId && thread) {
-    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome);
+    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome, CONFIRM_QUEUE_DELETE_MS);
     if (!removed) notes.push("The Codex queue item could not be removed because the app-server was unreachable.");
     else if (removed.get(queueId) === false) notes.push("Codex had already taken the queue item, so it could not be removed.");
     else notes.push("The Codex queue item was removed.");
   }
-  const wake = cancelWake(peer.id, message.id);
+  const wake = cancelWake(peer.id, messageId);
   if (/webhook|delivery command/i.test(routeStatus)) {
     notes.push(
       wake === "cancelled" ? "The pending wake was cancelled before it was sent." : "A wake that already left cannot be recalled; its body has no message text."
     );
   }
-  const second = await untilMarker(peer, marker, confirmGraceMs());
-  if (second === "found") {
+  return { withdrawn, signal, notes };
+}
+function failureStatus(peer, marker, routeStatus, reason, retracted, located) {
+  const extra = retracted.notes.length ? ` ${retracted.notes.join(" ")}` : "";
+  if (UNRECALLABLE.test(routeStatus)) {
+    const where2 = located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
+    return `${routeStatus} ${where2}${extra}`;
+  }
+  if (reason === "offline") {
+    const copy = retracted.withdrawn === "withdrawn" ? "The inbox copy was withdrawn." : "Nothing was left in its inbox.";
+    return `Message failed: ${peerRef(peer)} is offline (session not running). ${copy}${extra}`;
+  }
+  const where = located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
+  return `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${retracted.signal}${extra}`;
+}
+async function confirmDelivery(peer, message, routeStatus) {
+  const marker = messageMarker(message.id);
+  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  let retracted;
+  const fail = async (reason, located = false) => {
+    if (reason === "offline") notePeerExit(peer.id);
+    retracted ??= await retract(peer, message.id, routeStatus);
+    const status = failureStatus(peer, marker, routeStatus, reason, retracted, located);
+    return { confirmed: false, status: UNRECALLABLE.test(routeStatus) ? status : scrubSignal(status) };
+  };
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return fail("offline");
+  const first = await untilMarker(peer, marker, confirmAbortMs());
+  if (first.kind === "found") {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
-  if (second === "offline") return offlineInFlight(peer, message.id);
-  const look = inspectTranscript(peer, marker);
-  const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
-  const extra = notes.length ? ` ${notes.join(" ")}` : "";
-  if (UNRECALLABLE.test(routeStatus)) {
-    return {
-      confirmed: false,
-      status: `${routeStatus} ${where}${extra}`
-    };
+  if (first.kind === "offline") return fail("offline");
+  retracted = await retract(peer, message.id, routeStatus);
+  const second = await untilMarker(peer, marker, confirmGraceMs());
+  if (second.kind === "found") {
+    archiveSettled(peer.id, message.id);
+    return { confirmed: true, status: delivered };
   }
-  return {
-    confirmed: false,
-    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${signal}${extra}`
-  };
+  if (second.kind === "offline") return fail("offline");
+  return fail("unconfirmed", second.located);
 }
 
 // src/core/claude-socket.ts
@@ -1850,8 +1865,8 @@ function socketFromEnv(env) {
   const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
   return { path: socketPath, ...token ? { token } : {} };
 }
-var socketFile = (id) => path11.join(peerDir(id), "socket.json");
-var listenerFile = (id) => path11.join(peerDir(id), "socket-listener.json");
+var socketFile = (id) => path12.join(peerDir(id), "socket.json");
+var listenerFile = (id) => path12.join(peerDir(id), "socket-listener.json");
 function recordClaudeSocket(id, env = process.env, ownerPid) {
   const sock = socketFromEnv(env);
   if (!sock) return void 0;
@@ -1888,29 +1903,29 @@ function readInbound(file) {
 function managedSettingsDir() {
   if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
   if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
-  if (process.platform === "win32") return path11.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  if (process.platform === "win32") return path12.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
   return "/etc/claude-code";
 }
 function managedInbound() {
   const dir = managedSettingsDir();
-  let found = readInbound(path11.join(dir, "managed-settings.json"));
+  let found = readInbound(path12.join(dir, "managed-settings.json"));
   let names = [];
   try {
-    names = fs10.readdirSync(path11.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+    names = fs10.readdirSync(path12.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
   } catch {
   }
   for (const name of names) {
-    const value = readInbound(path11.join(dir, "managed-settings.d", name));
+    const value = readInbound(path12.join(dir, "managed-settings.d", name));
     if (value) found = value;
   }
   return found;
 }
 function crossSessionInbound(peer) {
   const managed = managedInbound();
-  const user = readInbound(path11.join(claudeConfigDir(), "settings.json"));
+  const user = readInbound(path12.join(claudeConfigDir(), "settings.json"));
   const higher = managed ?? user;
-  const project = peer?.cwd ? readInbound(path11.join(peer.cwd, ".claude", "settings.json")) : void 0;
-  const local = peer?.cwd ? readInbound(path11.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  const project = peer?.cwd ? readInbound(path12.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path12.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
   let effective = higher;
   for (const value of [project, local]) {
     if (!value) continue;
@@ -1927,13 +1942,13 @@ async function flushClaudeSocket(id) {
 // src/core/edits.ts
 import { createHash as createHash2 } from "node:crypto";
 import fs11 from "node:fs";
-import path13 from "node:path";
+import path14 from "node:path";
 
 // src/core/status.ts
-import path12 from "node:path";
+import path13 from "node:path";
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path12.join(peerDir(id), "status.json");
+var statusFile = (id) => path13.join(peerDir(id), "status.json");
 function writeStatus(id, status, now = Date.now()) {
   writeJsonAtomic(statusFile(id), { status, at: new Date(now).toISOString() });
 }
@@ -1944,7 +1959,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record = readJson(path12.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record = readJson(path13.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record?.status !== "string" || !CLAUDE_STATUSES.includes(record.status)) return void 0;
   let status = record.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -2027,7 +2042,7 @@ function statusText(info, now = Date.now()) {
     case "shell":
       return "shell (not generating, but a command it started is still running)";
     case "interrupted":
-      return "interrupted: gets messages only after its user sends it a prompt";
+      return "interrupted: a send fails until its user prompts it";
     case "busy":
       return `busy${stale(info, now)}`;
     default:
@@ -2073,8 +2088,8 @@ function shellPaths(command, cwd) {
   for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
     const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
-    if (!path13.isAbsolute(word) && !cwd) continue;
-    const resolved = path13.resolve(cwd ?? "/", word);
+    if (!path14.isAbsolute(word) && !cwd) continue;
+    const resolved = path14.resolve(cwd ?? "/", word);
     if (resolved === cwd || !fs11.existsSync(resolved)) continue;
     found.push(resolved);
     if (found.length >= 8) break;
@@ -2101,8 +2116,8 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
 function ignored(file) {
-  const parts = file.split(path13.sep);
-  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path13.sep);
+  const parts = file.split(path14.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path14.sep);
 }
 function touchedFiles(toolName, toolInput, cwd) {
   const none = { edited: [], read: [] };
@@ -2115,16 +2130,16 @@ function touchedFiles(toolName, toolInput, cwd) {
   const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
   const files2 = [
     ...new Set(
-      raw.map((f) => f.trim()).filter((f) => path13.isAbsolute(f) || cwd).map((f) => path13.resolve(cwd ?? "/", f))
+      raw.map((f) => f.trim()).filter((f) => path14.isAbsolute(f) || cwd).map((f) => path14.resolve(cwd ?? "/", f))
     )
   ].filter((f) => !ignored(f));
   return { ...none, [kind]: files2 };
 }
 var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
-var editsDir = (id) => path13.join(peerDir(id), "edits");
+var editsDir = (id) => path14.join(peerDir(id), "edits");
 function recordEdits(selfId, files2, now = Date.now()) {
   for (const file of files2) {
-    writeJsonAtomic(path13.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
+    writeJsonAtomic(path14.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
   }
 }
 function othersRecentEdits(selfId, now) {
@@ -2144,7 +2159,7 @@ function othersRecentEdits(selfId, now) {
       continue;
     }
     for (const name of files2) {
-      const edit = readJson(path13.join(editsDir(id), name));
+      const edit = readJson(path14.join(editsDir(id), name));
       const at = edit ? Date.parse(edit.at) : Number.NaN;
       if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
     }
@@ -2167,20 +2182,20 @@ function overlapNote(self, files2, cwd, now = Date.now()) {
   if (!files2.length) return void 0;
   const recent = othersRecentEdits(self.id, now);
   if (!recent.length) return void 0;
-  const shownDir = path13.join(peerDir(self.id), "overlaps");
+  const shownDir = path14.join(peerDir(self.id), "overlaps");
   const alive = /* @__PURE__ */ new Map();
   const lines = [];
   for (const file of files2) {
-    const dir = isDirectory(file) ? file : path13.dirname(file);
+    const dir = isDirectory(file) ? file : path14.dirname(file);
     const byPeer = /* @__PURE__ */ new Map();
     for (const r of recent) {
       const same = r.edit.file === file;
-      if (!same && path13.dirname(r.edit.file) !== dir) continue;
+      if (!same && path14.dirname(r.edit.file) !== dir) continue;
       const best = byPeer.get(r.id);
       if (!best || same && best.edit.file !== file || same === (best.edit.file === file) && r.at > best.at) byPeer.set(r.id, r);
     }
     for (const [id, r] of byPeer) {
-      const marker = path13.join(shownDir, `${keyOf(`${id}
+      const marker = path14.join(shownDir, `${keyOf(`${id}
 ${dir}`)}.json`);
       if (fs11.existsSync(marker)) continue;
       if (!alive.has(id)) {
@@ -2189,7 +2204,7 @@ ${dir}`)}.json`);
       }
       const peer = alive.get(id);
       if (!peer) continue;
-      const shown = cwd && r.edit.file.startsWith(cwd + path13.sep) ? path13.relative(cwd, r.edit.file) : r.edit.file;
+      const shown = cwd && r.edit.file.startsWith(cwd + path14.sep) ? path14.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
         `[telepathy note] Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? "send_message"}.`
       );
@@ -2207,7 +2222,7 @@ function trackTouchedFiles(self, toolName, toolInput, cwd) {
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
 import fs12 from "node:fs";
-import path14 from "node:path";
+import path15 from "node:path";
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
@@ -2215,7 +2230,7 @@ var SOCKET_WAIT_MS = () => {
   const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
   return Number.isFinite(n) && n >= 0 ? n : 1500;
 };
-var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -2235,7 +2250,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs12.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs12.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -2273,7 +2288,13 @@ async function sendMessage(self, to, body) {
     notePeerExit(recipient.id);
     return {
       ok: false,
-      error: `Message failed: ${peerRef(recipient)} is offline (session not running), so nothing was stored.`
+      error: `Message failed: ${peerRef(recipient)} is offline (session not running). Nothing was left in its inbox.`
+    };
+  }
+  if (recipient.agent === "codex" && peerStatus(recipient)?.status === "interrupted") {
+    return {
+      ok: false,
+      error: `Message failed: ${peerRef(recipient)} is interrupted, so its queue will not run this. Nothing was left for a later prompt.`
     };
   }
   const delivery = await routeDelivery(recipient, message);
@@ -2306,9 +2327,10 @@ async function routeCodex(recipient, message) {
   }
   if (activity === "interrupted") {
     attempts.push({ id: "codex-queue", result: "unsupported", when: "turn-end", detail: "paused after interrupt" });
-    writeToInbox(message);
-    attempts.push(inboxRung(recipient));
-    return { status: codexHeldStatus(recipient), report: { confirmed: false, attempts } };
+    return {
+      status: `Message failed: ${peerRef(recipient)} is interrupted, so its queue will not run this. Nothing was left for a later prompt.`,
+      report: { confirmed: false, attempts }
+    };
   }
   let codexQueueId;
   try {
@@ -2434,8 +2456,7 @@ var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a 
 function codexHeldStatus(recipient, why) {
   const ref = peerRef(recipient);
   const via = recipient.hookRan ? "It stays in the inbox for the next prompt, or until the session calls read_messages." : "It stays in the inbox until the session calls read_messages.";
-  const reason = why ? why : "Codex was interrupted, so its queue will not deliver this.";
-  return `Message stored for ${ref}. ${reason} ${via}`;
+  return `Message stored for ${ref}. ${why} ${via}`;
 }
 function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
@@ -2595,7 +2616,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
-  const waiter = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path16.join(path16.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }
 function touchedFilesNote(agent, agentPid, input) {

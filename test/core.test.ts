@@ -532,6 +532,16 @@ describe('Codex TUI launch', () => {
     assert.equal(codexTuiLaunch('codex queue --thread abc'), undefined);
     assert.equal(codexTuiLaunch('codex login'), undefined);
     assert.equal(codexTuiLaunch('codex plugin add telepathy@telepathy'), undefined);
+    assert.equal(codexTuiLaunch('codex mcp-server'), undefined);
+    assert.equal(codexTuiLaunch('codex cloud'), undefined);
+    assert.equal(codexTuiLaunch('codex hello'), undefined);
+    assert.deepEqual(codexTuiLaunch('codex "Fix the bug"'), {});
+    assert.equal(
+      codexTuiLaunch(
+        '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api',
+      ),
+      undefined,
+    );
     assert.equal(codexTuiLaunch('node /opt/telepathy/dist/server.mjs --agent codex'), undefined);
     assert.equal(codexTuiLaunch('bash -c codex'), undefined);
   });
@@ -647,6 +657,41 @@ describe('Codex TUI launch', () => {
     } finally {
       setCodexProcs(sb, []);
       await killAndWait(first);
+      sb.cleanup();
+    }
+  });
+
+  test('the ChatGPT desktop helper is not a peer, and neither is an app-bundle parent or a foreign CODEX_HOME', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const helper = fakeAgent();
+    const bundled = fakeAgent();
+    const foreign = fakeAgent();
+    const own = fakeAgent();
+    const chatgpt =
+      '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api';
+    try {
+      setCodexProcs(sb, [
+        { pid: helper.pid, args: chatgpt, cwd: '/Users/example' },
+        { pid: bundled.pid, args: 'codex', cwd: '/Users/example', parent: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' },
+        { pid: foreign.pid, args: 'codex', cwd: '/work/foreign', codexHome: '/tmp/other-codex-home' },
+        { pid: own.pid, args: 'codex', cwd: '/work/own', parent: '/bin/zsh', codexHome: sb.codexHome },
+      ]);
+      const ids = listPeers().map((p) => p.id);
+      assert.equal(ids.includes(`codex-${helper.pid}`), false);
+      assert.equal(ids.includes(`codex-${bundled.pid}`), false);
+      assert.equal(ids.includes(`codex-${foreign.pid}`), false);
+      assert.equal(ids.includes(`codex-${own.pid}`), true);
+      for (const pid of [helper.pid, bundled.pid, foreign.pid]) {
+        assert.equal(fs.existsSync(path.join(sb.home, 'peers', `codex-${pid}`, 'session.json')), false);
+      }
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(helper);
+      await killAndWait(bundled);
+      await killAndWait(foreign);
+      await killAndWait(own);
       sb.cleanup();
     }
   });

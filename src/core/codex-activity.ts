@@ -6,7 +6,7 @@ const TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 
 /**
  * `interrupted`: the last turn was aborted (Esc). Codex leaves `codex queue` paused after an interrupt (app-server
- * commit 9341b38, 13 Aug 2026) and does not start those items. Telepathy does not queue in that state.
+ * commit 9341b38, 13 Aug 2026) and does not start those items. A send in that state fails immediately and writes nothing.
  */
 export type CodexActivity = 'busy' | 'idle' | 'interrupted';
 

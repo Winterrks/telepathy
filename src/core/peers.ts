@@ -298,8 +298,9 @@ function moveInbox(fromId: string, toId: string): void {
 const HOLD_MS = 60 * 60_000;
 
 /**
- * How long a session-keyed directory outlives the process. A resume reclaims the same id and name, and mail that
- * was already in the inbox stays. A send while the process is gone writes nothing: this window is not a mailbox.
+ * How long a session-keyed directory outlives the process. A resume reclaims the same id and name. Mail that was
+ * already in the inbox is still there, except a send that failed, which moves its copy to `withdrawn/`. A send
+ * while the process is gone writes nothing: this window is not a mailbox.
  * Codex reloads a thread into a new daemon without a hook until the next prompt, and a restarted OpenCode service
  * takes its sessions back, so the directory has to still be here when that process starts.
  */

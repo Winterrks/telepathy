@@ -19,8 +19,9 @@ export function confirmWaitEnabled(): boolean {
 }
 
 export function confirmAbortMs(): number {
-  // 105s + 10s grace stays under Claude's ~120s move of a live tool call to the background.
-  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 105_000);
+  // 100s + 10s grace is 110s. Claude moves a live tool call to the background at about 120s, and the
+  // return after the grace period does not wait on anything else.
+  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
 }
 
 export function confirmGraceMs(): number {
@@ -191,41 +192,24 @@ function storedMessage(peerId: string, messageId: string): Message | undefined {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function untilMarker(peer: Peer, marker: string, budgetMs: number): Promise<'found' | 'timeout' | 'offline'> {
+/** How long a confirm-path queue delete may block. It runs before the grace period, not after it. */
+const CONFIRM_QUEUE_DELETE_MS = 2_000;
+
+type WaitStop = { kind: 'found' } | { kind: 'offline' } | { kind: 'timeout'; located: boolean };
+
+async function untilMarker(peer: Peer, marker: string, budgetMs: number): Promise<WaitStop> {
   const deadline = Date.now() + budgetMs;
   const step = confirmPollMs();
+  let located = false;
   for (;;) {
-    if (transcriptHasMarker(peer, marker)) return 'found';
-    if (!isPeerAlive(peer)) return 'offline';
+    const look = inspectTranscript(peer, marker);
+    if (look.found) return { kind: 'found' };
+    located = look.located;
+    if (!isPeerAlive(peer)) return { kind: 'offline' };
     const left = deadline - Date.now();
-    if (left <= 0) return 'timeout';
+    if (left <= 0) return { kind: 'timeout', located };
     await sleep(Math.min(step, left));
   }
-}
-
-/**
- * The process is gone. A copy written while it was live stays in the inbox for resume. A send that never wrote
- * one says so. Either way the tool result is a failure.
- */
-function offlineInFlight(peer: Peer, messageId: string): ConfirmOutcome {
-  notePeerExit(peer.id);
-  cancelWake(peer.id, messageId);
-  const inbox = path.join(inboxDir(peer.id), `${messageId}.json`);
-  const aside = path.join(withdrawnDir(peer.id), `${messageId}.json`);
-  if (!fs.existsSync(inbox) && fs.existsSync(aside)) {
-    try {
-      fs.renameSync(aside, path.join(ensureDir(inboxDir(peer.id)), `${messageId}.json`));
-    } catch {
-      // already gone
-    }
-  }
-  const kept = fs.existsSync(inbox);
-  return {
-    confirmed: false,
-    status: kept
-      ? `Message failed: ${peerRef(peer)} is offline (session not running). A copy already in its inbox stays for when that session resumes.`
-      : `Message failed: ${peerRef(peer)} is offline (session not running), so nothing was stored.`,
-  };
 }
 
 export interface ConfirmOutcome {
@@ -236,17 +220,13 @@ export interface ConfirmOutcome {
 const UNRECALLABLE = /cannot be recalled/i;
 
 /**
- * Quoted after the marker was not found. A route status that says the message was delivered is the route's
- * guess. The word belongs only on the success result, which is returned before this runs.
+ * A failed tool result must not say the copy stays, was stored, or was delivered. A held socket is the
+ * exception: those bytes cannot be recalled, and that sentence is left as Claude reported it.
  */
-function unconfirmedSignal(routeStatus: string): string {
-  return routeStatus.replace(/Message delivered to /g, 'Unconfirmed handoff to ');
-}
-
-/** The route promised the inbox would remain. After a withdraw, that sentence is no longer true. */
-function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { signal: string; noted: boolean } {
-  if (withdrawn !== 'withdrawn') return { signal: routeStatus, noted: false };
-  const signal = routeStatus
+function scrubSignal(text: string): string {
+  return text
+    .replace(/Message delivered to /g, 'Unconfirmed handoff to ')
+    .replace(/Message stored for /g, 'Unconfirmed handoff to ')
     .replace(
       'It stays in the inbox for the next prompt, or until the session calls read_messages.',
       'The inbox copy was withdrawn, so the next prompt will not see it.',
@@ -255,31 +235,28 @@ function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { 
       'It stays in the inbox until the session calls read_messages.',
       'The inbox copy was withdrawn, so a later read will not see it.',
     )
-    .replace('The inbox copy can still be withdrawn.', 'The inbox copy was withdrawn.');
-  return { signal, noted: signal !== routeStatus };
+    .replace('The inbox copy can still be withdrawn.', 'The inbox copy was withdrawn.')
+    .replace(/\bstays\b/gi, 'was set aside')
+    .replace(/\bstored\b/gi, 'handed off')
+    .replace(/\bdelivered\b/gi, 'handed off');
+}
+
+interface Retract {
+  withdrawn: WithdrawResult;
+  signal: string;
+  notes: string[];
 }
 
 /**
- * Polls the transcript until the abort budget, withdraws what can still be withdrawn, then polls for the
- * grace period. The marker during either window is success. Anything else is `Message failed:`.
+ * Every failure withdraws the inbox copy, deletes a queued Codex item, and cancels a wake that is still
+ * on disk. A file already in `withdrawn/` stays there. Nothing is moved back to the inbox.
  */
-export async function confirmDelivery(peer: Peer, message: Message, routeStatus: string): Promise<ConfirmOutcome> {
-  const marker = messageMarker(message.id);
-  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  // A held socket copy can still show up after the process looks gone, so that wait runs below.
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return offlineInFlight(peer, message.id);
-  const first = await untilMarker(peer, marker, confirmAbortMs());
-  if (first === 'found') {
-    archiveSettled(peer.id, message.id);
-    return { confirmed: true, status: delivered };
-  }
-  if (first === 'offline') return offlineInFlight(peer, message.id);
-
-  const stored = storedMessage(peer.id, message.id);
-  const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal: withdrawnSignal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
-  const signal = unconfirmedSignal(withdrawnSignal);
+async function retract(peer: Peer, messageId: string, routeStatus: string): Promise<Retract> {
+  const stored = storedMessage(peer.id, messageId);
+  const withdrawn = withdrawPending(peer.id, messageId);
+  const signal = UNRECALLABLE.test(routeStatus) ? routeStatus : scrubSignal(routeStatus);
   const notes: string[] = [];
+  const noted = signal !== routeStatus && /was withdrawn/i.test(signal);
   if (withdrawn === 'withdrawn' && !noted && !UNRECALLABLE.test(routeStatus)) {
     notes.push('The inbox copy was withdrawn so a later turn cannot pick it up.');
   }
@@ -288,13 +265,13 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
   const queueId = stored?.codexQueueId;
   const thread = stored?.codexThreadId ?? peer.sessionId;
   if (peer.agent === 'codex' && queueId && thread) {
-    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome);
+    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome, CONFIRM_QUEUE_DELETE_MS);
     if (!removed) notes.push('The Codex queue item could not be removed because the app-server was unreachable.');
     else if (removed.get(queueId) === false) notes.push('Codex had already taken the queue item, so it could not be removed.');
     else notes.push('The Codex queue item was removed.');
   }
 
-  const wake = cancelWake(peer.id, message.id);
+  const wake = cancelWake(peer.id, messageId);
   if (/webhook|delivery command/i.test(routeStatus)) {
     notes.push(
       wake === 'cancelled'
@@ -302,29 +279,72 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
         : 'A wake that already left cannot be recalled; its body has no message text.',
     );
   }
+  return { withdrawn, signal, notes };
+}
 
-  const second = await untilMarker(peer, marker, confirmGraceMs());
-  if (second === 'found') {
+function failureStatus(
+  peer: Peer,
+  marker: string,
+  routeStatus: string,
+  reason: 'offline' | 'unconfirmed',
+  retracted: Retract,
+  located: boolean,
+): string {
+  const extra = retracted.notes.length ? ` ${retracted.notes.join(' ')}` : '';
+  if (UNRECALLABLE.test(routeStatus)) {
+    const where = located
+      ? 'A transcript file was found and does not contain the marker, so delivery is unconfirmed.'
+      : 'No transcript file was found for this session, so delivery is unconfirmed.';
+    return `${routeStatus} ${where}${extra}`;
+  }
+  if (reason === 'offline') {
+    const copy =
+      retracted.withdrawn === 'withdrawn'
+        ? 'The inbox copy was withdrawn.'
+        : 'Nothing was left in its inbox.';
+    return `Message failed: ${peerRef(peer)} is offline (session not running). ${copy}${extra}`;
+  }
+  const where = located
+    ? 'A transcript file was found and does not contain the marker, so delivery is unconfirmed.'
+    : 'No transcript file was found for this session, so delivery is unconfirmed.';
+  return (
+    `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ` +
+    `${where} Strongest signal: ${retracted.signal}${extra}`
+  );
+}
+
+/**
+ * Polls the transcript until the abort budget, withdraws what can still be withdrawn, then polls for the
+ * grace period. The marker during either window is success. Anything else goes through `fail`, which
+ * withdraws the inbox copy. The return after the grace period does not wait again.
+ */
+export async function confirmDelivery(peer: Peer, message: Message, routeStatus: string): Promise<ConfirmOutcome> {
+  const marker = messageMarker(message.id);
+  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  let retracted: Retract | undefined;
+  const fail = async (reason: 'offline' | 'unconfirmed', located = false): Promise<ConfirmOutcome> => {
+    if (reason === 'offline') notePeerExit(peer.id);
+    retracted ??= await retract(peer, message.id, routeStatus);
+    const status = failureStatus(peer, marker, routeStatus, reason, retracted, located);
+    return { confirmed: false, status: UNRECALLABLE.test(routeStatus) ? status : scrubSignal(status) };
+  };
+
+  // A held socket copy can still show up after the process looks gone, so that wait runs below.
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) return fail('offline');
+  const first = await untilMarker(peer, marker, confirmAbortMs());
+  if (first.kind === 'found') {
     archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
-  if (second === 'offline') return offlineInFlight(peer, message.id);
+  if (first.kind === 'offline') return fail('offline');
 
-  const look = inspectTranscript(peer, marker);
-  const where = look.located
-    ? 'A transcript file was found and does not contain the marker, so delivery is unconfirmed.'
-    : 'No transcript file was found for this session, so delivery is unconfirmed.';
-  const extra = notes.length ? ` ${notes.join(' ')}` : '';
-  if (UNRECALLABLE.test(routeStatus)) {
-    return {
-      confirmed: false,
-      status: `${routeStatus} ${where}${extra}`,
-    };
+  // Withdraw before the grace period, including the queue delete, so the grace poll is the last wait.
+  retracted = await retract(peer, message.id, routeStatus);
+  const second = await untilMarker(peer, marker, confirmGraceMs());
+  if (second.kind === 'found') {
+    archiveSettled(peer.id, message.id);
+    return { confirmed: true, status: delivered };
   }
-  return {
-    confirmed: false,
-    status:
-      `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ` +
-      `${where} Strongest signal: ${signal}${extra}`,
-  };
+  if (second.kind === 'offline') return fail('offline');
+  return fail('unconfirmed', second.located);
 }

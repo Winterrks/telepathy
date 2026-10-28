@@ -9,11 +9,11 @@ import { commandLine } from './proc.ts';
 import { VERSION } from './version.ts';
 
 /**
- * Codex names this plugin's MCP server `bridge` (`plugin/codex.mcp.json`). `send_message` waits up to 115s, and
- * Codex's default `tool_timeout_sec` is 60, so a value below 115 cuts the wait off.
+ * Codex names this plugin's MCP server `bridge` (`plugin/codex.mcp.json`). `send_message` waits up to 110s, and
+ * Codex's default `tool_timeout_sec` is 60, so a value below 110 cuts the wait off.
  */
 export const CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
-const CODEX_BRIDGE_TIMEOUT_MIN = 115;
+const CODEX_BRIDGE_TIMEOUT_MIN = 110;
 
 /** The configured `tool_timeout_sec` for telepathy's Codex MCP server, or undefined when the key is absent. Later entries win. */
 export function codexBridgeTimeoutSec(config: string): number | undefined {
@@ -88,13 +88,13 @@ export function setupNotes(self: Peer): string[] {
     const effective = fromArgs ?? timeout;
     if (effective !== undefined && effective < CODEX_BRIDGE_TIMEOUT_MIN) {
       notes.push(
-        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 115s send_message waits ` +
-          'for a transcript. Set that key to at least 115.',
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 110s send_message waits ` +
+          'for a transcript. Set that key to at least 110.',
       );
     } else if (config && effective === undefined) {
       notes.push(
         `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override ` +
-          'was visible on this Codex process. If it is below 115, send_message can be cut off. Set that key to at least 115 if it is not already.',
+          'was visible on this Codex process. If it is below 110, send_message can be cut off. Set that key to at least 110 if it is not already.',
       );
     }
   }

@@ -133,7 +133,16 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     notePeerExit(recipient.id);
     return {
       ok: false,
-      error: `Message failed: ${peerRef(recipient)} is offline (session not running), so nothing was stored.`,
+      error: `Message failed: ${peerRef(recipient)} is offline (session not running). Nothing was left in its inbox.`,
+    };
+  }
+
+  // An interrupted Codex leaves its queue paused, including after `codex resume`, until the user prompts.
+  // UserPromptSubmit is not this call, so waiting the confirm window cannot deliver. Fail before any write.
+  if (recipient.agent === 'codex' && peerStatus(recipient)?.status === 'interrupted') {
+    return {
+      ok: false,
+      error: `Message failed: ${peerRef(recipient)} is interrupted, so its queue will not run this. Nothing was left for a later prompt.`,
     };
   }
 
@@ -182,13 +191,14 @@ async function routeCodex(recipient: Peer, message: Message): Promise<Route> {
     attempts.push({ id: 'codex-mid-turn', result: 'unsupported', when: 'mid-turn' });
   }
 
-  // Commit 9341b38: the queue dispatches after a completed or failed turn and stays paused after an interrupt.
-  // Calling it here would look like success and then not deliver. The inbox is the copy the next prompt reads.
+  // Commit 9341b38: the queue stays paused after an interrupt. `sendMessage` already failed this case
+  // before routing. If it is reached, write nothing: a later prompt is not this call.
   if (activity === 'interrupted') {
     attempts.push({ id: 'codex-queue', result: 'unsupported', when: 'turn-end', detail: 'paused after interrupt' });
-    writeToInbox(message);
-    attempts.push(inboxRung(recipient));
-    return { status: codexHeldStatus(recipient), report: { confirmed: false, attempts } };
+    return {
+      status: `Message failed: ${peerRef(recipient)} is interrupted, so its queue will not run this. Nothing was left for a later prompt.`,
+      report: { confirmed: false, attempts },
+    };
   }
 
   let codexQueueId: string | undefined;
@@ -357,18 +367,15 @@ const waitingNote = (ref: string, verb: string) =>
   "after its user answers. Tell your user if it's urgent; don't resend.";
 
 /**
- * Inbox copy for a Codex message the queue will not deliver. `why` is set when `codex queue` itself failed;
- * an interrupt leaves it unset. The next prompt hook, or `read_messages`, is what presents the body.
+ * Inbox copy for a Codex message `codex queue` itself failed to accept. The confirm wait can still see a
+ * hook claim it. A failure withdraws that copy; this sentence is rewritten so it does not say the copy stays.
  */
-function codexHeldStatus(recipient: Peer, why?: string): string {
+function codexHeldStatus(recipient: Peer, why: string): string {
   const ref = peerRef(recipient);
   const via = recipient.hookRan
     ? 'It stays in the inbox for the next prompt, or until the session calls read_messages.'
     : 'It stays in the inbox until the session calls read_messages.';
-  const reason = why
-    ? why
-    : "Codex was interrupted, so its queue will not deliver this.";
-  return `Message stored for ${ref}. ${reason} ${via}`;
+  return `Message stored for ${ref}. ${why} ${via}`;
 }
 
 /** When a queued message reaches Codex, from the state of its last turn. */

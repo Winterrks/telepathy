@@ -166,7 +166,7 @@ export function statusText(info: StatusInfo | undefined, now = Date.now()): stri
     case 'shell':
       return 'shell (not generating, but a command it started is still running)';
     case 'interrupted':
-      return 'interrupted: gets messages only after its user sends it a prompt';
+      return 'interrupted: a send fails until its user prompts it';
     case 'busy':
       return `busy${stale(info, now)}`;
     default:
