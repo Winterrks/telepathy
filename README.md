@@ -56,6 +56,7 @@ you (in Claude Code) › ask the codex session working on the API whether the au
    - [Cursor](#cursor)
    - [Kimi Code](#kimi-code)
    - [Updating every agent](#updating-every-agent)
+- [The telepathy command](#the-telepathy-command)
 - [Use](#use)
 - [Under the hood](#under-the-hood)
 - [Good to know](#good-to-know)
@@ -281,6 +282,31 @@ and Kilo Code by clearing their package cache (OpenCode 2 updates with its own `
 Cursor load Claude Code's copy, so they follow Claude Code. When an agent's copy is older than the newest one on this
 machine, telepathy's tools say so in a `[telepathy setup]` note that includes this command.
 
+The same updates are `telepathy update` (and `telepathy update --dry-run`) once the [command](#the-telepathy-command) is installed.
+
+## The telepathy command
+
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.9.0. Requires Node 20 or newer.
+
+```sh
+telepathy update [--dry-run]          # every installed copy, each with that harness's own updater
+telepathy status                      # what is installed, and whether GitHub is newer
+telepathy doctor                      # status, plus Node and which harness CLIs are on PATH
+telepathy install [--dry-run] [--only claude,codex]
+telepathy config auto-update off      # on by default; TELEPATHY_AUTO_UPDATE=0 also disables it
+telepathy run <agent> [args...]       # vendor TUI, or an ACP host where the TUI cannot wake
+telepathy run --list
+telepathy run --headless --name box <agent>
+telepathy ps
+telepathy stop box
+```
+
+`telepathy run claude`, `codex`, `opencode`, and `kilo` exec that CLI with your arguments and a full terminal. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. `gemini` and `copilot` start an ACP host (`gemini --acp`, `copilot --acp`) so an incoming message can be injected while the session is idle. `telepathy run --acp <agent>` forces ACP where a launcher exists (`opencode acp`, or `claude-code-acp` / `codex-acp` if those adapters are on PATH). Other known harnesses start their own CLI and print one line when a message will not wake them.
+
+`telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Gemini, Copilot, and Qwen use the ACP host. Output goes to the terminal and to a log under the telepathy state directory. `--name` reuses the same peer id after a restart. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted.
+
+Auto-update runs at most once a day, from a session-start hook and from the MCP server, in a detached process. It does not block the session. Failures are written to `auto-update.log` in the state directory (`TELEPATHY_HOME`, or `~/.telepathy`).
+
 ## Use
 
 Just ask, in any agent:
@@ -471,8 +497,10 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
 
 - **Messages stay on your machine.** telepathy has no telemetry. Messages are JSON files in
   `~/.telepathy` (created with mode 700), readable by anything running as your OS user, the same boundary as Claude
-  Code's own cross-session sockets. Two things make a network call, and only when you run them. [update-all](#updating-every-agent)
-  has the agents fetch a new version from GitHub. A webhook named in `delivery.json` POSTs a wake with no message text.
+  Code's own cross-session sockets. The network calls are version checks, not messages. [update-all](#updating-every-agent)
+  and `telepathy update` have each agent fetch a new version from GitHub. `telepathy status` and the daily auto-update
+  read the version in this repository's `package.json` on GitHub (at most once a day unless you ask). A webhook named
+  in `delivery.json` POSTs a wake with no message text. The badge above is about messaging.
 - **What it reads:** Claude Code's session name (`~/.claude/sessions/<pid>.json`), Codex's thread titles
   (`~/.codex/session_index.jsonl`), and the last turn marker at the end of a Codex session log
   (`~/.codex/sessions/…`) to show busy/idle, and the timestamp of its last line to tell when a permission prompt was

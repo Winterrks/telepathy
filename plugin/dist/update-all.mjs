@@ -241,7 +241,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function run({ cmd, args }, cwd = os2.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os2.homedir()) {
   return new Promise((resolve) => {
     let output = "";
     const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -269,7 +269,7 @@ async function refreshPackageCache(install) {
   const entry = path2.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
   const aside = path2.join(path2.dirname(packages), `.telepathy-update-${Date.now()}`);
   fs2.renameSync(entry, aside);
-  const result = await run({ cmd: install.agent, args: ["debug", "config"] });
+  const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = findInstalls().find((i) => i.agent === install.agent);
   if (reinstalled) {
     fs2.rmSync(aside, { recursive: true, force: true });
@@ -280,48 +280,63 @@ async function refreshPackageCache(install) {
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
-async function main() {
-  const dryRun = process.argv.includes("--dry-run");
+async function updateAll(options = {}) {
+  const dryRun = options.dryRun === true;
+  const log = options.log;
+  const say = (line) => log ? log(line) : console.log(line);
   const before = findInstalls();
   if (!before.length) {
-    console.log("No agent on this machine has telepathy installed.");
-    return;
+    say("No agent on this machine has telepathy installed.");
+    return 0;
   }
-  console.log(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
+  say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
   if (dryRun) {
     for (const install of before) {
       const steps = stepsFor(install);
       const how = steps === "cache" ? `clear its package cache and run \`${install.agent} debug config\` to reinstall` : steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
-      console.log(`- ${agentLabel(install.agent)}: ${how}`);
+      say(`- ${agentLabel(install.agent)}: ${how}`);
     }
-    return;
+    return 0;
   }
   const failures = [];
   for (const install of before) {
-    process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
+    if (log) log(`Updating ${agentLabel(install.agent)}\u2026`);
+    else process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
     const steps = stepsFor(install);
     let result = { ok: true, output: "" };
     if (steps === "cache") result = await refreshPackageCache(install);
-    else for (const step of steps) if ((result = await run(step)).ok === false) break;
-    if (result.ok) console.log("done");
+    else for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
+    if (result.ok) say("done");
     else {
-      console.log(`failed: ${lastLine(result.output)}`);
+      say(`failed: ${lastLine(result.output)}`);
       failures.push(agentLabel(install.agent));
     }
   }
   const after = findInstalls();
-  console.log("\nInstalled versions:");
+  say("\nInstalled versions:");
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? "not found";
-    console.log(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
+    say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
   }
-  console.log(
+  say(
     '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
   );
   if (failures.length) {
-    console.log(`
+    say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
-    process.exitCode = 1;
+    return 1;
   }
+  return 0;
 }
-await main();
+function invokedAsUpdateAll() {
+  const entry = process.argv[1] ?? "";
+  return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
+}
+if (invokedAsUpdateAll()) {
+  const code = await updateAll({ dryRun: process.argv.includes("--dry-run") });
+  if (code !== 0) process.exitCode = code;
+}
+export {
+  runHarnessCommand,
+  updateAll
+};

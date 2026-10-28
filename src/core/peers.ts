@@ -5,9 +5,9 @@ import path from 'node:path';
 import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
 import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import { VERSION } from './version.ts';
-import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, processCwd } from './codex-launch.ts';
+import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand, processCwd } from './codex-launch.ts';
 import { codexThreadLoaded } from './codex-threads.ts';
-import { isSameProcess, procStart } from './proc.ts';
+import { commandLine, isSameProcess, procStart } from './proc.ts';
 
 export { agentLabel };
 
@@ -514,14 +514,41 @@ const isThreadKeyed = (peer: Pick<Peer, 'agent' | 'id' | 'sessionId'>) => peer.a
  * Whether the session still runs: its process for most agents; for a Codex thread, whether a Codex process still has
  * it loaded, whichever process that is by now; for an OpenCode 2 session, its service and recent use.
  */
+/**
+ * `telepathy run --headless` keeps the peer alive for as long as that supervisor process does, including a Codex
+ * thread the writer-lock scan would call unloaded. A dead pid falls through to the harness's own check.
+ */
+function hostedSupervisorAlive(peer: Peer): boolean {
+  const rec = readJson<{ pid?: number; procStart?: string }>(path.join(peerDir(peer.id), 'hosted.json'));
+  return !!rec && typeof rec.pid === 'number' && isSameProcess(rec.pid, rec.procStart);
+}
+
+/**
+ * `codex exec` is not a TUI: the allowlist rejects a subcommand-shaped first token, so the process scan never
+ * lists it. Hooks still register its thread on that process. A shared daemon's writer lock is the signal for a
+ * TUI thread; an exec that never took a lock is alive exactly while the exec process that registered it is.
+ * `exec-server` does not count, so the ChatGPT.app helper stays offline even if a hook recorded it.
+ */
+function codexExecAlive(peer: Peer): boolean {
+  const session = readSession(peer.id);
+  if (!session || (session.source !== 'hook' && session.source !== 'meta')) return false;
+  const owners = sessionOwners(peer.id);
+  const pid = owners[0]?.pid ?? session.pid;
+  const started = owners[0]?.procStart ?? session.procStart;
+  if (!isSameProcess(pid, started)) return false;
+  const args = commandLine(pid);
+  return !!args && isCodexExecCommand(args);
+}
+
 export function isPeerAlive(peer: Peer | undefined, now = Date.now()): boolean {
   if (!peer) return false;
+  if (hostedSupervisorAlive(peer)) return true;
   if (isThreadKeyed(peer)) {
     const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId as string);
     // A lock the daemon holds is the usual signal. `codex resume <id>` is already that thread while the lock
     // file is still absent, and the TUI's command line names it. An unloaded thread with no such window stays hidden.
     if (loaded === true) return true;
-    if (loaded === false) return codexTuiNamesThread(peer.sessionId as string);
+    if (loaded === false) return codexTuiNamesThread(peer.sessionId as string) || codexExecAlive(peer);
   }
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];

@@ -30,6 +30,8 @@ export function makeSandbox(): Sandbox {
   const codexLog = path.join(base, 'codex-calls.jsonl');
   const codexProcs = path.join(base, 'codex-procs.json');
   const previousProcs = process.env.TELEPATHY_CODEX_PROCS;
+  const previousAuto = process.env.TELEPATHY_AUTO_UPDATE;
+  process.env.TELEPATHY_AUTO_UPDATE = '0';
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(codexProcs, '[]');
   fs.chmodSync(FAKE_CODEX, 0o755);
@@ -73,6 +75,8 @@ export function makeSandbox(): Sandbox {
       fs.rmSync(base, { recursive: true, force: true });
       if (previousProcs === undefined) delete process.env.TELEPATHY_CODEX_PROCS;
       else process.env.TELEPATHY_CODEX_PROCS = previousProcs;
+      if (previousAuto === undefined) delete process.env.TELEPATHY_AUTO_UPDATE;
+      else process.env.TELEPATHY_AUTO_UPDATE = previousAuto;
     },
   };
 }

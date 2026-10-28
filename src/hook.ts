@@ -28,6 +28,7 @@ import {
 } from './core/peers.ts';
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { statusFromHooks, writeStatus } from './core/status.ts';
+import { scheduleAutoUpdate } from './auto-update.ts';
 
 /**
  * Hook entry point, shared by every agent with command hooks:
@@ -157,6 +158,8 @@ function reply(r: HookReply | undefined): void {
  * nothing unless the agent can't show MCP server instructions: agents add this hook's output to the context.
  */
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
+  // Detached, and a no-op when a check already ran today. Never delays this hook's reply.
+  scheduleAutoUpdate('session-start');
   const id = idOf(agent, agentPid, input);
   registerSession(agent, agentPid, {
     ...sessionOf(agent, input),
@@ -399,6 +402,11 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
 }
 
 async function main(): Promise<void> {
+  if (process.argv.includes('--telepathy-auto-update')) {
+    const { runAutoUpdate } = await import('./auto-update.ts');
+    await runAutoUpdate();
+    return;
+  }
   // Printing the hook result must not wait for a webhook. The session's server posts the batch.
   unrefWakeTimers();
   const argv = process.argv.slice(2);

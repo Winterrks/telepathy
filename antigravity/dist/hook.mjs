@@ -1,16 +1,18 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
-
-// src/hook.ts
-import path15 from "node:path";
-import { fileURLToPath } from "node:url";
-
-// src/core/claude-socket.ts
-import fs10 from "node:fs";
-import path11 from "node:path";
-
-// src/core/debug.ts
-import fs2 from "node:fs";
-import path2 from "node:path";
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 
 // src/core/paths.ts
 import fs from "node:fs";
@@ -19,11 +21,6 @@ import path from "node:path";
 function stateDir() {
   return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
 }
-var peersDir = () => path.join(stateDir(), "peers");
-var peerDir = (id) => path.join(peersDir(), id);
-var inboxDir = (id) => path.join(peerDir(id), "inbox");
-var archiveDir = (id) => path.join(peerDir(id), "archive");
-var withdrawnDir = (id) => path.join(peerDir(id), "withdrawn");
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
@@ -41,8 +38,700 @@ function readJson(file) {
     return void 0;
   }
 }
+var peersDir, peerDir, inboxDir, archiveDir, withdrawnDir;
+var init_paths = __esm({
+  "src/core/paths.ts"() {
+    "use strict";
+    peersDir = () => path.join(stateDir(), "peers");
+    peerDir = (id) => path.join(peersDir(), id);
+    inboxDir = (id) => path.join(peerDir(id), "inbox");
+    archiveDir = (id) => path.join(peerDir(id), "archive");
+    withdrawnDir = (id) => path.join(peerDir(id), "withdrawn");
+  }
+});
+
+// src/core/agents.ts
+import path4 from "node:path";
+function agentFromEnv(env = process.env) {
+  return AGENT_IDS.find((a) => SPECS[a].env?.some((name) => !!env[name]));
+}
+function isAgent(value) {
+  return typeof value === "string" && AGENT_IDS.includes(value);
+}
+function parseAgent(value) {
+  if (isAgent(value)) return value;
+  throw new Error(`--agent must be one of ${AGENT_IDS.join(", ")} (got ${JSON.stringify(value)})`);
+}
+function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
+  const spec = SPECS[agent];
+  const exe = path4.basename(comm);
+  if (spec.names?.includes(exe) || spec.exe?.test(comm)) return true;
+  if (spec.script && (INTERPRETERS.test(exe) || INTERPRETERS.test(kernelName() ?? ""))) {
+    const line = args();
+    return !!line && spec.script.test(line);
+  }
+  return false;
+}
+var AGENT_IDS, SPECS, agentSpec, agentLabel, AGENT_ALTERNATION, INTERPRETERS;
+var init_agents = __esm({
+  "src/core/agents.ts"() {
+    "use strict";
+    AGENT_IDS = [
+      "claude",
+      "codex",
+      "opencode",
+      "kilo",
+      "gemini",
+      "qwen",
+      "copilot",
+      "cursor",
+      "kimi",
+      "grok",
+      "devin",
+      "antigravity",
+      "hermes",
+      "openclaw",
+      "pi"
+    ];
+    SPECS = {
+      // Its plugin monitor wakes interactive CLI sessions; the hooks cover sessions without one (the Claude app's Code
+      // tab and `claude -p` run in stream-json mode, where plugin monitors don't start).
+      claude: { id: "claude", label: "Claude Code", names: ["claude"], nextTurnHook: true },
+      codex: { id: "codex", label: "Codex", names: ["codex"] },
+      opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
+      kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
+      gemini: {
+        id: "gemini",
+        label: "Gemini CLI",
+        names: ["gemini"],
+        script: /(^|[\s/])gemini(\.js)?(\s|$)/,
+        env: ["GEMINI_CLI"],
+        nextTurnHook: true
+      },
+      qwen: {
+        id: "qwen",
+        label: "Qwen Code",
+        names: ["qwen"],
+        script: /(^|[\s/])qwen(\s|$)|qwen-code\/(cli|dist\/index)\.js/,
+        nextTurnHook: true
+      },
+      copilot: {
+        id: "copilot",
+        label: "Copilot CLI",
+        names: ["copilot"],
+        script: /(^|[\s/])copilot(\.js)?(\s|$)/,
+        env: ["COPILOT_AGENT_SESSION_ID", "COPILOT_CLI"],
+        nextTurnHook: true
+      },
+      cursor: {
+        id: "cursor",
+        label: "Cursor",
+        names: ["cursor-agent"],
+        script: /(^|[\s/])cursor-agent(\s|$)|\/cursor-agent\/versions\//,
+        exe: /cursor-agent\/.*\/(agent|cursor-agent)$/,
+        env: ["CURSOR_PLUGIN_ROOT"],
+        nextTurnHook: true
+      },
+      kimi: { id: "kimi", label: "Kimi Code", names: ["kimi-code", "kimi"], env: ["KIMI_PLUGIN_ROOT"], nextTurnHook: true },
+      grok: {
+        id: "grok",
+        label: "Grok CLI",
+        names: ["grok"],
+        exe: /\/\.grok\/(bin|downloads)\/[^/]+$/,
+        env: ["GROK_SESSION_ID"],
+        nextTurnHook: true
+      },
+      devin: { id: "devin", label: "Devin CLI", names: ["devin"], env: ["DEVIN_PLUGIN_ROOT", "DEVIN_PROJECT_DIR"], nextTurnHook: true },
+      antigravity: { id: "antigravity", label: "Antigravity", names: ["agy", "antigravity"], nextTurnHook: true },
+      hermes: { id: "hermes", label: "Hermes Agent", names: ["hermes"], script: /(^|[\s/])hermes(\s|$)/ },
+      openclaw: { id: "openclaw", label: "OpenClaw", names: ["openclaw"], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },
+      pi: { id: "pi", label: "Pi", names: ["pi"], script: /(^|[\s/])pi(\s|$)|pi-coding-agent\/dist\/cli\.js/ }
+    };
+    agentSpec = (agent) => SPECS[agent];
+    agentLabel = (agent) => SPECS[agent].label;
+    AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
+    INTERPRETERS = /^(node|nodejs|bun|deno|python(\d+(\.\d+)*)?|Python)$/;
+  }
+});
+
+// src/core/proc.ts
+import { execFileSync } from "node:child_process";
+function psCommand() {
+  return process.env.TELEPATHY_PS_BIN || "ps";
+}
+function processTable(maxAgeMs = 500) {
+  if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
+  const table = /* @__PURE__ */ new Map();
+  let out = "";
+  try {
+    out = execFileSync(psCommand(), ["-Ao", "pid=,ppid=,lstart=,comm="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      maxBuffer: 16 * 1024 * 1024
+    });
+  } catch {
+  }
+  const re = /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/;
+  for (const line of out.split("\n")) {
+    const m = re.exec(line);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    table.set(pid, { pid, ppid: Number(m[2]), start: m[3].replace(/\s+/g, " "), comm: m[4].trim() });
+  }
+  cache = { at: Date.now(), table };
+  return table;
+}
+function isAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err.code === "EPERM";
+  }
+}
+function procStart(pid) {
+  return processTable().get(pid)?.start;
+}
+function isSameProcess(pid, recordedStart) {
+  if (!isAlive(pid)) return false;
+  if (!recordedStart) return true;
+  const current = processTable(0).get(pid)?.start;
+  return current === void 0 || current === recordedStart;
+}
+function commandLines(maxAgeMs = 500) {
+  if (argsCache && Date.now() - argsCache.at < maxAgeMs) return argsCache.table;
+  const table = /* @__PURE__ */ new Map();
+  let out = "";
+  try {
+    out = execFileSync(psCommand(), ["-Ao", "pid=,args="], {
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C" },
+      maxBuffer: 16 * 1024 * 1024
+    });
+  } catch {
+  }
+  for (const line of out.split("\n")) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    table.set(Number(match[1]), match[2].trim());
+  }
+  argsCache = { at: Date.now(), table };
+  return table;
+}
+function psField(pid, field) {
+  try {
+    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+  } catch {
+    return void 0;
+  }
+}
+function lazy(fn) {
+  let done = false;
+  let value;
+  return () => {
+    if (!done) {
+      value = fn();
+      done = true;
+    }
+    return value;
+  };
+}
+function findAgent(hint) {
+  const override = Number(process.env.TELEPATHY_AGENT_PID);
+  if (Number.isInteger(override) && override > 0) return { agent: hint, pid: override };
+  const candidates = [hint, ...AGENT_IDS.filter((a) => a !== hint)];
+  const table = processTable(0);
+  const seen = /* @__PURE__ */ new Set();
+  for (let pid = process.ppid; pid > 1 && !seen.has(pid); ) {
+    seen.add(pid);
+    const info = table.get(pid);
+    if (!info) break;
+    const args = lazy(() => psField(pid, "args"));
+    const kernelName = lazy(() => psField(pid, "ucomm"));
+    const agent = candidates.find((a) => isAgentProcess(a, info.comm, args, kernelName));
+    if (agent) return { agent, pid };
+    pid = info.ppid;
+  }
+  const claudePid = Number(process.env.CLAUDE_PID);
+  if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+}
+var cache, commandLine, argsCache, isStreamJsonClaude;
+var init_proc = __esm({
+  "src/core/proc.ts"() {
+    "use strict";
+    init_agents();
+    init_agents();
+    commandLine = (pid) => psField(pid, "args");
+    isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
+  }
+});
+
+// src/core/installs.ts
+import fs13 from "node:fs";
+import os5 from "node:os";
+import path15 from "node:path";
+function readVersion(file) {
+  try {
+    const version = JSON.parse(fs13.readFileSync(file, "utf8")).version;
+    return typeof version === "string" ? version : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function builtVersion(dir) {
+  try {
+    return /var VERSION = (?:true \? )?"(\d+\.\d+\.\d+[^"]*)"/.exec(fs13.readFileSync(path15.join(dir, "dist", "server.mjs"), "utf8"))?.[1];
+  } catch {
+    return void 0;
+  }
+}
+function isNewer(a, b) {
+  const [x, y] = [versionParts(a), versionParts(b)];
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    if ((x[i] ?? 0) !== (y[i] ?? 0)) return (x[i] ?? 0) > (y[i] ?? 0);
+  }
+  return false;
+}
+function newestOf(installs) {
+  return installs.reduce((best, i) => !best || isNewer(i.version, best.version) ? i : best, void 0);
+}
+function claude() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || path15.join(home(), ".claude");
+  let plugins = {};
+  try {
+    plugins = JSON.parse(fs13.readFileSync(path15.join(configDir, "plugins", "installed_plugins.json"), "utf8")).plugins ?? {};
+  } catch {
+    return [];
+  }
+  return Object.entries(plugins).filter(([key]) => key.startsWith("telepathy@")).flatMap(
+    ([key, entries]) => (entries ?? []).filter((e) => e.version && e.installPath).map((e) => ({ agent: "claude", version: e.version, dir: e.installPath, marketplace: key.slice("telepathy@".length) }))
+  );
+}
+function codex() {
+  const cache3 = path15.join(process.env.CODEX_HOME || path15.join(home(), ".codex"), "plugins", "cache");
+  const found = list(cache3).flatMap(
+    (marketplace) => list(path15.join(cache3, marketplace, "telepathy")).map((version) => ({
+      agent: "codex",
+      version,
+      dir: path15.join(cache3, marketplace, "telepathy", version),
+      marketplace
+    }))
+  );
+  const newest = newestOf(found.filter((i) => /^\d+\.\d+\.\d+/.test(i.version)));
+  return newest ? [newest] : [];
+}
+function extension(agent) {
+  const dir = path15.join(home(), `.${agent}`, "extensions", "telepathy");
+  const version = readVersion(path15.join(dir, `${agent}-extension.json`));
+  return version ? [{ agent, version, dir }] : [];
+}
+function copilot() {
+  const root = path15.join(home(), ".copilot", "installed-plugins");
+  return list(root).flatMap((marketplace) => {
+    const dir = path15.join(root, marketplace, "telepathy");
+    const version = readVersion(path15.join(dir, ".github", "plugin", "plugin.json"));
+    return version ? [{ agent: "copilot", version, dir, marketplace }] : [];
+  });
+}
+function devin() {
+  const cache3 = path15.join(dataHome(), "devin", "cli", "plugins", "cache");
+  const found = list(cache3).filter((name) => /telepathy/i.test(name)).flatMap(
+    (name) => list(path15.join(cache3, name)).flatMap((version) => {
+      const dir = path15.join(cache3, name, version);
+      const manifest = readVersion(path15.join(dir, ".devin-plugin", "plugin.json"));
+      return manifest ? [{ agent: "devin", version: manifest, dir }] : [];
+    })
+  );
+  const newest = newestOf(found);
+  return newest ? [newest] : [];
+}
+function antigravity() {
+  const dir = path15.join(home(), ".gemini", "config", "plugins", "telepathy");
+  const version = builtVersion(dir);
+  return version ? [{ agent: "antigravity", version, dir }] : [];
+}
+function opencodeNpmCache() {
+  const npm = path15.join(cacheHome(), "opencode", "npm");
+  return list(npm).filter((name) => /telepathy/i.test(name)).flatMap((name) => list(path15.join(npm, name)).map((install) => path15.join(npm, name, install, "node_modules", "telepathy"))).filter((dir) => fs13.existsSync(path15.join(dir, "package.json")));
+}
+function packageCache(agent) {
+  const packages = path15.join(cacheHome(), agent, "packages");
+  const candidates = agent === "opencode" ? [...opencodeNpmCache(), ...list(packages).filter((name) => name.startsWith("telepathy@")).flatMap((name) => {
+    const found2 = [];
+    const walk = (dir, depth) => {
+      if (fs13.existsSync(path15.join(dir, "node_modules", "telepathy", "package.json"))) found2.push(path15.join(dir, "node_modules", "telepathy"));
+      else if (depth < 4) for (const sub of list(dir)) walk(path15.join(dir, sub), depth + 1);
+    };
+    walk(path15.join(packages, name), 0);
+    return found2;
+  })] : list(path15.join(packages, "git")).filter((name) => /telepathy/i.test(name) && !name.endsWith(".json")).map((name) => path15.join(packages, "git", name));
+  const found = candidates.flatMap((dir) => {
+    const version = readVersion(path15.join(dir, "package.json"));
+    return version ? [{ agent, version, dir }] : [];
+  });
+  const newest = newestOf(found);
+  return newest ? [newest] : [];
+}
+function findInstalls() {
+  return [
+    ...claude(),
+    ...codex(),
+    ...extension("gemini"),
+    ...extension("qwen"),
+    ...copilot(),
+    ...devin(),
+    ...antigravity(),
+    ...packageCache("opencode"),
+    ...packageCache("kilo")
+  ];
+}
+var home, cacheHome, dataHome, list, versionParts, isOpencodeNpmInstall;
+var init_installs = __esm({
+  "src/core/installs.ts"() {
+    "use strict";
+    home = () => os5.homedir();
+    cacheHome = () => process.env.XDG_CACHE_HOME || path15.join(home(), ".cache");
+    dataHome = () => process.env.XDG_DATA_HOME || path15.join(home(), ".local", "share");
+    list = (dir) => {
+      try {
+        return fs13.readdirSync(dir);
+      } catch {
+        return [];
+      }
+    };
+    versionParts = (v) => v.split(/[.-]/).map((n) => Number.parseInt(n, 10) || 0);
+    isOpencodeNpmInstall = (install) => install.agent === "opencode" && install.dir.startsWith(path15.join(cacheHome(), "opencode", "npm") + path15.sep);
+  }
+});
+
+// src/update-all.ts
+import { spawn as spawn3 } from "node:child_process";
+import fs14 from "node:fs";
+import os6 from "node:os";
+import path16 from "node:path";
+function stepsFor(install) {
+  const marketplace = install.marketplace ?? "telepathy";
+  switch (install.agent) {
+    case "claude":
+      return [
+        { cmd: "claude", args: ["plugin", "marketplace", "update", marketplace] },
+        { cmd: "claude", args: ["plugin", "update", `telepathy@${marketplace}`] }
+      ];
+    case "codex":
+      return [{ cmd: "codex", args: ["plugin", "marketplace", "upgrade", marketplace] }];
+    case "gemini":
+    case "qwen":
+      return [{ cmd: install.agent, args: ["extensions", "update", "telepathy"] }];
+    case "copilot":
+      return [{ cmd: "copilot", args: ["plugin", "update", `telepathy@${marketplace}`] }];
+    case "devin":
+      return [{ cmd: "devin", args: ["plugins", "update", "telepathy"] }];
+    case "antigravity":
+      return [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }];
+    case "opencode":
+      return isOpencodeNpmInstall(install) ? [{ cmd: "opencode", args: ["plugin", "update", `telepathy@git+${REPO}.git`] }] : "cache";
+    default:
+      return "cache";
+  }
+}
+function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
+  return new Promise((resolve) => {
+    let output = "";
+    const child = spawn3(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const timer2 = setTimeout(() => child.kill("SIGKILL"), STEP_TIMEOUT_MS);
+    child.stdout.on("data", (d) => output += d);
+    child.stderr.on("data", (d) => output += d);
+    child.stdin.on("error", () => {
+    });
+    child.stdin.write("y\n".repeat(20));
+    child.stdin.end();
+    child.on("error", (err) => {
+      clearTimeout(timer2);
+      const missing = err.code === "ENOENT";
+      resolve({ ok: false, output: missing ? `\`${cmd}\` is not on PATH` : err.message });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer2);
+      resolve({ ok: code === 0, output: code === null ? `timed out after ${STEP_TIMEOUT_MS / 1e3}s` : output });
+    });
+  });
+}
+async function refreshPackageCache(install) {
+  const packages = path16.join(process.env.XDG_CACHE_HOME || path16.join(os6.homedir(), ".cache"), install.agent, "packages");
+  const relative = path16.relative(packages, install.dir).split(path16.sep);
+  const entry = path16.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path16.join(path16.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs14.renameSync(entry, aside);
+  const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
+  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  if (reinstalled) {
+    fs14.rmSync(aside, { recursive: true, force: true });
+    return { ok: true, output: result.output };
+  }
+  fs14.rmSync(entry, { recursive: true, force: true });
+  fs14.renameSync(aside, entry);
+  return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
+}
+async function updateAll(options = {}) {
+  const dryRun = options.dryRun === true;
+  const log = options.log;
+  const say = (line) => log ? log(line) : console.log(line);
+  const before = findInstalls();
+  if (!before.length) {
+    say("No agent on this machine has telepathy installed.");
+    return 0;
+  }
+  say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
+  if (dryRun) {
+    for (const install of before) {
+      const steps = stepsFor(install);
+      const how = steps === "cache" ? `clear its package cache and run \`${install.agent} debug config\` to reinstall` : steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
+      say(`- ${agentLabel(install.agent)}: ${how}`);
+    }
+    return 0;
+  }
+  const failures = [];
+  for (const install of before) {
+    if (log) log(`Updating ${agentLabel(install.agent)}\u2026`);
+    else process.stdout.write(`Updating ${agentLabel(install.agent)}\u2026 `);
+    const steps = stepsFor(install);
+    let result = { ok: true, output: "" };
+    if (steps === "cache") result = await refreshPackageCache(install);
+    else for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
+    if (result.ok) say("done");
+    else {
+      say(`failed: ${lastLine(result.output)}`);
+      failures.push(agentLabel(install.agent));
+    }
+  }
+  const after = findInstalls();
+  say("\nInstalled versions:");
+  for (const install of before) {
+    const now = after.find((i) => i.agent === install.agent)?.version ?? "not found";
+    say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} \u2192 ${now}`}`);
+  }
+  say(
+    '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
+  );
+  if (failures.length) {
+    say(`
+Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
+    return 1;
+  }
+  return 0;
+}
+function invokedAsUpdateAll() {
+  const entry = process.argv[1] ?? "";
+  return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
+}
+var REPO, STEP_TIMEOUT_MS, lastLine;
+var init_update_all = __esm({
+  async "src/update-all.ts"() {
+    "use strict";
+    init_agents();
+    init_installs();
+    REPO = "https://github.com/Winterrks/telepathy";
+    STEP_TIMEOUT_MS = 18e4;
+    lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
+    if (invokedAsUpdateAll()) {
+      const code = await updateAll({ dryRun: process.argv.includes("--dry-run") });
+      if (code !== 0) process.exitCode = code;
+    }
+  }
+});
+
+// src/version-check.ts
+import path17 from "node:path";
+async function latestGithubVersion() {
+  const override = process.env.TELEPATHY_LATEST_VERSION?.trim();
+  if (override) return override;
+  const url = process.env.TELEPATHY_VERSION_URL?.trim() || DEFAULT_URL;
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(8e3),
+    headers: { accept: "application/json", "user-agent": "telepathy-cli" }
+  });
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  const body = await res.json();
+  if (typeof body.version !== "string" || !body.version.trim()) throw new Error("GitHub package.json has no version");
+  return body.version.trim();
+}
+function rememberGithubVersion(version) {
+  writeJsonAtomic(cacheFile(), { version, fetchedAt: (/* @__PURE__ */ new Date()).toISOString() });
+}
+var DEFAULT_URL, cacheFile;
+var init_version_check = __esm({
+  "src/version-check.ts"() {
+    "use strict";
+    init_paths();
+    DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
+    cacheFile = () => path17.join(stateDir(), "github-version.json");
+  }
+});
+
+// src/auto-update.ts
+var auto_update_exports = {};
+__export(auto_update_exports, {
+  autoUpdateCheckedAt: () => autoUpdateCheckedAt,
+  autoUpdateEnabled: () => autoUpdateEnabled,
+  logAutoUpdate: () => logAutoUpdate,
+  runAutoUpdate: () => runAutoUpdate,
+  scheduleAutoUpdate: () => scheduleAutoUpdate,
+  setAutoUpdate: () => setAutoUpdate
+});
+import { spawn as spawn4 } from "node:child_process";
+import fs15 from "node:fs";
+import path18 from "node:path";
+import { fileURLToPath } from "node:url";
+function autoUpdateEnabled() {
+  const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
+  if (env === "0" || env === "off" || env === "false" || env === "no") return false;
+  if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
+  const cfg = readJson(path18.join(stateDir(), "config.json"));
+  if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
+  return true;
+}
+function setAutoUpdate(on) {
+  const file = path18.join(stateDir(), "config.json");
+  const cfg = readJson(file) ?? {};
+  cfg.autoUpdate = on;
+  writeJsonAtomic(file, cfg);
+}
+function autoUpdateCheckedAt() {
+  return readJson(stampFile())?.checkedAt;
+}
+function recentlyChecked() {
+  const at = Date.parse(autoUpdateCheckedAt() ?? "");
+  return Number.isFinite(at) && Date.now() - at < DAY_MS;
+}
+function logAutoUpdate(line) {
+  try {
+    ensureDir(stateDir());
+    fs15.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+`);
+  } catch {
+  }
+}
+function autoUpdateEntry() {
+  const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
+  if (override) return override;
+  const dir = path18.dirname(fileURLToPath(import.meta.url));
+  for (const name of ["hook.mjs", "hook.ts"]) {
+    const candidate = path18.join(dir, name);
+    if (fs15.existsSync(candidate)) return candidate;
+  }
+  return fileURLToPath(import.meta.url);
+}
+function scheduleAutoUpdate(reason) {
+  try {
+    if (process.argv.includes("--telepathy-auto-update")) return;
+    if (!autoUpdateEnabled()) return;
+    if (recentlyChecked()) return;
+    const child = spawn4(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, TELEPATHY_HOME: stateDir() }
+    });
+    child.on("error", (err) => logAutoUpdate(`spawn failed (${reason}): ${err.message}`));
+    child.unref();
+  } catch (err) {
+    logAutoUpdate(`schedule failed (${reason}): ${err.message}`);
+  }
+}
+function acquireLock() {
+  ensureDir(stateDir());
+  try {
+    const fd = fs15.openSync(lockFile(), "wx", 384);
+    fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs15.closeSync(fd);
+    return true;
+  } catch (err) {
+    if (err.code !== "EEXIST") return false;
+    const info = readJson(lockFile());
+    const age = Date.now() - Date.parse(info?.at ?? "");
+    const alive = typeof info?.pid === "number" && isAlive(info.pid);
+    if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
+    try {
+      fs15.rmSync(lockFile(), { force: true });
+    } catch {
+      return false;
+    }
+    return acquireLock();
+  }
+}
+function releaseLock() {
+  const info = readJson(lockFile());
+  if (info?.pid === process.pid) fs15.rmSync(lockFile(), { force: true });
+}
+async function runAutoUpdate() {
+  if (!autoUpdateEnabled()) {
+    logAutoUpdate("skipped: auto-update disabled");
+    return;
+  }
+  if (!acquireLock()) {
+    logAutoUpdate("skipped: another check holds the lock");
+    return;
+  }
+  try {
+    if (recentlyChecked()) {
+      logAutoUpdate("skipped: checked within 24h");
+      return;
+    }
+    writeJsonAtomic(stampFile(), { checkedAt: (/* @__PURE__ */ new Date()).toISOString() });
+    let latest;
+    try {
+      latest = await latestGithubVersion();
+      rememberGithubVersion(latest);
+    } catch (err) {
+      logAutoUpdate(`version check failed: ${err.message}`);
+      return;
+    }
+    const installs = findInstalls();
+    const stale2 = installs.filter((install) => isNewer(latest, install.version));
+    if (!stale2.length) {
+      logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
+      return;
+    }
+    logAutoUpdate(`updating ${stale2.map((install) => `${install.agent} ${install.version}`).join(", ")} toward ${latest}`);
+    const lines = [];
+    const code = await updateAll({ log: (line) => lines.push(line) });
+    if (lines.length) logAutoUpdate(lines.join("\n"));
+    if (code !== 0) logAutoUpdate(`update exited ${code}`);
+  } catch (err) {
+    logAutoUpdate(`failed: ${err.message}`);
+  } finally {
+    releaseLock();
+  }
+}
+var DAY_MS, stampFile, lockFile, logFile;
+var init_auto_update = __esm({
+  async "src/auto-update.ts"() {
+    "use strict";
+    init_installs();
+    init_paths();
+    init_proc();
+    await init_update_all();
+    init_version_check();
+    DAY_MS = 24 * 60 * 60 * 1e3;
+    stampFile = () => path18.join(stateDir(), "auto-update.json");
+    lockFile = () => path18.join(stateDir(), "auto-update.lock");
+    logFile = () => path18.join(stateDir(), "auto-update.log");
+  }
+});
+
+// src/hook.ts
+import path19 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/core/claude-socket.ts
+import fs10 from "node:fs";
+import path11 from "node:path";
 
 // src/core/debug.ts
+init_paths();
+import fs2 from "node:fs";
+import path2 from "node:path";
 function debugLog(component, line) {
   if (process.env.TELEPATHY_DEBUG !== "1") return;
   try {
@@ -152,230 +841,26 @@ import readline from "node:readline";
 import { promisify } from "node:util";
 
 // src/core/messages.ts
+init_paths();
 import crypto from "node:crypto";
 import fs7 from "node:fs";
 import path7 from "node:path";
 
 // src/core/peers.ts
+init_agents();
+init_paths();
 import { createHash } from "node:crypto";
 import fs6 from "node:fs";
 import os2 from "node:os";
 import path6 from "node:path";
 
-// src/core/agents.ts
-import path4 from "node:path";
-var AGENT_IDS = [
-  "claude",
-  "codex",
-  "opencode",
-  "kilo",
-  "gemini",
-  "qwen",
-  "copilot",
-  "cursor",
-  "kimi",
-  "grok",
-  "devin",
-  "antigravity",
-  "hermes",
-  "openclaw",
-  "pi"
-];
-var SPECS = {
-  // Its plugin monitor wakes interactive CLI sessions; the hooks cover sessions without one (the Claude app's Code
-  // tab and `claude -p` run in stream-json mode, where plugin monitors don't start).
-  claude: { id: "claude", label: "Claude Code", names: ["claude"], nextTurnHook: true },
-  codex: { id: "codex", label: "Codex", names: ["codex"] },
-  opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
-  kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    names: ["gemini"],
-    script: /(^|[\s/])gemini(\.js)?(\s|$)/,
-    env: ["GEMINI_CLI"],
-    nextTurnHook: true
-  },
-  qwen: {
-    id: "qwen",
-    label: "Qwen Code",
-    names: ["qwen"],
-    script: /(^|[\s/])qwen(\s|$)|qwen-code\/(cli|dist\/index)\.js/,
-    nextTurnHook: true
-  },
-  copilot: {
-    id: "copilot",
-    label: "Copilot CLI",
-    names: ["copilot"],
-    script: /(^|[\s/])copilot(\.js)?(\s|$)/,
-    env: ["COPILOT_AGENT_SESSION_ID", "COPILOT_CLI"],
-    nextTurnHook: true
-  },
-  cursor: {
-    id: "cursor",
-    label: "Cursor",
-    names: ["cursor-agent"],
-    script: /(^|[\s/])cursor-agent(\s|$)|\/cursor-agent\/versions\//,
-    exe: /cursor-agent\/.*\/(agent|cursor-agent)$/,
-    env: ["CURSOR_PLUGIN_ROOT"],
-    nextTurnHook: true
-  },
-  kimi: { id: "kimi", label: "Kimi Code", names: ["kimi-code", "kimi"], env: ["KIMI_PLUGIN_ROOT"], nextTurnHook: true },
-  grok: {
-    id: "grok",
-    label: "Grok CLI",
-    names: ["grok"],
-    exe: /\/\.grok\/(bin|downloads)\/[^/]+$/,
-    env: ["GROK_SESSION_ID"],
-    nextTurnHook: true
-  },
-  devin: { id: "devin", label: "Devin CLI", names: ["devin"], env: ["DEVIN_PLUGIN_ROOT", "DEVIN_PROJECT_DIR"], nextTurnHook: true },
-  antigravity: { id: "antigravity", label: "Antigravity", names: ["agy", "antigravity"], nextTurnHook: true },
-  hermes: { id: "hermes", label: "Hermes Agent", names: ["hermes"], script: /(^|[\s/])hermes(\s|$)/ },
-  openclaw: { id: "openclaw", label: "OpenClaw", names: ["openclaw"], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },
-  pi: { id: "pi", label: "Pi", names: ["pi"], script: /(^|[\s/])pi(\s|$)|pi-coding-agent\/dist\/cli\.js/ }
-};
-var agentSpec = (agent) => SPECS[agent];
-var agentLabel = (agent) => SPECS[agent].label;
-function agentFromEnv(env = process.env) {
-  return AGENT_IDS.find((a) => SPECS[a].env?.some((name) => !!env[name]));
-}
-function isAgent(value) {
-  return typeof value === "string" && AGENT_IDS.includes(value);
-}
-function parseAgent(value) {
-  if (isAgent(value)) return value;
-  throw new Error(`--agent must be one of ${AGENT_IDS.join(", ")} (got ${JSON.stringify(value)})`);
-}
-var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
-var INTERPRETERS = /^(node|nodejs|bun|deno|python(\d+(\.\d+)*)?|Python)$/;
-function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
-  const spec = SPECS[agent];
-  const exe = path4.basename(comm);
-  if (spec.names?.includes(exe) || spec.exe?.test(comm)) return true;
-  if (spec.script && (INTERPRETERS.test(exe) || INTERPRETERS.test(kernelName() ?? ""))) {
-    const line = args();
-    return !!line && spec.script.test(line);
-  }
-  return false;
-}
-
 // src/core/version.ts
 var VERSION = true ? "0.9.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
+init_proc();
 import { execFileSync as execFileSync2 } from "node:child_process";
 import fs4 from "node:fs";
-
-// src/core/proc.ts
-import { execFileSync } from "node:child_process";
-var cache;
-function psCommand() {
-  return process.env.TELEPATHY_PS_BIN || "ps";
-}
-function processTable(maxAgeMs = 500) {
-  if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
-  const table = /* @__PURE__ */ new Map();
-  let out = "";
-  try {
-    out = execFileSync(psCommand(), ["-Ao", "pid=,ppid=,lstart=,comm="], {
-      encoding: "utf8",
-      env: { ...process.env, LC_ALL: "C" },
-      maxBuffer: 16 * 1024 * 1024
-    });
-  } catch {
-  }
-  const re = /^\s*(\d+)\s+(\d+)\s+(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.*)$/;
-  for (const line of out.split("\n")) {
-    const m = re.exec(line);
-    if (!m) continue;
-    const pid = Number(m[1]);
-    table.set(pid, { pid, ppid: Number(m[2]), start: m[3].replace(/\s+/g, " "), comm: m[4].trim() });
-  }
-  cache = { at: Date.now(), table };
-  return table;
-}
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err) {
-    return err.code === "EPERM";
-  }
-}
-function procStart(pid) {
-  return processTable().get(pid)?.start;
-}
-function isSameProcess(pid, recordedStart) {
-  if (!isAlive(pid)) return false;
-  if (!recordedStart) return true;
-  const current = processTable(0).get(pid)?.start;
-  return current === void 0 || current === recordedStart;
-}
-var commandLine = (pid) => psField(pid, "args");
-var argsCache;
-function commandLines(maxAgeMs = 500) {
-  if (argsCache && Date.now() - argsCache.at < maxAgeMs) return argsCache.table;
-  const table = /* @__PURE__ */ new Map();
-  let out = "";
-  try {
-    out = execFileSync(psCommand(), ["-Ao", "pid=,args="], {
-      encoding: "utf8",
-      env: { ...process.env, LC_ALL: "C" },
-      maxBuffer: 16 * 1024 * 1024
-    });
-  } catch {
-  }
-  for (const line of out.split("\n")) {
-    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
-    if (!match) continue;
-    table.set(Number(match[1]), match[2].trim());
-  }
-  argsCache = { at: Date.now(), table };
-  return table;
-}
-var isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
-function psField(pid, field) {
-  try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
-  } catch {
-    return void 0;
-  }
-}
-function lazy(fn) {
-  let done = false;
-  let value;
-  return () => {
-    if (!done) {
-      value = fn();
-      done = true;
-    }
-    return value;
-  };
-}
-function findAgent(hint) {
-  const override = Number(process.env.TELEPATHY_AGENT_PID);
-  if (Number.isInteger(override) && override > 0) return { agent: hint, pid: override };
-  const candidates = [hint, ...AGENT_IDS.filter((a) => a !== hint)];
-  const table = processTable(0);
-  const seen = /* @__PURE__ */ new Set();
-  for (let pid = process.ppid; pid > 1 && !seen.has(pid); ) {
-    seen.add(pid);
-    const info = table.get(pid);
-    if (!info) break;
-    const args = lazy(() => psField(pid, "args"));
-    const kernelName = lazy(() => psField(pid, "ucomm"));
-    const agent = candidates.find((a) => isAgentProcess(a, info.comm, args, kernelName));
-    if (agent) return { agent, pid };
-    pid = info.ppid;
-  }
-  const claudePid = Number(process.env.CLAUDE_PID);
-  if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
-  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
-}
-
-// src/core/codex-launch.ts
 var VALUE_FLAGS = /* @__PURE__ */ new Set([
   "-c",
   "--config",
@@ -424,7 +909,7 @@ function codexArgv(command) {
   if (!script || script.startsWith("-") || binName(script) !== "codex") return void 0;
   return tokens.slice(i + 2);
 }
-function codexTuiLaunch(command) {
+function codexPositionals(command) {
   const argv = codexArgv(command);
   if (!argv) return void 0;
   const positional = [];
@@ -441,6 +926,15 @@ function codexTuiLaunch(command) {
     }
     positional.push(token);
   }
+  return positional;
+}
+function isCodexExecCommand(command) {
+  const sub = codexPositionals(command)?.[0];
+  return sub === "exec" || sub === "e";
+}
+function codexTuiLaunch(command) {
+  const positional = codexPositionals(command);
+  if (!positional) return void 0;
   const sub = positional[0];
   if (!sub) return {};
   if (sub === "resume") {
@@ -466,8 +960,8 @@ function procEnvironHome(pid) {
     const raw = fs4.readFileSync(`/proc/${pid}/environ`);
     for (const entry of raw.toString("utf8").split("\0")) {
       if (!entry.startsWith("CODEX_HOME=")) continue;
-      const home = entry.slice("CODEX_HOME=".length);
-      return { home: home || void 0 };
+      const home2 = entry.slice("CODEX_HOME=".length);
+      return { home: home2 || void 0 };
     }
     return {};
   } catch {
@@ -496,8 +990,8 @@ function codexHomes(pids) {
     for (const line of out.split("\n")) {
       const match = /^\s*(\d+)\s+(.*)$/.exec(line);
       if (!match) continue;
-      const home = /(?:^|\s)CODEX_HOME=(\S*)/.exec(match[2] ?? "");
-      if (home?.[1]) homes.set(Number(match[1]), home[1]);
+      const home2 = /(?:^|\s)CODEX_HOME=(\S*)/.exec(match[2] ?? "");
+      if (home2?.[1]) homes.set(Number(match[1]), home2[1]);
     }
   } catch {
   }
@@ -619,6 +1113,7 @@ function codexThreadLoaded(codexHome, threadId) {
 }
 
 // src/core/peers.ts
+init_proc();
 var peerId = (agent, key) => `${agent}-${key}`;
 var sessionKey = (_agent, pid, sessionId) => sessionToken(sessionId) ?? pid;
 function sessionToken(sessionId) {
@@ -861,12 +1356,27 @@ var isSessionKeyed = (peer) => {
   return !!token && peer.id === peerId(peer.agent, token);
 };
 var isThreadKeyed = (peer) => peer.agent === "codex" && isSessionKeyed(peer);
+function hostedSupervisorAlive(peer) {
+  const rec = readJson(path6.join(peerDir(peer.id), "hosted.json"));
+  return !!rec && typeof rec.pid === "number" && isSameProcess(rec.pid, rec.procStart);
+}
+function codexExecAlive(peer) {
+  const session = readSession(peer.id);
+  if (!session || session.source !== "hook" && session.source !== "meta") return false;
+  const owners = sessionOwners(peer.id);
+  const pid = owners[0]?.pid ?? session.pid;
+  const started = owners[0]?.procStart ?? session.procStart;
+  if (!isSameProcess(pid, started)) return false;
+  const args = commandLine(pid);
+  return !!args && isCodexExecCommand(args);
+}
 function isPeerAlive(peer, now = Date.now()) {
   if (!peer) return false;
+  if (hostedSupervisorAlive(peer)) return true;
   if (isThreadKeyed(peer)) {
     const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId);
     if (loaded === true) return true;
-    if (loaded === false) return codexTuiNamesThread(peer.sessionId);
+    if (loaded === false) return codexTuiNamesThread(peer.sessionId) || codexExecAlive(peer);
   }
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
@@ -1011,13 +1521,13 @@ function observeResumedCodex(proc, threadId, cwd) {
   const id = sessionPeerId("codex", proc.pid, threadId);
   const existing = readSession(id);
   const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
-  const home = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
+  const home2 = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
   if (!existing?.sessionId || !hostAlive || proc.codexHome && existing.codexHome !== proc.codexHome) {
     registerSession("codex", proc.pid, {
       sessionId: threadId,
       cwd: cwd ?? existing?.cwd,
       source: existing?.source === "hook" || existing?.source === "meta" ? existing.source : "process",
-      codexHome: home
+      codexHome: home2
     });
   }
   if (peerId("codex", proc.pid) !== id) writeJsonAtomic(linkFile("codex", proc.pid), { id });
@@ -1030,11 +1540,11 @@ function observeUnpromptedCodex(proc, cwd) {
     if (linked && isPeerAlive(linked)) return;
   }
   const existing = readSession(id);
-  const home = proc.codexHome || existing?.codexHome || defaultCodexHome();
-  if (existing?.source === "process" && existing.pid === proc.pid && isSameProcess(proc.pid, existing.procStart) && existing.codexHome === home && (existing.cwd || !cwd)) {
+  const home2 = proc.codexHome || existing?.codexHome || defaultCodexHome();
+  if (existing?.source === "process" && existing.pid === proc.pid && isSameProcess(proc.pid, existing.procStart) && existing.codexHome === home2 && (existing.cwd || !cwd)) {
     return;
   }
-  registerSession("codex", proc.pid, { cwd, source: "process", codexHome: home });
+  registerSession("codex", proc.pid, { cwd, source: "process", codexHome: home2 });
 }
 function keptPeers() {
   let names = [];
@@ -1286,11 +1796,15 @@ async function withdrawFromCodexQueue(selfId, threadId, codexHome) {
   }
 }
 
+// src/core/confirm.ts
+init_paths();
+
 // src/core/wake.ts
 import { spawn as spawn2 } from "node:child_process";
 import crypto2 from "node:crypto";
 import fs8 from "node:fs";
 import path9 from "node:path";
+init_paths();
 var WAKE_DEBOUNCE_MS = 400;
 var WAKE_DEBOUNCE_MAX_MS = 1500;
 var DEFAULT_TIMEOUT_MS = 8e3;
@@ -1691,7 +2205,19 @@ function envMs(name, fallback) {
 }
 var FULL_READ = 32 * 1024 * 1024;
 var TAIL_READ = 4 * 1024 * 1024;
+function hostedTranscript(peer, marker) {
+  if (!fs9.existsSync(path10.join(peerDir(peer.id), "hosted.json"))) return void 0;
+  const file = path10.join(peerDir(peer.id), "delivery-transcript.jsonl");
+  return { located: true, found: fs9.existsSync(file) && fileHas(file, marker) };
+}
 function inspectTranscript(peer, marker) {
+  const hosted = hostedTranscript(peer, marker);
+  if (hosted?.found) return hosted;
+  const harness = inspectHarnessTranscript(peer, marker);
+  if (harness.found || !hosted) return harness;
+  return hosted;
+}
+function inspectHarnessTranscript(peer, marker) {
   const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
   if (override) {
     if (!fs9.existsSync(override)) return { located: false, found: false };
@@ -1732,8 +2258,8 @@ function claudeTranscript(peer, marker) {
 }
 function codexTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
-  const home = peer.codexHome || process.env.CODEX_HOME || path10.join(os4.homedir(), ".codex");
-  const file = findRollout(home, peer.sessionId);
+  const home2 = peer.codexHome || process.env.CODEX_HOME || path10.join(os4.homedir(), ".codex");
+  const file = findRollout(home2, peer.sessionId);
   if (!file) return { located: false, found: false };
   return { located: true, found: fileHas(file, marker) };
 }
@@ -1750,8 +2276,8 @@ function opencodeTranscript(marker) {
   return { located: false, found: false };
 }
 function geminiTranscript(marker) {
-  const home = process.env.GEMINI_CLI_HOME || path10.join(os4.homedir(), ".gemini");
-  const tmp = path10.join(home, "tmp");
+  const home2 = process.env.GEMINI_CLI_HOME || path10.join(os4.homedir(), ".gemini");
+  const tmp = path10.join(home2, "tmp");
   if (!fs9.existsSync(tmp)) return { located: false, found: false };
   return { located: true, found: treeHas(tmp, marker, 4) };
 }
@@ -1937,6 +2463,8 @@ async function confirmDelivery(peer, message, routeStatus) {
 }
 
 // src/core/claude-socket.ts
+init_paths();
+init_proc();
 var SOCKET_LINE_MAX = 1024 * 1024;
 var INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
 function socketFromEnv(env) {
@@ -2024,8 +2552,13 @@ import { createHash as createHash2 } from "node:crypto";
 import fs11 from "node:fs";
 import path13 from "node:path";
 
+// src/core/listing.ts
+init_agents();
+
 // src/core/status.ts
 import path12 from "node:path";
+init_paths();
+init_proc();
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
 var statusFile = (id) => path12.join(peerDir(id), "status.json");
@@ -2157,6 +2690,7 @@ function launchHint(peer) {
 }
 
 // src/core/edits.ts
+init_paths();
 var EDIT_WINDOW_MS = 60 * 6e4;
 var EDIT_TOOL_RE = /edit|write|patch|create|replace|insert|notebook/i;
 var READ_TOOL_RE = /read|view|grep|glob|search|list/i;
@@ -2300,9 +2834,11 @@ function trackTouchedFiles(self, toolName, toolInput, cwd) {
 }
 
 // src/core/deliver.ts
+init_agents();
 import crypto3 from "node:crypto";
 import fs12 from "node:fs";
 import path14 from "node:path";
+init_paths();
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
@@ -2399,6 +2935,7 @@ async function sendMessage(self, to, body) {
   }
 }
 async function routeDelivery(recipient, message) {
+  if (fs12.existsSync(path14.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -2601,6 +3138,9 @@ function guideLines(agent, opts = {}) {
 var guideText = (agent, opts = {}) => guideLines(agent, opts).join("\n");
 
 // src/hook.ts
+init_agents();
+init_proc();
+await init_auto_update();
 var firstString = (input, fields) => fields.map((f) => input[f]).find((v) => typeof v === "string" && v.length > 0);
 var SESSION_ENV = {
   // Copilot CLI exports this for the running session. See agents.ts.
@@ -2666,6 +3206,7 @@ function reply(r) {
   if (r.exitCode !== void 0) process.exitCode = r.exitCode;
 }
 function sessionStart(agent, agentPid, input) {
+  scheduleAutoUpdate("session-start");
   const id = idOf(agent, agentPid, input);
   registerSession(agent, agentPid, {
     ...sessionOf(agent, input),
@@ -2701,7 +3242,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
-  const waiter = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path19.join(path19.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }
 function touchedFilesNote(agent, agentPid, input) {
@@ -2825,6 +3366,11 @@ async function interceptSendMessage(agentPid, input) {
   );
 }
 async function main() {
+  if (process.argv.includes("--telepathy-auto-update")) {
+    const { runAutoUpdate: runAutoUpdate2 } = await init_auto_update().then(() => auto_update_exports);
+    await runAutoUpdate2();
+    return;
+  }
   unrefWakeTimers();
   const argv = process.argv.slice(2);
   const agentIndex = argv.indexOf("--agent");

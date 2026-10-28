@@ -7,7 +7,7 @@ import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
-import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses } from '../src/core/codex-launch.ts';
+import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand } from '../src/core/codex-launch.ts';
 import { formatAgo, describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
 import { clearProcessListCache, processTable } from '../src/core/proc.ts';
@@ -536,12 +536,15 @@ describe('Codex TUI launch', () => {
     assert.equal(codexTuiLaunch('codex cloud'), undefined);
     assert.equal(codexTuiLaunch('codex hello'), undefined);
     assert.deepEqual(codexTuiLaunch('codex "Fix the bug"'), {});
-    assert.equal(
-      codexTuiLaunch(
-        '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api',
-      ),
-      undefined,
-    );
+    const chatgpt =
+      '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api';
+    assert.equal(codexTuiLaunch(chatgpt), undefined);
+    assert.equal(isCodexExecCommand('codex exec --full-auto hello'), true);
+    assert.equal(isCodexExecCommand('codex e hello'), true);
+    assert.equal(isCodexExecCommand(`codex exec resume ${T}`), true);
+    assert.equal(isCodexExecCommand('codex app-server --listen stdio'), false);
+    assert.equal(isCodexExecCommand(chatgpt), false);
+    assert.equal(isCodexExecCommand('codex'), false);
     assert.equal(codexTuiLaunch('node /opt/telepathy/dist/server.mjs --agent codex'), undefined);
     assert.equal(codexTuiLaunch('bash -c codex'), undefined);
   });
@@ -768,6 +771,55 @@ if (joined.includes('pid=,args=')) {
       else process.env.PS_LOG = prevLog;
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test('a hook-registered codex exec is reachable without a writer lock, and offline once it exits', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    fs.mkdirSync(path.join(sb.codexHome, 'thread-writer-locks'), { recursive: true });
+    const bin = path.join(path.dirname(sb.home), 'codex');
+    fs.writeFileSync(bin, '#!/bin/sh\nsleep 30\n');
+    fs.chmodSync(bin, 0o755);
+    const thread = '01a14000-bbbb-7000-8000-000000000002';
+    const helperThread = '01a14000-bbbb-7000-8000-000000000004';
+    const exec = spawn(bin, ['exec', '--full-auto', 'ship it'], { stdio: 'ignore' });
+    const daemon = spawn(bin, ['app-server'], { stdio: 'ignore' });
+    const helper = spawn(bin, ['exec-server', '--remote', 'https://codex-cloud-environments.chatgpt.com/api'], { stdio: 'ignore' });
+    try {
+      registerSession('codex', exec.pid!, { sessionId: thread, cwd: '/work/execd', source: 'hook', codexHome: sb.codexHome });
+      const listed = listPeers().find((p) => p.id === `codex-${thread}`);
+      assert.ok(listed, 'exec stays listed while its process holds the thread');
+      assert.equal(listed?.sessionId, thread);
+      registerSession('codex', daemon.pid!, {
+        sessionId: '01a14000-bbbb-7000-8000-000000000003',
+        cwd: '/work/execd',
+        source: 'hook',
+        codexHome: sb.codexHome,
+      });
+      registerSession('codex', helper.pid!, {
+        sessionId: helperThread,
+        cwd: '/work/execd',
+        source: 'hook',
+        codexHome: sb.codexHome,
+      });
+      assert.equal(
+        listPeers().some((p) => p.sessionId === '01a14000-bbbb-7000-8000-000000000003'),
+        false,
+        'app-server without a writer lock is not a live thread',
+      );
+      assert.equal(
+        listPeers().some((p) => p.sessionId === helperThread),
+        false,
+        'exec-server is not an exec thread',
+      );
+    } finally {
+      await killAndWait(exec);
+      await killAndWait(daemon);
+      await killAndWait(helper);
+    }
+    assert.equal(listPeers().some((p) => p.id === `codex-${thread}`), false);
+    sb.cleanup();
   });
 
   test('app-server and exec are not sessions', async () => {

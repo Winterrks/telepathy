@@ -83,17 +83,8 @@ function codexArgv(command: string): string[] | undefined {
   return tokens.slice(i + 2);
 }
 
-/**
- * The interactive Codex TUI this command line starts, or undefined when it is not one.
- * Allowed: bare `codex` (global flags only), `codex resume` (optional uuid), `codex fork`, and a prompt whose
- * first token is not subcommand-shaped. `exec-server`, `mcp-server`, `app-server`, `exec`, `queue`, `login`,
- * `cloud`, and every other subcommand are not TUIs. A one-word lowercase prompt looks like a subcommand and is
- * not listed from the process table; SessionStart lists it once the thread exists. A quoted prompt with a space
- * or a capital letter is a TUI. Only `codex resume <uuid>` yields a thread id. A bare `codex resume` is the
- * newest thread according to Codex, which this process cannot know until SessionStart, so it stays a TUI with
- * no id. `codex fork <id>` opens a new thread; the id on the command line is the parent, not this window.
- */
-export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
+/** Positional argv of a `codex` command, or undefined when `command` is not Codex. */
+function codexPositionals(command: string): string[] | undefined {
   const argv = codexArgv(command);
   if (!argv) return undefined;
   const positional: string[] = [];
@@ -110,6 +101,31 @@ export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
     }
     positional.push(token);
   }
+  return positional;
+}
+
+/**
+ * `codex exec` and `codex e`, including `codex exec resume`. The TUI allowlist already excludes these because the
+ * first token is subcommand-shaped. `exec-server` is not exec, so the ChatGPT.app helper is not kept alive here.
+ */
+export function isCodexExecCommand(command: string): boolean {
+  const sub = codexPositionals(command)?.[0];
+  return sub === 'exec' || sub === 'e';
+}
+
+/**
+ * The interactive Codex TUI this command line starts, or undefined when it is not one.
+ * Allowed: bare `codex` (global flags only), `codex resume` (optional uuid), `codex fork`, and a prompt whose
+ * first token is not subcommand-shaped. `exec-server`, `mcp-server`, `app-server`, `exec`, `queue`, `login`,
+ * `cloud`, and every other subcommand are not TUIs. A one-word lowercase prompt looks like a subcommand and is
+ * not listed from the process table; SessionStart lists it once the thread exists. A quoted prompt with a space
+ * or a capital letter is a TUI. Only `codex resume <uuid>` yields a thread id. A bare `codex resume` is the
+ * newest thread according to Codex, which this process cannot know until SessionStart, so it stays a TUI with
+ * no id. `codex fork <id>` opens a new thread; the id on the command line is the parent, not this window.
+ */
+export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
+  const positional = codexPositionals(command);
+  if (!positional) return undefined;
   const sub = positional[0];
   if (!sub) return {};
   if (sub === 'resume') {

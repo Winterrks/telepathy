@@ -4,7 +4,7 @@ import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message } from './messages.ts';
-import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir } from './paths.ts';
+import { archiveDir, ensureDir, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
 import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
@@ -80,11 +80,30 @@ export function transcriptHasMarker(peer: Peer | undefined, marker: string): boo
 }
 
 /**
+ * A peer telepathy itself is hosting (`telepathy run` ACP or `--headless`) records acceptance here.
+ * The harness transcript is still searched: either file containing the marker is proof.
+ */
+function hostedTranscript(peer: Peer, marker: string): TranscriptLook | undefined {
+  if (!fs.existsSync(path.join(peerDir(peer.id), 'hosted.json'))) return undefined;
+  const file = path.join(peerDir(peer.id), 'delivery-transcript.jsonl');
+  return { located: true, found: fs.existsSync(file) && fileHas(file, marker) };
+}
+
+/**
  * Searches the recipient's transcript for the marker.
  * `TELEPATHY_TRANSCRIPT_DIR`, when set, is the whole search: a directory that exists counts as located even
  * when the marker is absent. Otherwise each harness has its own files (see the design note).
+ * A hosted peer's delivery transcript counts too.
  */
 export function inspectTranscript(peer: Peer, marker: string): TranscriptLook {
+  const hosted = hostedTranscript(peer, marker);
+  if (hosted?.found) return hosted;
+  const harness = inspectHarnessTranscript(peer, marker);
+  if (harness.found || !hosted) return harness;
+  return hosted;
+}
+
+function inspectHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
   const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
   if (override) {
     if (!fs.existsSync(override)) return { located: false, found: false };

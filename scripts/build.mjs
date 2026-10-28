@@ -12,7 +12,15 @@ const pluginDir = path.join(root, 'plugin');
 fs.rmSync(path.join(pluginDir, 'dist'), { recursive: true, force: true });
 
 await build({
-  entryPoints: ['server', 'hook', 'monitor', 'opencode', 'update-all', 'delivery'].map((name) => path.join(root, 'src', `${name}.ts`)),
+  entryPoints: {
+    // server-main starts the stdio server. server.ts itself does not, so the CLI can import it.
+    server: path.join(root, 'src', 'server-main.ts'),
+    hook: path.join(root, 'src', 'hook.ts'),
+    monitor: path.join(root, 'src', 'monitor.ts'),
+    opencode: path.join(root, 'src', 'opencode.ts'),
+    'update-all': path.join(root, 'src', 'update-all.ts'),
+    delivery: path.join(root, 'src', 'delivery.ts'),
+  },
   outdir: path.join(pluginDir, 'dist'),
   outExtension: { '.js': '.mjs' },
   bundle: true,
@@ -73,4 +81,28 @@ copyDir('plugin/skills', 'antigravity/skills');
 copyDir('plugin/skills', 'skills');
 copyDir('assets', 'plugin/assets');
 
-console.log(`built telepathy ${pkg.version} into plugin/dist`);
+const cliDir = path.join(root, 'cli');
+fs.rmSync(path.join(cliDir, 'dist'), { recursive: true, force: true });
+await build({
+  entryPoints: [path.join(root, 'src', 'cli.ts')],
+  outfile: path.join(cliDir, 'dist', 'telepathy.mjs'),
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  target: 'node20',
+  legalComments: 'eof',
+  define: { __TELEPATHY_VERSION__: JSON.stringify(pkg.version) },
+  alias: { '@modelcontextprotocol/server/_shims': path.join(root, 'src', 'sdk-shims.ts') },
+  banner: {
+    js: "#!/usr/bin/env node\nimport { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);",
+  },
+  logLevel: 'warning',
+});
+fs.chmodSync(path.join(cliDir, 'dist', 'telepathy.mjs'), 0o755);
+const cliPkgPath = path.join(cliDir, 'package.json');
+const cliPkg = JSON.parse(fs.readFileSync(cliPkgPath, 'utf8'));
+cliPkg.version = pkg.version;
+fs.writeFileSync(cliPkgPath, JSON.stringify(cliPkg, null, 2) + '\n');
+fs.copyFileSync(path.join(root, 'LICENSE'), path.join(cliDir, 'LICENSE'));
+
+console.log(`built telepathy ${pkg.version} into plugin/dist and cli/dist`);

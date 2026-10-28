@@ -20049,7 +20049,7 @@ function codexArgv(command) {
   if (!script || script.startsWith("-") || binName(script) !== "codex") return void 0;
   return tokens.slice(i + 2);
 }
-function codexTuiLaunch(command) {
+function codexPositionals(command) {
   const argv = codexArgv(command);
   if (!argv) return void 0;
   const positional = [];
@@ -20066,6 +20066,15 @@ function codexTuiLaunch(command) {
     }
     positional.push(token);
   }
+  return positional;
+}
+function isCodexExecCommand(command) {
+  const sub = codexPositionals(command)?.[0];
+  return sub === "exec" || sub === "e";
+}
+function codexTuiLaunch(command) {
+  const positional = codexPositionals(command);
+  if (!positional) return void 0;
   const sub = positional[0];
   if (!sub) return {};
   if (sub === "resume") {
@@ -20465,12 +20474,27 @@ var isSessionKeyed = (peer) => {
   return !!token && peer.id === peerId(peer.agent, token);
 };
 var isThreadKeyed = (peer) => peer.agent === "codex" && isSessionKeyed(peer);
+function hostedSupervisorAlive(peer) {
+  const rec = readJson(path5.join(peerDir(peer.id), "hosted.json"));
+  return !!rec && typeof rec.pid === "number" && isSameProcess(rec.pid, rec.procStart);
+}
+function codexExecAlive(peer) {
+  const session = readSession(peer.id);
+  if (!session || session.source !== "hook" && session.source !== "meta") return false;
+  const owners = sessionOwners(peer.id);
+  const pid = owners[0]?.pid ?? session.pid;
+  const started = owners[0]?.procStart ?? session.procStart;
+  if (!isSameProcess(pid, started)) return false;
+  const args = commandLine(pid);
+  return !!args && isCodexExecCommand(args);
+}
 function isPeerAlive(peer, now = Date.now()) {
   if (!peer) return false;
+  if (hostedSupervisorAlive(peer)) return true;
   if (isThreadKeyed(peer)) {
     const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId);
     if (loaded === true) return true;
-    if (loaded === false) return codexTuiNamesThread(peer.sessionId);
+    if (loaded === false) return codexTuiNamesThread(peer.sessionId) || codexExecAlive(peer);
   }
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
@@ -21308,7 +21332,19 @@ function envMs(name, fallback) {
 }
 var FULL_READ = 32 * 1024 * 1024;
 var TAIL_READ = 4 * 1024 * 1024;
+function hostedTranscript(peer, marker) {
+  if (!fs9.existsSync(path9.join(peerDir(peer.id), "hosted.json"))) return void 0;
+  const file2 = path9.join(peerDir(peer.id), "delivery-transcript.jsonl");
+  return { located: true, found: fs9.existsSync(file2) && fileHas(file2, marker) };
+}
 function inspectTranscript(peer, marker) {
+  const hosted = hostedTranscript(peer, marker);
+  if (hosted?.found) return hosted;
+  const harness = inspectHarnessTranscript(peer, marker);
+  if (harness.found || !hosted) return harness;
+  return hosted;
+}
+function inspectHarnessTranscript(peer, marker) {
   const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
   if (override) {
     if (!fs9.existsSync(override)) return { located: false, found: false };
@@ -22049,6 +22085,7 @@ async function sendMessage(self, to, body) {
   }
 }
 async function routeDelivery(recipient, message) {
+  if (fs12.existsSync(path13.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }

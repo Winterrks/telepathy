@@ -180,6 +180,9 @@ interface Route {
  * it does not start after the user interrupts, so those cases are the mid-turn hook and the inbox.
  */
 async function routeDelivery(recipient: Peer, message: Message): Promise<Route> {
+  // `telepathy run` hosts this peer and injects from the inbox (a Claude stream, an app-server turn, an
+  // OpenCode prompt, or ACP). Codex's queue would address a daemon thread, not that hosted thread.
+  if (fs.existsSync(path.join(peerDir(recipient.id), 'hosted.json'))) return routeInbox(recipient, message);
   if (recipient.agent === 'codex') return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
