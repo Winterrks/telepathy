@@ -15,7 +15,7 @@ import {
 } from './messages.ts';
 import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { confirmDelivery, confirmWaitEnabled, withdrawPending } from './confirm.ts';
-import { agentLabel, keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
+import { keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
 
@@ -119,11 +119,13 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     sentAt: new Date().toISOString(),
   };
 
+  // A launched Codex TUI has no thread until the first prompt (or `codex resume <id>`). Queueing needs a thread
+  // the user is looking at. Starting one through a side app-server would not be that composer, so this fails
+  // before any inbox write and does not wait out the confirm window.
   if (recipient.agent === 'codex' && !recipient.sessionId) {
-    const who = `${agentLabel(recipient.agent)} session ${peerRef(recipient)}`;
     return {
       ok: false,
-      error: `${who} hasn't reported its thread id yet: it can be reached once it has had a prompt or called a telepathy tool.`,
+      error: `Message failed: ${peerRef(recipient)} has no thread yet; prompt it once.`,
     };
   }
 

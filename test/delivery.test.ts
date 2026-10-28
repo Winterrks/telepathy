@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { sendMessage } from '../src/core/deliver.ts';
-import { isDeliveryOwner, markToolHook, readPeer, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
+import { isDeliveryOwner, listPeers, markToolHook, readPeer, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
 import { readMessagesTool } from '../src/core/tools.ts';
 import { crossSessionInbound, readClaudeSocket, recordClaudeSocket, startClaudeSocketWatcher } from '../src/core/claude-socket.ts';
 import { inboxDir, withdrawnDir } from '../src/core/paths.ts';
@@ -13,7 +13,7 @@ import { deliveryConfigPath, flushPendingWakes, probeDelivery, wakeLogPath } fro
 import { runDeliveryCli } from '../src/delivery.ts';
 import { codexBridgeTimeoutFromCommandLine, codexBridgeTimeoutSec, setupNotes, unseenSetupNotes } from '../src/core/setup.ts';
 import { describePeer, formatPeerList } from '../src/core/listing.ts';
-import { fakeAgent, killAndWait, makeSandbox, type Sandbox, waitFor } from './helpers.ts';
+import { fakeAgent, killAndWait, makeSandbox, setCodexProcs, type Sandbox, waitFor } from './helpers.ts';
 
 const saved = {
   home: process.env.TELEPATHY_HOME,
@@ -128,6 +128,50 @@ describe('delivery ladder', () => {
     const queued = result.delivery.attempts.find((a) => a.id === 'codex-queue');
     assert.deepEqual(queued && { result: queued.result, when: queued.when }, { result: 'armed', when: 'idle' });
     assert.equal(result.delivery.confirmed, false);
+  });
+
+  test('a Codex with no thread fails immediately and stores nothing', async () => {
+    const tui = spawn();
+    setCodexProcs(sb, [{ pid: tui.pid, args: '/usr/local/bin/codex', cwd: '/work/fresh' }]);
+    try {
+      const listed = listPeers().find((p) => p.id === `codex-${tui.pid}`);
+      assert.ok(listed);
+      assert.equal(listed.sessionId, undefined);
+      assert.match(describePeer(listed), /no thread yet/);
+      const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).length : 0;
+      const result = await sendMessage(sender(), listed.address, 'before the first prompt');
+      assert.equal(result.ok, false);
+      if (result.ok) return;
+      assert.match(result.error, /Message failed: .+ has no thread yet; prompt it once\./);
+      assert.equal(fs.existsSync(inboxDir(listed.id)), false);
+      const calls = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).slice(before) : [];
+      assert.equal(calls.length, 0, 'codex queue was not called');
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+    }
+  });
+
+  test('codex resume of an id is queued on that thread', async () => {
+    const thread = '01a14000-bbbb-7000-8000-000000000002';
+    const tui = spawn();
+    setCodexProcs(sb, [{ pid: tui.pid, args: `codex resume ${thread}`, cwd: '/work/resumed' }]);
+    try {
+      const listed = listPeers().find((p) => p.id === `codex-${thread}`);
+      assert.ok(listed);
+      assert.equal(listed.sessionId, thread);
+      const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).length : 0;
+      const result = await sendMessage(sender(), listed.id, 'after resume');
+      assert.equal(result.ok, true);
+      if (!result.ok) return;
+      assert.match(result.status, /^Message queued for delivery to /);
+      const calls = fs.readFileSync(sb.codexLog, 'utf8').trim().split('\n').filter(Boolean).slice(before);
+      assert.equal(calls.length, 1);
+      assert.match(calls[0] ?? '', new RegExp(thread));
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+    }
   });
 
   test('an interrupted Codex is not queued and the inbox copy stays unclaimed', async () => {

@@ -15,7 +15,8 @@ message each other.
 - **Message whenever it helps**, for example when another session works in the same repo, owns code you depend
   on, or could take part of the work. You can coordinate directly; there's no need to go through your user.
 - **Send** with telepathy's `send_message`. It waits until the other session's transcript shows the message,
-  and it succeeds only then. A session that is not running fails immediately and nothing is stored. In Claude Code, `SendMessage` only reaches Claude sessions. For Codex, OpenCode,
+  and it succeeds only then. A session that is not running fails immediately and nothing is stored. A Codex window
+  that has not been prompted yet is listed as `no thread yet`; a send to it fails immediately the same way. In Claude Code, `SendMessage` only reaches Claude sessions. For Codex, OpenCode,
   Gemini, and every other telepathy peer, use `send_message`. A `SendMessage` aimed at one of those is stopped
   and the tool result is an error, even when telepathy also stored the message.
 - The other session doesn't share your context, so make messages self-contained. Replies arrive as new

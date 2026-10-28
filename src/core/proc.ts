@@ -66,6 +66,31 @@ export function isSameProcess(pid: number, recordedStart: string | undefined): b
 /** A process's full command line, when `ps` can read it. */
 export const commandLine = (pid: number): string | undefined => psField(pid, 'args');
 
+let argsCache: { at: number; table: Map<number, string> } | undefined;
+
+/** Every process's command line from one `ps`, cached like {@link processTable}. */
+export function commandLines(maxAgeMs = 500): Map<number, string> {
+  if (argsCache && Date.now() - argsCache.at < maxAgeMs) return argsCache.table;
+  const table = new Map<number, string>();
+  let out = '';
+  try {
+    out = execFileSync('ps', ['-Ao', 'pid=,args='], {
+      encoding: 'utf8',
+      env: { ...process.env, LC_ALL: 'C' },
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  } catch {
+    // Without ps, launch discovery sees no Codex TUIs.
+  }
+  for (const line of out.split('\n')) {
+    const match = /^\s*(\d+)\s+(.*)$/.exec(line);
+    if (!match) continue;
+    table.set(Number(match[1]), match[2].trim());
+  }
+  argsCache = { at: Date.now(), table };
+  return table;
+}
+
 /**
  * Whether this Claude Code process is driven over stream-json by a host app (the Claude app's Code tab, Agent SDK
  * apps). Claude Code starts plugin monitors only in interactive terminal sessions, so these never run one.

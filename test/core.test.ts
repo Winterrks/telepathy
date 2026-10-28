@@ -7,13 +7,14 @@ import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
-import { formatAgo } from '../src/core/listing.ts';
+import { codexTuiLaunch } from '../src/core/codex-launch.ts';
+import { formatAgo, describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
 import { processTable } from '../src/core/proc.ts';
 import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
 import { inboxDir, peerDir } from '../src/core/paths.ts';
 import { isDeliveryOwner, listPeers, type Peer, readPeer, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
-import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
+import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, setCodexProcs, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
   id: `${agent}-${pid}`,
@@ -160,6 +161,11 @@ describe('resolvePeer', () => {
     assert.match(r.error, /codex-102/);
     const prefix = resolvePeer('billing', peers);
     assert.ok('error' in prefix, 'a prefix shared by two agents must not resolve');
+    const bare = resolvePeer('codex:', peers);
+    assert.ok('error' in bare);
+    assert.match(bare.error, /3 sessions/);
+    const only = resolvePeer('codex:', [peer('codex', 101, 'solo')]);
+    assert.ok('peer' in only && only.peer.id === 'codex-101');
   });
 
   test('explains what is reachable when nothing matches', () => {
@@ -503,6 +509,165 @@ describe('Codex threads in a shared host process', () => {
       assert.deepEqual(listPeers().map((p) => p.id), [`codex-${C}`]);
     } finally {
       await killAndWait(daemon);
+    }
+  });
+});
+
+describe('Codex TUI launch', () => {
+  const T = '01a1176e-84cc-76c3-b84c-8e4da4d38c36';
+
+  test('an interactive command is a TUI, and resume keeps an explicit thread id', () => {
+    assert.deepEqual(codexTuiLaunch('/usr/local/bin/codex'), {});
+    assert.deepEqual(codexTuiLaunch('codex --sandbox workspace-write'), {});
+    assert.deepEqual(codexTuiLaunch('codex -m gpt-5.4 "look at the queue"'), {});
+    assert.deepEqual(codexTuiLaunch('codex resume'), {});
+    assert.deepEqual(codexTuiLaunch('codex resume --last'), {});
+    assert.deepEqual(codexTuiLaunch(`codex resume ${T}`), { threadId: T });
+    assert.deepEqual(codexTuiLaunch(`codex --remote unix:///tmp/codex.sock resume ${T}`), { threadId: T });
+    assert.deepEqual(codexTuiLaunch(`node /usr/local/bin/codex.js`), {});
+    assert.deepEqual(codexTuiLaunch(`codex fork ${T}`), {});
+    assert.equal(codexTuiLaunch('codex app-server --listen stdio'), undefined);
+    assert.equal(codexTuiLaunch('codex exec --full-auto hello'), undefined);
+    assert.equal(codexTuiLaunch('codex e hello'), undefined);
+    assert.equal(codexTuiLaunch('codex queue --thread abc'), undefined);
+    assert.equal(codexTuiLaunch('codex login'), undefined);
+    assert.equal(codexTuiLaunch('codex plugin add telepathy@telepathy'), undefined);
+    assert.equal(codexTuiLaunch('node /opt/telepathy/dist/server.mjs --agent codex'), undefined);
+    assert.equal(codexTuiLaunch('bash -c codex'), undefined);
+  });
+
+  test('a launched Codex with no thread is listed, and one window keeps that name once a thread exists', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const tui = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a12026-d630-7370-90eb-ec83c96df383';
+    try {
+      setCodexProcs(sb, [{ pid: tui.pid, args: '/usr/local/bin/codex', cwd: '/work/app' }]);
+      const listed = listPeers().find((p) => p.id === `codex-${tui.pid}`);
+      assert.ok(listed);
+      assert.equal(listed.sessionId, undefined);
+      assert.equal(listed.address, named('codex', 'app', tui.pid));
+      assert.match(describePeer(listed), /no thread yet/);
+      assert.equal(listPeers().some((p) => p.sessionId === thread), false);
+
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.equal(after.some((p) => p.id === `codex-${tui.pid}`), false);
+      const bound = after.find((p) => p.id === `codex-${thread}`);
+      assert.ok(bound);
+      assert.equal(bound.address, listed.address);
+      assert.equal(bound.name, listed.name);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('two unprompted Codex windows in one directory stay two rows when a thread appears', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const a = fakeAgent();
+    const b = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a0b3be-0955-74c0-a260-f68625685956';
+    try {
+      setCodexProcs(sb, [
+        { pid: a.pid, args: 'codex', cwd: '/work/app' },
+        { pid: b.pid, args: 'codex', cwd: '/work/app' },
+      ]);
+      assert.equal(listPeers().filter((p) => p.agent === 'codex' && !p.sessionId).length, 2);
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.equal(after.filter((p) => !p.sessionId).length, 2);
+      const bound = after.find((p) => p.sessionId === thread);
+      assert.ok(bound);
+      assert.notEqual(bound.address, named('codex', 'app', a.pid));
+      assert.notEqual(bound.address, named('codex', 'app', b.pid));
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(a);
+      await killAndWait(b);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('a window in another directory is not treated as the new thread', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const tui = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a11b03-f89f-7273-a33b-f530a64cc9c0';
+    try {
+      setCodexProcs(sb, [{ pid: tui.pid, args: 'codex', cwd: '/work/other' }]);
+      listPeers();
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.ok(after.some((p) => p.id === `codex-${tui.pid}`));
+      assert.ok(after.some((p) => p.id === `codex-${thread}`));
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('codex resume of an id is that thread before a hook, and the name survives the next resume', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    fs.mkdirSync(path.join(sb.codexHome, 'thread-writer-locks'), { recursive: true });
+    const thread = '01a13000-aaaa-7000-8000-000000000001';
+    const first = fakeAgent();
+    try {
+      setCodexProcs(sb, [{ pid: first.pid, args: `codex resume ${thread}`, cwd: '/work/kept' }]);
+      const listed = listPeers();
+      assert.deepEqual(listed.map((p) => p.id), [`codex-${thread}`]);
+      assert.equal(listed[0]?.address, named('codex', 'kept', thread));
+      assert.equal(listed[0]?.sessionId, thread);
+      const address = listed[0]?.address;
+
+      const second = fakeAgent();
+      try {
+        setCodexProcs(sb, [{ pid: second.pid, args: `codex resume ${thread}`, cwd: '/work/elsewhere' }]);
+        await killAndWait(first);
+        const again = listPeers();
+        assert.deepEqual(again.map((p) => p.id), [`codex-${thread}`]);
+        assert.equal(again[0]?.address, address);
+      } finally {
+        await killAndWait(second);
+      }
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(first);
+      sb.cleanup();
+    }
+  });
+
+  test('app-server and exec are not sessions', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const daemon = fakeAgent();
+    const exec = fakeAgent();
+    try {
+      setCodexProcs(sb, [
+        { pid: daemon.pid, args: 'codex app-server --listen stdio' },
+        { pid: exec.pid, args: 'codex exec --full-auto ship it' },
+      ]);
+      assert.deepEqual(listPeers(), []);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(daemon);
+      await killAndWait(exec);
+      sb.cleanup();
     }
   });
 });

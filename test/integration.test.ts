@@ -1033,8 +1033,11 @@ describe('telepathy plugin', () => {
         }
       });
       await waitFor(() => more.find((l) => 'ready' in l));
-      const newest = await waitFor(() => readPeer('opencode-ses_new'));
-      assert.equal(newest?.hasListener, true);
+      const newest = await waitFor(() => {
+        const peer = readPeer('opencode-ses_new');
+        return peer?.hasListener ? peer : undefined;
+      });
+      assert.equal(newest.hasListener, true);
       assert.equal(readPeer('opencode-ses_old'), undefined);
     });
 
@@ -1077,8 +1080,11 @@ describe('telepathy plugin', () => {
         }
       });
       await waitFor(() => more.find((l) => 'ready' in l));
-      const newest = await waitFor(() => readPeer('opencode-ses_new'));
-      assert.equal(newest?.hasListener, true);
+      const newest = await waitFor(() => {
+        const peer = readPeer('opencode-ses_new');
+        return peer?.hasListener ? peer : undefined;
+      });
+      assert.equal(newest.hasListener, true);
       assert.equal(readPeer('opencode-ses_old'), undefined);
     });
 
@@ -1097,8 +1103,11 @@ describe('telepathy plugin', () => {
       assert.equal(oc.lines.some((line) => 'selected' in line), false);
       const prompt = await oc.take('prompt');
       assert.match(prompt.prompt.body.parts[0].text, /before your first prompt/);
-      const made = await waitFor(() => readPeer('opencode-ses_made'));
-      assert.equal(made?.hasListener, true);
+      const made = await waitFor(() => {
+        const peer = readPeer('opencode-ses_made');
+        return peer?.hasListener ? peer : undefined;
+      });
+      assert.equal(made.hasListener, true);
       assert.equal(made?.name, readPeer(`opencode-${pid}`)?.name);
     });
 

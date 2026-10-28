@@ -67,7 +67,9 @@ function claudeWithoutMonitor(): boolean {
   return agent === 'claude' && isStreamJsonClaude(agentPid) && !process.env.CLAUDE_CODE_MESSAGING_SOCKET;
 }
 
-// A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).
+// A Codex session goes by its thread. This server learns that thread from a tool call (see selfIdFor) and does
+// not register the daemon pid: one daemon hosts every thread. A TUI that has not been prompted yet is listed
+// from the process table until a thread id exists (see observeLaunchedCodex).
 // Any other harness is keyed by its session id once a hook has linked this process to one.
 function boundId(): string {
   return linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);

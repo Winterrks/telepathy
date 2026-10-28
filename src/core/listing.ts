@@ -20,6 +20,8 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
   const columns = [peerRef(peer), 'interactive'];
   const status = statusText(peerStatus(peer), now);
   if (status) columns.push(status);
+  const launch = launchHint(peer);
+  if (launch) columns.push(launch);
   const started = Date.parse(peer.procStart ?? peer.startedAt ?? '');
   if (!Number.isNaN(started)) columns.push(`started ${formatAgo(now - started)}`);
   return `  ${columns.join('  ·  ')}`;
@@ -29,10 +31,18 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
  * How a listed session receives messages. A Claude session with an inbox socket and no hold/refuse gets them
  * as they are posted. The next-turn hint is for a session whose hooks are the path.
  */
-function deliveryHint(peer: Peer): string | undefined {
+/** A window that is up but has no harness session yet. Shown on list_peers and on ListAgents rows. */
+function launchHint(peer: Peer): string | undefined {
   if ((peer.agent === 'opencode' || peer.agent === 'kilo') && !peer.sessionId) {
     return 'no session yet, sees messages at its first prompt';
   }
+  if (peer.agent === 'codex' && !peer.sessionId) return 'no thread yet';
+  return undefined;
+}
+
+function deliveryHint(peer: Peer): string | undefined {
+  const launch = launchHint(peer);
+  if (launch) return launch;
   if (peer.agent === 'codex' || peer.hasListener) return undefined;
   if (peer.agent === 'claude' && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);

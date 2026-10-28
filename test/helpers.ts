@@ -16,6 +16,8 @@ export interface Sandbox {
   home: string;
   codexHome: string;
   codexLog: string;
+  /** JSON process list `listPeers` reads instead of scanning `ps` for Codex TUIs. */
+  codexProcs: string;
   env: Record<string, string>;
   cleanup: () => void;
 }
@@ -26,13 +28,18 @@ export function makeSandbox(): Sandbox {
   const home = path.join(base, 'state');
   const codexHome = path.join(base, 'codex-home');
   const codexLog = path.join(base, 'codex-calls.jsonl');
+  const codexProcs = path.join(base, 'codex-procs.json');
+  const previousProcs = process.env.TELEPATHY_CODEX_PROCS;
   fs.mkdirSync(codexHome, { recursive: true });
+  fs.writeFileSync(codexProcs, '[]');
   fs.chmodSync(FAKE_CODEX, 0o755);
+  process.env.TELEPATHY_CODEX_PROCS = codexProcs;
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     TELEPATHY_HOME: home,
     TELEPATHY_CODEX_BIN: FAKE_CODEX,
     FAKE_CODEX_LOG: codexLog,
+    TELEPATHY_CODEX_PROCS: codexProcs,
     CODEX_HOME: codexHome,
     CLAUDE_CONFIG_DIR: path.join(base, 'claude-config'),
     // Other agents' installs are found under the home folder; keep the real ones out of the tests.
@@ -56,7 +63,26 @@ export function makeSandbox(): Sandbox {
     delete process.env[key];
   }
   process.env.TELEPATHY_CONFIRM_WAIT = '0';
-  return { home, codexHome, codexLog, env, cleanup: () => fs.rmSync(base, { recursive: true, force: true }) };
+  return {
+    home,
+    codexHome,
+    codexLog,
+    codexProcs,
+    env,
+    cleanup: () => {
+      fs.rmSync(base, { recursive: true, force: true });
+      if (previousProcs === undefined) delete process.env.TELEPATHY_CODEX_PROCS;
+      else process.env.TELEPATHY_CODEX_PROCS = previousProcs;
+    },
+  };
+}
+
+/** Replaces the Codex TUI scan. `args` is the command line `ps` would have shown. */
+export function setCodexProcs(
+  sb: Sandbox,
+  procs: { pid: number; args: string; cwd?: string; start?: string }[],
+): void {
+  fs.writeFileSync(sb.codexProcs, JSON.stringify(procs));
 }
 
 export function codexCalls(sb: Sandbox): { argv: string[]; codexHome: string | null }[] {

@@ -114,8 +114,10 @@ claude plugin marketplace add Winterrks/telepathy && claude plugin install telep
 codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@telepathy
 ```
 
-1. Start a Codex session, open `/hooks` and approve telepathy's hooks (Codex asks once for each plugin hook), then
-   send it any prompt. A Codex session becomes reachable after its first prompt.
+1. Start a Codex session. It shows up in `list_peers` right away as `no thread yet`, under a stable name. Open
+   `/hooks` and approve telepathy's hooks (Codex asks once for each plugin hook). A message sent before the first
+   prompt fails immediately (`has no thread yet; prompt it once`) and is not stored. After that prompt, or if you
+   started it with `codex resume <id>`, the same name is the thread and Codex can be queued.
 2. Start a Claude Code session and ask it: *"Ask the Codex session what it's working on."*
 3. Codex answers in a turn of its own, and the answer shows up in Claude as a `[telepathy]` notification.
 
@@ -142,8 +144,12 @@ for third-party marketplaces). Tested with Claude Code 2.1.281.
 codex plugin marketplace add Winterrks/telepathy && codex plugin add telepathy@telepathy
 ```
 
-Then open `/hooks` in a Codex session and approve telepathy's four hooks (press `t` to trust all). SessionStart makes
-the session reachable; without it, a session becomes reachable only once it has called a telepathy tool. PostToolUse
+Then open `/hooks` in a Codex session and approve telepathy's four hooks (press `t` to trust all). A launched TUI is
+listed as soon as the process is up, before any prompt, as `no thread yet`. A send then fails immediately and stores
+nothing: Codex's MCP server and SessionStart run per thread, and a side `thread/start` would not be the composer on
+screen. `codex resume <id>` is that thread immediately, so a send can be queued. After the first prompt, SessionStart
+binds the same name to the thread. Without the hooks, a thread becomes deliverable once it has called a telepathy
+tool. PostToolUse
 and UserPromptSubmit hand messages over during a turn and with your next prompt; without them, a busy Codex gets a
 message only when its turn ends. PermissionRequest only records that a permission prompt is waiting for you, so other
 sessions know why Codex isn't answering; it never answers a prompt, and without it nothing else changes. Update: `codex plugin marketplace upgrade telepathy`, then restart running Codex
@@ -341,8 +347,12 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
 
 ## Good to know
 
-- **Codex is reachable after its first prompt.** Codex creates the thread (and runs SessionStart) only then. Copilot
-  and Antigravity also register their folder name at the first prompt; before that they show up as `session-<pid>`.
+- **A launched Codex is listed before its first prompt.** The row is `no thread yet`. A send fails immediately
+  (`Message failed: … has no thread yet; prompt it once`) and nothing is stored or queued. `codex resume <id>` is
+  already that thread, keeps the name from the last time that thread was seen, and can be queued under the same
+  115s confirm rules as any other thread. A bare `codex resume` stays `no thread yet` until SessionStart reports
+  the id. Two windows in the same directory stay two rows until each one has a thread id. Copilot and Antigravity
+  still register their folder name at the first prompt; before that they show up as `session-<pid>`.
 - **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
   result. That is the mid-turn path. `codex queue` only runs the message after the turn ends, so it is the fallback
   when no further tool call happens. Whichever comes first wins: a message handed over mid-turn (or read with

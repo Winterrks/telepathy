@@ -5,6 +5,7 @@ import path from 'node:path';
 import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
 import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import { VERSION } from './version.ts';
+import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, processCwd } from './codex-launch.ts';
 import { codexThreadLoaded } from './codex-threads.ts';
 import { isSameProcess, procStart } from './proc.ts';
 
@@ -26,8 +27,8 @@ export interface SessionRecord {
   procStart?: string;
   sessionId?: string;
   cwd?: string;
-  /** Where the id came from: a SessionStart hook, the `_meta` of a Codex tool call, or an in-process plugin. */
-  source: 'hook' | 'meta' | 'plugin';
+  /** Where the id came from: a SessionStart hook, the `_meta` of a Codex tool call, an in-process plugin, or a Codex TUI seen in the process table before it has a thread. */
+  source: 'hook' | 'meta' | 'plugin' | 'process';
   codexHome?: string;
   /** When this session was first registered: a Codex thread has no process of its own to tell. */
   startedAt?: string;
@@ -229,7 +230,12 @@ export function registerSession(
   writeJsonAtomic(file, record);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId) as string;
-    rememberName(agent, fields.sessionId, displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
+    const firstSeen = !previous || previous.sessionId !== fields.sessionId;
+    const carried =
+      agent === 'codex'
+        ? carryLaunchedCodexName(fields.sessionId, fields.cwd ?? previous?.cwd, firstSeen)
+        : undefined;
+    rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
     if (peerId(agent, pid) !== id) {
       writeJsonAtomic(linkFile(agent, pid), { id });
       if (owner) moveInbox(peerId(agent, pid), id);
@@ -511,7 +517,10 @@ export function isPeerAlive(peer: Peer | undefined, now = Date.now()): boolean {
   if (!peer) return false;
   if (isThreadKeyed(peer)) {
     const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId as string);
-    if (loaded !== undefined) return loaded;
+    // A lock the daemon holds is the usual signal. `codex resume <id>` is already that thread while the lock
+    // file is still absent, and the TUI's command line names it. An unloaded thread with no such window stays hidden.
+    if (loaded === true) return true;
+    if (loaded === false) return codexTuiNamesThread(peer.sessionId as string);
   }
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
@@ -577,6 +586,7 @@ export function readPeer(id: string): Peer | undefined {
 
 /** Live peers, with registrations of exited sessions removed along the way. */
 export function listPeers(): Peer[] {
+  observeLaunchedCodex();
   let names: string[] = [];
   try {
     names = fs.readdirSync(peersDir());
@@ -600,9 +610,9 @@ export function listPeers(): Peer[] {
     // A live process whose hook/server hasn't registered yet isn't reachable, but its files stay.
     if (peer) peers.push(peer);
   }
-  // A Codex session is reachable only by its thread. A registration by process pid without one is a server of an
-  // older telepathy (or one that hasn't seen a tool call yet); one that names a thread registered by thread is a
-  // duplicate.
+  // A Codex daemon pid that names a thread already registered by that thread is a duplicate. A pid with no thread
+  // at all is hidden too, unless this process saw the interactive TUI and recorded it as `source: 'process'`
+  // (no thread yet). The app-server daemon is not that TUI.
   const threads = new Set(peers.filter(isThreadKeyed).map((p) => p.sessionId));
   const ids = new Set(peers.map((p) => p.id));
   return peers.filter((p) => {
@@ -610,8 +620,113 @@ export function listPeers(): Peer[] {
     const link = readJson<{ id?: unknown }>(path.join(peerDir(p.id), 'link.json'));
     // The pid directory is only a pointer once the session id is known. The session directory is the peer.
     if (typeof link?.id === 'string' && link.id !== p.id && ids.has(link.id)) return false;
-    return p.agent !== 'codex' || isThreadKeyed(p) || (!!p.sessionId && !threads.has(p.sessionId));
+    return p.agent !== 'codex' || isThreadKeyed(p) || (!!p.sessionId && !threads.has(p.sessionId)) || isLaunchedCodexTui(p);
   });
+}
+
+/** A Codex TUI registered from the process table before any thread id exists. */
+function isLaunchedCodexTui(peer: Peer): boolean {
+  return peer.agent === 'codex' && !peer.sessionId && readSession(peer.id)?.source === 'process';
+}
+
+function launchedTuis(): { pid: number; cwd?: string; threadId?: string }[] {
+  const tuis: { pid: number; cwd?: string; threadId?: string }[] = [];
+  for (const proc of codexTuiProcesses()) {
+    if (!isSameProcess(proc.pid, proc.start)) continue;
+    const launch = codexTuiLaunch(proc.args);
+    if (!launch) continue;
+    tuis.push({ pid: proc.pid, cwd: proc.cwd || processCwd(proc.pid), threadId: launch.threadId });
+  }
+  return tuis;
+}
+
+function codexTuiNamesThread(threadId: string): boolean {
+  return launchedTuis().some((tui) => tui.threadId === threadId);
+}
+
+/**
+ * The pid-keyed name of the TUI this thread belongs to, and a `link.json` so that row disappears once the thread
+ * peer is live. `codex resume <uuid>` matches on the id. A fresh TUI matches only the first time this thread is
+ * seen, and only when the directory agrees or there is a single window whose directory we cannot compare.
+ * Two windows in one directory stay two rows: guessing would hide the one that still has no thread.
+ */
+function carryLaunchedCodexName(sessionId: string, cwd: string | undefined, firstSeen: boolean): string | undefined {
+  const tuis = launchedTuis();
+  const named = tuis.find((tui) => tui.threadId === sessionId);
+  let chosen = named;
+  if (!chosen && firstSeen) {
+    const fresh = tuis.filter((tui) => !tui.threadId && !linkedElsewhere(tui.pid, sessionId));
+    const sameDir = cwd ? fresh.filter((tui) => tui.cwd && tui.cwd === cwd) : [];
+    if (sameDir.length === 1) chosen = sameDir[0];
+    else if (fresh.length === 1 && (!cwd || !fresh[0]?.cwd)) chosen = fresh[0];
+  }
+  if (!chosen) return undefined;
+  const threadPeer = sessionPeerId('codex', chosen.pid, sessionId);
+  const pidKey = peerId('codex', chosen.pid);
+  if (pidKey !== threadPeer) {
+    writeJsonAtomic(linkFile('codex', chosen.pid), { id: threadPeer });
+    moveInbox(pidKey, threadPeer);
+  }
+  const placeholder = readPeer(pidKey);
+  return placeholder && !placeholder.sessionId ? placeholder.name : undefined;
+}
+
+function linkedElsewhere(pid: number, sessionId: string): boolean {
+  const link = linkedPeerId('codex', pid);
+  return !!link && link !== sessionPeerId('codex', pid, sessionId);
+}
+
+/**
+ * Registers interactive Codex TUIs that have not been through SessionStart or a tool call. The plugin MCP server
+ * and the hooks start per thread, and a TUI's startup thread often has neither a hook nor a writer lock, so the
+ * process table is what makes the window visible. `codex resume <uuid>` is registered as that thread immediately.
+ */
+function observeLaunchedCodex(): void {
+  for (const proc of codexTuiProcesses()) {
+    if (!isSameProcess(proc.pid, proc.start)) continue;
+    const launch = codexTuiLaunch(proc.args);
+    if (!launch) continue;
+    const cwd = proc.cwd || processCwd(proc.pid);
+    if (launch.threadId && sessionToken(launch.threadId)) {
+      observeResumedCodex(proc, launch.threadId, cwd);
+      continue;
+    }
+    observeUnpromptedCodex(proc, cwd);
+  }
+}
+
+function observeResumedCodex(proc: CodexTuiProc, threadId: string, cwd: string | undefined): void {
+  const id = sessionPeerId('codex', proc.pid, threadId);
+  const existing = readSession(id);
+  const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
+  if (!existing?.sessionId || !hostAlive) {
+    registerSession('codex', proc.pid, {
+      sessionId: threadId,
+      cwd: cwd ?? existing?.cwd,
+      source: existing?.source === 'hook' || existing?.source === 'meta' ? existing.source : 'process',
+      codexHome: existing?.codexHome ?? defaultCodexHome(),
+    });
+  }
+  if (peerId('codex', proc.pid) !== id) writeJsonAtomic(linkFile('codex', proc.pid), { id });
+}
+
+function observeUnpromptedCodex(proc: CodexTuiProc, cwd: string | undefined): void {
+  const id = peerId('codex', proc.pid);
+  const link = linkedPeerId('codex', proc.pid);
+  if (link && link !== id) {
+    const linked = readPeer(link);
+    if (linked && isPeerAlive(linked)) return;
+  }
+  const existing = readSession(id);
+  if (
+    existing?.source === 'process' &&
+    existing.pid === proc.pid &&
+    isSameProcess(proc.pid, existing.procStart) &&
+    (existing.cwd || !cwd)
+  ) {
+    return;
+  }
+  registerSession('codex', proc.pid, { cwd, source: 'process', codexHome: defaultCodexHome() });
 }
 
 /**
@@ -703,6 +818,8 @@ export function resolvePeer(to: string, peers: Peer[]): Resolution {
   return (
     pick(peers.filter((p) => p.id === q), 'matches') ??
     pick(peers.filter((p) => p.address.toLowerCase() === q), 'matches') ??
+    // `codex:` with nothing after the colon is that agent when only one of its sessions is up.
+    pick(q.endsWith(':') && qAgent && qSlug === '' ? peers.filter((p) => p.agent === qAgent) : [], 'matches') ??
     pick(peers.filter((p) => sameAgent(p) && (slugsOf(p).includes(qSlug) || p.name.toLowerCase() === q)), 'matches') ??
     pick(peers.filter((p) => sameAgent(p) && qSlug !== '' && slugsOf(p).some((s) => s.startsWith(qSlug))), 'is a prefix of') ?? {
       error:
