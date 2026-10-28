@@ -20762,16 +20762,26 @@ function startWakeFlusher() {
   if (flusherStarted) return;
   flusherStarted = true;
   refTimers = true;
-  ensureDir(wakeDir());
+  let watcher;
   const tick = () => {
     void kick();
   };
-  setInterval(tick, 200).unref();
-  try {
-    const watcher = fs7.watch(wakeDir(), tick);
-    watcher.unref();
-  } catch {
-  }
+  const arm = () => {
+    if (watcher) return;
+    const dir = wakeDir();
+    try {
+      if (!fs7.existsSync(dir)) return;
+      watcher = fs7.watch(dir, tick);
+      watcher.unref();
+    } catch {
+      watcher = void 0;
+    }
+  };
+  setInterval(() => {
+    arm();
+    tick();
+  }, 200).unref();
+  arm();
 }
 function listBatches() {
   try {
@@ -21987,6 +21997,23 @@ function listedSessions(value) {
   }
   return out2;
 }
+function tuiFailure(result) {
+  if (!result || typeof result !== "object") return void 0;
+  const error62 = result.error;
+  if (error62 == null || error62 === false) return void 0;
+  if (typeof error62 === "string") return error62;
+  if (typeof error62 === "object") {
+    const message = error62.message;
+    if (typeof message === "string" && message) return message;
+    const data = error62.data;
+    if (data && typeof data.message === "string" && data.message) return data.message;
+  }
+  try {
+    return JSON.stringify(error62);
+  } catch {
+    return "request failed";
+  }
+}
 function createdSessionID(value) {
   if (!value || typeof value !== "object") return void 0;
   const rec = value;
@@ -22029,15 +22056,48 @@ var TelepathyPlugin = async ({ client, directory }) => {
     const sessionID = createdSessionID(await create({}));
     if (!sessionID) return void 0;
     bind(sessionID);
-    const select = client.tui?.selectSession?.bind(client.tui) ?? client.session.select?.bind(client.session);
-    if (select) {
+    await navigateTui(sessionID);
+    return sessionID;
+  }
+  async function navigateTui(sessionID) {
+    const tried = [];
+    const attempt = async (via, call) => {
+      tried.push(via);
       try {
-        await select({ sessionID, body: { sessionID }, path: { id: sessionID } });
+        const failed = tuiFailure(await call());
+        if (failed) {
+          debugLog("opencode", `tui ${via} failed: ${failed}`);
+          return false;
+        }
+        debugLog("opencode", `tui navigated to ${sessionID} via ${via}`);
+        return true;
       } catch (err) {
-        debugLog("opencode", `tui select failed: ${err.message}`);
+        debugLog("opencode", `tui ${via} failed: ${err.message}`);
+        return false;
+      }
+    };
+    const tui = client.tui;
+    if (tui?.selectSession) {
+      const selectSession = tui.selectSession.bind(tui);
+      if (await attempt("tui.selectSession", () => selectSession({ sessionID, body: { sessionID } }))) return;
+    }
+    if (tui?.publish) {
+      const publish = tui.publish.bind(tui);
+      if (await attempt(
+        "tui.publish",
+        () => publish({ body: { type: "tui.session.select", properties: { sessionID } } })
+      )) {
+        return;
       }
     }
-    return sessionID;
+    if (client.session.select) {
+      const select = client.session.select.bind(client.session);
+      if (await attempt("session.select", () => select({ sessionID, path: { id: sessionID }, body: { sessionID } }))) return;
+    }
+    debugLog(
+      "opencode",
+      tried.length ? `tui navigate failed for ${sessionID}` : `tui navigate failed for ${sessionID}: no tui.selectSession, tui.publish, or session.select`
+    );
   }
   async function deliver2() {
     if (delivering || !isDeliveryOwner(id, pid)) return;

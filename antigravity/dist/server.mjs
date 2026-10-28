@@ -29113,16 +29113,26 @@ function startWakeFlusher() {
   if (flusherStarted) return;
   flusherStarted = true;
   refTimers = true;
-  ensureDir(wakeDir());
+  let watcher;
   const tick = () => {
     void kick();
   };
-  setInterval(tick, 200).unref();
-  try {
-    const watcher = fs9.watch(wakeDir(), tick);
-    watcher.unref();
-  } catch {
-  }
+  const arm = () => {
+    if (watcher) return;
+    const dir = wakeDir();
+    try {
+      if (!fs9.existsSync(dir)) return;
+      watcher = fs9.watch(dir, tick);
+      watcher.unref();
+    } catch {
+      watcher = void 0;
+    }
+  };
+  setInterval(() => {
+    arm();
+    tick();
+  }, 200).unref();
+  arm();
 }
 function listBatches() {
   try {

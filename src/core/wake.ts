@@ -331,17 +331,27 @@ export function startWakeFlusher(): void {
   if (flusherStarted) return;
   flusherStarted = true;
   refTimers = true;
-  ensureDir(wakeDir());
+  let watcher: fs.FSWatcher | undefined;
   const tick = () => {
     void kick();
   };
-  setInterval(tick, 200).unref();
-  try {
-    const watcher = fs.watch(wakeDir(), tick);
-    watcher.unref();
-  } catch {
-    // the interval still looks
-  }
+  // The directory is created when a batch is written. Watching a home that has no wake dir must not create one.
+  const arm = () => {
+    if (watcher) return;
+    const dir = wakeDir();
+    try {
+      if (!fs.existsSync(dir)) return;
+      watcher = fs.watch(dir, tick);
+      watcher.unref();
+    } catch {
+      watcher = undefined;
+    }
+  };
+  setInterval(() => {
+    arm();
+    tick();
+  }, 200).unref();
+  arm();
 }
 
 /** Waits out the debounce and posts anything due. Tests use this instead of sleeping. */

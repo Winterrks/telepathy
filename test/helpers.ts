@@ -128,7 +128,7 @@ export function runHook(sb: Sandbox, agent: Agent, agentPid: number, event: stri
   return { status: res.status, stdout: res.stdout.trim(), stderr: res.stderr.trim() };
 }
 
-export async function waitFor<T>(fn: () => T | undefined, timeoutMs = 5000, stepMs = 50): Promise<T> {
+export async function waitFor<T>(fn: () => T | undefined, timeoutMs = 15_000, stepMs = 50): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = fn();

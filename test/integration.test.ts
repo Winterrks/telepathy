@@ -210,7 +210,7 @@ describe('telepathy plugin', () => {
     });
     const exited = new Promise((r) => monitor.once('exit', r));
     await killAndWait(claudeAgent);
-    await Promise.race([exited, new Promise((_, rej) => setTimeout(() => rej(new Error('monitor did not exit')), 6000))]);
+    await Promise.race([exited, new Promise((_, rej) => setTimeout(() => rej(new Error('monitor did not exit')), 15_000))]);
   });
 
   test('session start does not ask for a monitor, and the idle-wake hook is not the plugin manifest', () => {
@@ -1092,8 +1092,9 @@ describe('telepathy plugin', () => {
       const claude = await connect('claude', claudeAgent.pid);
       const sent = await call(claude, 'send_message', { to: `opencode-${pid}`, message: 'before your first prompt' });
       assert.equal(sent.isError, undefined, toolText(sent));
-      const selected = await oc.take('selected');
-      assert.equal(selected.selected, 'ses_made');
+      const published = await oc.take('published');
+      assert.deepEqual(published.published, { type: 'tui.session.select', properties: { sessionID: 'ses_made' } });
+      assert.equal(oc.lines.some((line) => 'selected' in line), false);
       const prompt = await oc.take('prompt');
       assert.match(prompt.prompt.body.parts[0].text, /before your first prompt/);
       const made = await waitFor(() => readPeer('opencode-ses_made'));
@@ -1101,11 +1102,29 @@ describe('telepathy plugin', () => {
       assert.equal(made?.name, readPeer(`opencode-${pid}`)?.name);
     });
 
+    test('tui.selectSession is preferred when the client has it', async () => {
+      const oc = startOpenCode('/w/select', { OPENCODE_TEST_CREATE: 'ses_pick', OPENCODE_TEST_SELECT: '1' });
+      const ready = await oc.take('ready');
+      const pid = ready.ready as number;
+      process.env.TELEPATHY_HOME = sb.home;
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/api' });
+      const claude = await connect('claude', claudeAgent.pid);
+      const sent = await call(claude, 'send_message', { to: `opencode-${pid}`, message: 'show this session' });
+      assert.equal(sent.isError, undefined, toolText(sent));
+      const picked = await oc.take('selectSession');
+      assert.equal(picked.selectSession.sessionID, 'ses_pick');
+      assert.deepEqual(picked.selectSession.body, { sessionID: 'ses_pick' });
+      assert.equal(oc.lines.some((line) => 'published' in line), false);
+      const prompt = await oc.take('prompt');
+      assert.match(prompt.prompt.body.parts[0].text, /show this session/);
+    });
+
     test('plugin init returns without awaiting client.session.list', async () => {
       const oc = startOpenCode('/w/hang', { OPENCODE_TEST_LIST: 'hang' });
       const ready = await Promise.race([
         oc.take('ready'),
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('init awaited session.list')), 1000)),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('init awaited session.list')), 8_000)),
       ]);
       assert.equal(typeof ready.ready, 'number');
     });

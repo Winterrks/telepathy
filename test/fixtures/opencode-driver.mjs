@@ -51,7 +51,23 @@ if (process.env.OPENCODE_TEST_CREATE) {
     print({ selected: options.sessionID ?? options.body?.sessionID });
   };
 }
-const client = { session };
+// OpenCode 1.19.5's plugin client publishes tui.session.select. selectSession is absent on that client.
+const tui = {
+  _sdk: true,
+  publish(options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ published: options?.body ?? options });
+    return { data: true };
+  },
+};
+if (process.env.OPENCODE_TEST_SELECT === '1') {
+  tui.selectSession = function (options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ selectSession: options });
+    return { data: true };
+  };
+}
+const client = { session, tui };
 const hooks = await mod.default.server({ client, directory });
 print({ ready: process.pid, tools: Object.keys(hooks.tool) });
 

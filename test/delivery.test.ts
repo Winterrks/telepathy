@@ -13,7 +13,7 @@ import { deliveryConfigPath, flushPendingWakes, probeDelivery, wakeLogPath } fro
 import { runDeliveryCli } from '../src/delivery.ts';
 import { codexBridgeTimeoutFromCommandLine, codexBridgeTimeoutSec, setupNotes, unseenSetupNotes } from '../src/core/setup.ts';
 import { describePeer, formatPeerList } from '../src/core/listing.ts';
-import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
+import { fakeAgent, killAndWait, makeSandbox, type Sandbox, waitFor } from './helpers.ts';
 
 const saved = {
   home: process.env.TELEPATHY_HOME,
@@ -333,16 +333,14 @@ describe('Claude inbox socket', () => {
       const log = path.join(sb.home, 'debug.log');
       const holdLines = () =>
         (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes(`${peer.id} crossSessionInbound is hold; not posting`)).length;
-      await new Promise((resolve) => setTimeout(resolve, 400));
+      await waitFor(() => (holdLines() === 1 ? true : undefined));
       const logged = holdLines();
-      assert.equal(logged, 1);
-      await new Promise((resolve) => setTimeout(resolve, 1200));
+      await new Promise((resolve) => setTimeout(resolve, 2500));
       assert.equal(holdLines(), logged, 'hold is logged once per state, not on every flush');
       assert.equal(posts, 0);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
-      await new Promise((resolve) => setTimeout(resolve, 1500));
-      assert.equal(posts, 1);
+      await waitFor(() => (posts === 1 ? true : undefined));
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
     } finally {
       server.close();
@@ -381,7 +379,7 @@ describe('Claude inbox socket', () => {
       fs.writeFileSync(path.join(transcript, 'session.jsonl'), `telepathy-id:${held.message.id}\n`);
       fs.rmSync(path.join(settingsDir, 'settings.local.json'));
       process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
-      await new Promise((resolve) => setTimeout(resolve, 1500));
+      await waitFor(() => (fs.existsSync(path.join(sb.home, 'peers', peer.id, 'archive', `${held.message.id}.json`)) ? true : undefined));
       assert.equal(posts, 0, 'the marker is the release; do not post');
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
       assert.equal(fs.existsSync(path.join(sb.home, 'peers', peer.id, 'archive', `${held.message.id}.json`)), true);

@@ -46,7 +46,15 @@ interface PluginInput {
       select?(options: { sessionID?: string; path?: { id: string }; body?: { sessionID: string } }): Promise<unknown>;
     };
     tui?: {
+      /**
+       * OpenCode's v2 client posts `{ sessionID }` when this is passed at the top level.
+       * A v1-style client posts `body` instead. 1.19.5's plugin client does not have this method.
+       */
       selectSession?(options: { sessionID?: string; body?: { sessionID: string } }): Promise<unknown>;
+      /** Present on the 1.19.5 plugin client. The TUI navigates on `tui.session.select`. */
+      publish?(options: {
+        body?: { type: 'tui.session.select'; properties: { sessionID: string } };
+      }): Promise<unknown>;
     };
   };
   directory?: string;
@@ -178,6 +186,25 @@ function listedSessions(value: unknown): { id: string; parentID?: string; update
   return out;
 }
 
+/** Hey API returns `{ error }` without throwing. A resolved error is not navigation. */
+function tuiFailure(result: unknown): string | undefined {
+  if (!result || typeof result !== 'object') return undefined;
+  const error = (result as { error?: unknown }).error;
+  if (error == null || error === false) return undefined;
+  if (typeof error === 'string') return error;
+  if (typeof error === 'object') {
+    const message = (error as { message?: unknown }).message;
+    if (typeof message === 'string' && message) return message;
+    const data = (error as { data?: { message?: unknown } }).data;
+    if (data && typeof data.message === 'string' && data.message) return data.message;
+  }
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return 'request failed';
+  }
+}
+
 function createdSessionID(value: unknown): string | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const rec = value as { id?: unknown; data?: { id?: unknown }; info?: { id?: unknown } };
@@ -248,15 +275,58 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     const sessionID = createdSessionID(await create({}));
     if (!sessionID) return undefined;
     bind(sessionID);
-    const select = client.tui?.selectSession?.bind(client.tui) ?? client.session.select?.bind(client.session);
-    if (select) {
+    await navigateTui(sessionID);
+    return sessionID;
+  }
+
+  /**
+   * Leaves the home screen for `sessionID`. OpenCode 1.19.5's plugin client has `tui.publish`
+   * and not `tui.selectSession`. The TUI navigates when it hears `tui.session.select`.
+   * A newer client may expose `selectSession`, which posts the same event. Either way the outcome is logged.
+   */
+  async function navigateTui(sessionID: string): Promise<void> {
+    const tried: string[] = [];
+    const attempt = async (via: string, call: () => Promise<unknown>): Promise<boolean> => {
+      tried.push(via);
       try {
-        await select({ sessionID, body: { sessionID }, path: { id: sessionID } });
+        const failed = tuiFailure(await call());
+        if (failed) {
+          debugLog('opencode', `tui ${via} failed: ${failed}`);
+          return false;
+        }
+        debugLog('opencode', `tui navigated to ${sessionID} via ${via}`);
+        return true;
       } catch (err) {
-        debugLog('opencode', `tui select failed: ${(err as Error).message}`);
+        debugLog('opencode', `tui ${via} failed: ${(err as Error).message}`);
+        return false;
+      }
+    };
+
+    const tui = client.tui;
+    if (tui?.selectSession) {
+      const selectSession = tui.selectSession.bind(tui);
+      if (await attempt('tui.selectSession', () => selectSession({ sessionID, body: { sessionID } }))) return;
+    }
+    if (tui?.publish) {
+      const publish = tui.publish.bind(tui);
+      if (
+        await attempt('tui.publish', () =>
+          publish({ body: { type: 'tui.session.select', properties: { sessionID } } }),
+        )
+      ) {
+        return;
       }
     }
-    return sessionID;
+    if (client.session.select) {
+      const select = client.session.select.bind(client.session);
+      if (await attempt('session.select', () => select({ sessionID, path: { id: sessionID }, body: { sessionID } }))) return;
+    }
+    debugLog(
+      'opencode',
+      tried.length
+        ? `tui navigate failed for ${sessionID}`
+        : `tui navigate failed for ${sessionID}: no tui.selectSession, tui.publish, or session.select`,
+    );
   }
 
   /** Hands pending messages to the active session once it's idle; promptAsync then starts a turn. */

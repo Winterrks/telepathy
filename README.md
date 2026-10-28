@@ -382,8 +382,9 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   primary one, from `session.created`, `session.updated`, or a TUI event that names the session, or from the first
   `chat.message`. `--fork` does not bind the source id. Plugin init does not wait on `session.list`: OpenCode cannot
   answer it until init returns. A fresh TUI has no session yet. It is listed as
-  `no session yet, sees messages at its first prompt`, and a message that arrives first creates a session and
-  prompts it when the client can. The name from the pid-keyed moment is the one that is remembered.
+  `no session yet, sees messages at its first prompt`, and a message that arrives first creates a session,
+  publishes `tui.session.select` so the TUI leaves the home screen (`tui.selectSession` when that method exists),
+  and prompts it when the client can. The name from the pid-keyed moment is the one that is remembered.
   The first name is stored under `~/.telepathy/identities/`. Mail already in the inbox when the process exited is
   still there on resume. A send while the process is gone is `Message failed:` and is not stored. On resume, inbox
   files whose `sentAt` is after that exit are dropped, so a copy that was not already in flight is not delivered.

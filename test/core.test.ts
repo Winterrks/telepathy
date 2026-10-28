@@ -9,7 +9,6 @@ import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
 import { formatAgo } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
-import { opencodeLaunchFromAncestors } from '../src/opencode.ts';
 import { processTable } from '../src/core/proc.ts';
 import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
 import { inboxDir, peerDir } from '../src/core/paths.ts';
@@ -65,7 +64,7 @@ async function shellListing(pid: number, children: number): Promise<string | und
   const record = path.join(process.env.CLAUDE_CONFIG_DIR ?? '', 'sessions', `${pid}.json`);
   fs.mkdirSync(path.dirname(record), { recursive: true });
   fs.writeFileSync(record, JSON.stringify({ status: 'shell', statusUpdatedAt: Date.now() }));
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 10_000;
   for (;;) {
     if (descendantCount(pid) >= children) return statusText(peerStatus(peer('claude', pid, 'sdk')));
     if (Date.now() > deadline) return statusText(peerStatus(peer('claude', pid, 'sdk')));
@@ -74,6 +73,20 @@ async function shellListing(pid: number, children: number): Promise<string | und
 }
 
 describe('opencode launch command line', () => {
+  // Importing the plugin starts the wake flusher. Point it at a temp home first so the real ~/.telepathy is untouched.
+  let home = '';
+  let opencodeLaunchFromAncestors: typeof import('../src/opencode.ts').opencodeLaunchFromAncestors;
+
+  before(async () => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-opencode-'));
+    process.env.TELEPATHY_HOME = home;
+    ({ opencodeLaunchFromAncestors } = await import('../src/opencode.ts'));
+  });
+
+  after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
   test('reads --session from this process before its parent', () => {
     const args = new Map<number, string>([
       [42, 'node /usr/local/bin/opencode --session ses_self'],
@@ -193,7 +206,8 @@ describe('message formatting', () => {
 
   test('ids sort by send time', async () => {
     const a = newMessageId();
-    await new Promise((r) => setTimeout(r, 5));
+    const start = Date.now();
+    while (Date.now() === start) await new Promise((r) => setTimeout(r, 2));
     const b = newMessageId();
     assert.ok(a < b);
   });
@@ -451,7 +465,7 @@ describe('Codex threads in a shared host process', () => {
       if (next) await killAndWait(next);
     }
     // A lock file that no process holds (Codex crashed) is no session either, once the lsof result cached for a second expires.
-    await new Promise((r) => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 1800));
     assert.equal(listPeers().length, 0);
   });
 

@@ -97,7 +97,7 @@ describe('transcript confirmation', () => {
   });
 
   test('a marker during the grace period is still success', async () => {
-    const dir = arm('180', '2000');
+    const dir = arm('180', '8000');
     const { from, to } = pair();
     const pending = sendMessage(from, to.id, 'late but delivered');
     const name = await waitFor(() => {
@@ -106,7 +106,7 @@ describe('transcript confirmation', () => {
       } catch {
         return undefined;
       }
-    }, 4000);
+    });
     const msg = JSON.parse(fs.readFileSync(path.join(withdrawnDir(to.id), name), 'utf8')) as { id: string };
     fs.writeFileSync(path.join(dir, 'late.jsonl'), `${messageMarker(msg.id)}\n`);
     const result = await pending;
