@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { archiveDir, ensureDir, inboxDir, readJson, writeJsonAtomic } from './paths.ts';
+import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir, writeJsonAtomic } from './paths.ts';
 import { agentLabel, type Peer, peerRef } from './peers.ts';
 import type { Agent } from './proc.ts';
 
@@ -86,6 +86,22 @@ export function archivePending(peerId: string, id: string): void {
     fs.renameSync(path.join(inboxDir(peerId), `${id}.json`), path.join(ensureDir(archiveDir(peerId)), `${id}.json`));
   } catch {
     // already claimed
+  }
+}
+
+/**
+ * Moves a message into the archive from the inbox or from `withdrawn/`. A marker that arrives in the grace
+ * window has already been withdrawn; that copy is still the delivery and belongs in the archive.
+ */
+export function archiveSettled(peerId: string, id: string): void {
+  const dest = path.join(ensureDir(archiveDir(peerId)), `${id}.json`);
+  for (const dir of [inboxDir(peerId), withdrawnDir(peerId)]) {
+    try {
+      fs.renameSync(path.join(dir, `${id}.json`), dest);
+      return;
+    } catch {
+      // not in this directory
+    }
   }
 }
 

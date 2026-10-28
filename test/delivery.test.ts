@@ -5,13 +5,13 @@ import net from 'node:net';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { sendMessage } from '../src/core/deliver.ts';
-import { markToolHook, readPeer, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
+import { isDeliveryOwner, markToolHook, readPeer, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
 import { readMessagesTool } from '../src/core/tools.ts';
-import { recordClaudeSocket, startClaudeSocketWatcher } from '../src/core/claude-socket.ts';
-import { inboxDir } from '../src/core/paths.ts';
+import { crossSessionInbound, readClaudeSocket, recordClaudeSocket, startClaudeSocketWatcher } from '../src/core/claude-socket.ts';
+import { inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { deliveryConfigPath, flushPendingWakes, probeDelivery, wakeLogPath } from '../src/core/wake.ts';
 import { runDeliveryCli } from '../src/delivery.ts';
-import { setupNotes } from '../src/core/setup.ts';
+import { codexBridgeTimeoutSec, setupNotes } from '../src/core/setup.ts';
 import { formatPeerList } from '../src/core/listing.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
 
@@ -253,13 +253,11 @@ describe('Claude inbox socket', () => {
       if (!heldResult.ok) return;
       assert.equal(heldResult.delivery.confirmed, false);
       assert.equal(heldResult.delivery.attempts.find((a) => a.id === 'claude-socket')?.detail, 'held');
-      assert.match(heldResult.status, /crossSessionInbound is hold/);
-      assert.match(heldResult.status, /read_messages/);
-      assert.doesNotMatch(heldResult.status, /no listener/);
-      assert.equal(fs.existsSync(path.join(inboxDir(second.id), `${heldResult.message.id}.json`)), true);
-      const read = readMessagesTool(second.id, {});
-      assert.equal(read.structured?.messages[0]?.body, 'please hold');
-      assert.match(read.text, /please hold/);
+      assert.match(heldResult.status, /cannot be recalled/);
+      assert.match(heldResult.status, /inbox copy was withdrawn/);
+      assert.doesNotMatch(heldResult.status, /Message failed/);
+      assert.equal(fs.existsSync(path.join(inboxDir(second.id), `${heldResult.message.id}.json`)), false);
+      assert.equal(fs.readdirSync(withdrawnDir(second.id)).length, 1);
     } finally {
       delivered.close();
       held.close();
@@ -270,7 +268,12 @@ describe('Claude inbox socket', () => {
 
   test('silence from the socket confirms an own-child post only when no inbound setting applies', async () => {
     const sock = path.join(sb.home, 'silent.sock');
-    const server = await serve(sock, () => '');
+    let posts = 0;
+    const server = await serve(sock, (buf) => {
+      if (!buf.includes('"type":"user"')) return undefined;
+      posts += 1;
+      return '';
+    });
     try {
       const peer = pair('silent');
       recordClaudeSocket(peer.id, { CLAUDE_CODE_MESSAGING_SOCKET: sock });
@@ -279,17 +282,21 @@ describe('Claude inbox socket', () => {
       assert.equal(ok.ok, true);
       if (!ok.ok) return;
       assert.equal(ok.delivery.confirmed, true);
+      assert.equal(posts, 1);
 
       stop();
       fs.writeFileSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'settings.json'), JSON.stringify({ crossSessionInbound: 'hold' }));
       const held = pair('setting');
       recordClaudeSocket(held.id, { CLAUDE_CODE_MESSAGING_SOCKET: sock });
       stop = startClaudeSocketWatcher(held.id);
+      const before = posts;
       const blocked = await sendMessage(held.from, held.address, 'held by setting');
       assert.equal(blocked.ok, true);
       if (!blocked.ok) return;
       assert.equal(blocked.delivery.confirmed, false);
-      assert.match(blocked.status, /Claude is holding peer messages there \(crossSessionInbound is hold\)/);
+      assert.match(blocked.status, /Nothing was written to Claude's inbox socket/);
+      assert.match(blocked.status, /can still be withdrawn/);
+      assert.equal(posts, before);
       assert.equal(fs.existsSync(path.join(inboxDir(held.id), `${blocked.message.id}.json`)), true);
     } finally {
       server.close();
@@ -299,7 +306,7 @@ describe('Claude inbox socket', () => {
     }
   });
 
-  test('a held message is posted once, then once more when the hold is lifted', async () => {
+  test('a hold or refuse is not posted, and lifting the hold posts once', async () => {
     process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
     const sock = path.join(sb.home, 'once.sock');
     let posts = 0;
@@ -318,13 +325,13 @@ describe('Claude inbox socket', () => {
       const held = await sendMessage(peer.from, peer.address, 'do not repeat');
       assert.equal(held.ok, true);
       if (!held.ok) return;
-      assert.match(held.status, /crossSessionInbound is hold/);
+      assert.match(held.status, /Nothing was written to Claude's inbox socket/);
       await new Promise((resolve) => setTimeout(resolve, 1200));
-      assert.equal(posts, 1);
+      assert.equal(posts, 0);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      assert.equal(posts, 2);
+      assert.equal(posts, 1);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
     } finally {
       server.close();
@@ -335,7 +342,7 @@ describe('Claude inbox socket', () => {
     }
   });
 
-  test('a lifted hold waits, and a transcript marker skips the second post', async () => {
+  test('a transcript marker is archived when a hold lifts, without a post', async () => {
     process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '5000';
     const transcript = path.join(sb.home, 'transcripts');
     fs.mkdirSync(transcript, { recursive: true });
@@ -358,16 +365,15 @@ describe('Claude inbox socket', () => {
       assert.equal(held.ok, true);
       if (!held.ok) return;
       await new Promise((resolve) => setTimeout(resolve, 1200));
-      assert.equal(posts, 1);
+      assert.equal(posts, 0);
+      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.writeFileSync(path.join(transcript, 'session.jsonl'), `telepathy-id:${held.message.id}\n`);
       fs.rmSync(path.join(settingsDir, 'settings.local.json'));
-      await new Promise((resolve) => setTimeout(resolve, 1200));
-      assert.equal(posts, 1, 'the re-post waits out the delay');
-      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
       await new Promise((resolve) => setTimeout(resolve, 1500));
-      assert.equal(posts, 1, 'the marker is the release; do not post again');
+      assert.equal(posts, 0, 'the marker is the release; do not post');
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
+      assert.equal(fs.existsSync(path.join(sb.home, 'peers', peer.id, 'archive', `${held.message.id}.json`)), true);
     } finally {
       server.close();
       fs.rmSync(path.join(sb.home, 'delay', '.claude'), { recursive: true, force: true });
@@ -376,6 +382,56 @@ describe('Claude inbox socket', () => {
       delete process.env.TELEPATHY_HOLD_REPOST_DELAY_MS;
       delete process.env.TELEPATHY_TRANSCRIPT_DIR;
     }
+  });
+
+  test('crossSessionInbound lets a stricter project value beat managed, and ignores a looser one', () => {
+    const managed = path.join(sb.home, 'managed-policy');
+    fs.mkdirSync(path.join(managed, 'managed-settings.d'), { recursive: true });
+    process.env.TELEPATHY_MANAGED_SETTINGS_DIR = managed;
+    const peer = pair('policy');
+    const cwd = path.join(sb.home, 'policy');
+    const project = path.join(cwd, '.claude');
+    fs.mkdirSync(project, { recursive: true });
+    const user = path.join(sb.env.CLAUDE_CONFIG_DIR, 'settings.json');
+    try {
+      fs.writeFileSync(user, JSON.stringify({ crossSessionInbound: 'hold' }));
+      fs.writeFileSync(path.join(project, 'settings.local.json'), JSON.stringify({ crossSessionInbound: 'accept' }));
+      assert.equal(crossSessionInbound(readPeer(peer.id)), 'hold');
+
+      fs.rmSync(path.join(project, 'settings.local.json'));
+      fs.writeFileSync(path.join(project, 'settings.json'), JSON.stringify({ crossSessionInbound: 'refuse' }));
+      assert.equal(crossSessionInbound(readPeer(peer.id)), 'refuse');
+
+      fs.writeFileSync(path.join(managed, 'managed-settings.json'), JSON.stringify({ crossSessionInbound: 'accept' }));
+      fs.writeFileSync(path.join(managed, 'managed-settings.d', '20-lock.json'), JSON.stringify({ crossSessionInbound: 'refuse' }));
+      fs.writeFileSync(path.join(project, 'settings.local.json'), JSON.stringify({ crossSessionInbound: 'hold' }));
+      assert.equal(crossSessionInbound(readPeer(peer.id)), 'refuse');
+
+      fs.rmSync(path.join(managed, 'managed-settings.d', '20-lock.json'));
+      fs.writeFileSync(path.join(project, 'settings.json'), JSON.stringify({ crossSessionInbound: 'refuse' }));
+      assert.equal(crossSessionInbound(readPeer(peer.id)), 'hold');
+    } finally {
+      delete process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
+      fs.rmSync(user, { force: true });
+      fs.rmSync(managed, { recursive: true, force: true });
+      fs.rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  test('only the delivery owner publishes its socket path', () => {
+    const owner = fakeAgent();
+    const other = fakeAgent();
+    agents.push(owner, other);
+    const cwd = path.join(sb.home, 'two-windows');
+    const id = 'claude-two-windows';
+    registerSession('claude', owner.pid, { sessionId: 'two-windows', cwd, source: 'hook' });
+    registerSession('claude', other.pid, { sessionId: 'two-windows', cwd, source: 'hook' });
+    assert.equal(isDeliveryOwner(id, owner.pid), true);
+    assert.equal(isDeliveryOwner(id, other.pid), false);
+    const ownerPath = path.join(sb.home, 'owner.sock');
+    recordClaudeSocket(id, { CLAUDE_CODE_MESSAGING_SOCKET: ownerPath }, owner.pid);
+    assert.equal(recordClaudeSocket(id, { CLAUDE_CODE_MESSAGING_SOCKET: path.join(sb.home, 'other.sock') }, other.pid), undefined);
+    assert.equal(readClaudeSocket(id)?.path, ownerPath);
   });
 });
 
@@ -722,6 +778,27 @@ describe('stable name and duplicate sessions', () => {
     assert.match(setupNotes(self).join('\n'), /2 live sessions share the name grok:same-bot/);
     assert.match(formatPeerList(self, [other]), /duplicate session/);
     assert.match(formatPeerList(self, [other]), /Use the \[ref\] to pick one/);
+  });
+
+  test('setup warns with the Codex bridge timeout key when it is missing or below 120', () => {
+    const proc = fakeAgent();
+    agents.push(proc);
+    registerPresence('codex', proc.pid, { cwd: '/work/cx', codexHome: sb.codexHome });
+    registerSession('codex', proc.pid, { sessionId: 'thread-timeout', cwd: '/work/cx', source: 'hook', codexHome: sb.codexHome });
+    const self = readPeer('codex-thread-timeout');
+    assert.ok(self);
+    const config = path.join(sb.codexHome, 'config.toml');
+    const key = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
+    fs.writeFileSync(config, 'model = "m"\n');
+    assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), undefined);
+    assert.match(setupNotes(self).join('\n'), new RegExp(key.replace(/[.]/g, '\\.')));
+    fs.writeFileSync(config, `[plugins."telepathy@telepathy".mcp_servers.bridge]\ntool_timeout_sec = 60\n`);
+    assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), 60);
+    assert.match(setupNotes(self).join('\n'), /60s/);
+    fs.appendFileSync(config, `\n${key} = 180\n`);
+    assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), 180);
+    assert.doesNotMatch(setupNotes(self).join('\n'), /tool_timeout_sec/);
+    fs.rmSync(config, { force: true });
   });
 
   test('read_messages with nothing waiting is an empty array, not a message', () => {

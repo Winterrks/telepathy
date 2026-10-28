@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
-import { archivePending, messageMarker, type Message } from './messages.ts';
+import { archiveSettled, messageMarker, type Message } from './messages.ts';
 import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir } from './paths.ts';
-import { claudeConfigDir, type Peer, peerRef } from './peers.ts';
+import { claudeConfigDir, isPeerAlive, type Peer, peerRef } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
 /**
@@ -204,6 +204,25 @@ async function untilMarker(peer: Peer, marker: string, budgetMs: number): Promis
 export interface ConfirmOutcome {
   confirmed: boolean;
   status: string;
+  /** The inbox was left in place because the session is not running and nothing unrecallable was handed off. */
+  kept?: boolean;
+}
+
+const UNRECALLABLE = /cannot be recalled/i;
+
+/** The route promised the inbox would remain. After a withdraw, that sentence is no longer true. */
+function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { signal: string; noted: boolean } {
+  if (withdrawn !== 'withdrawn') return { signal: routeStatus, noted: false };
+  const signal = routeStatus
+    .replace(
+      'It stays in the inbox for the next prompt, or until the session calls read_messages.',
+      'The inbox copy was withdrawn, so the next prompt will not see it.',
+    )
+    .replace(
+      'It stays in the inbox until the session calls read_messages.',
+      'The inbox copy was withdrawn, so a later read will not see it.',
+    );
+  return { signal, noted: signal !== routeStatus };
 }
 
 /**
@@ -213,18 +232,28 @@ export interface ConfirmOutcome {
 export async function confirmDelivery(peer: Peer, message: Message, routeStatus: string): Promise<ConfirmOutcome> {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  // A session that is not running cannot write a transcript. Leaving the inbox is what makes the resume see
+  // the message. `Message failed` would mean it can never arrive, which is only true if we withdraw it.
+  // A held socket copy is the exception: those bytes can still show up, so the wait below still applies.
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
+    return {
+      confirmed: false,
+      kept: true,
+      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`,
+    };
+  }
   if (await untilMarker(peer, marker, confirmAbortMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
 
   const stored = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
+  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
   const notes: string[] = [];
-  if (/socket|holding peer messages/i.test(routeStatus)) {
-    notes.push('A post already written to the Claude inbox socket cannot be recalled.');
+  if (withdrawn === 'withdrawn' && !noted && !UNRECALLABLE.test(routeStatus)) {
+    notes.push('The inbox copy was withdrawn so a later turn cannot pick it up.');
   }
-  if (withdrawn === 'withdrawn') notes.push('The inbox copy was withdrawn so a later turn cannot pick it up.');
   if (withdrawn === 'claimed') notes.push('The inbox copy was already claimed, which is not proof the model saw it.');
 
   const queueId = stored?.codexQueueId;
@@ -246,7 +275,7 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
   }
 
   if (await untilMarker(peer, marker, confirmGraceMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
 
@@ -255,10 +284,16 @@ export async function confirmDelivery(peer: Peer, message: Message, routeStatus:
     ? 'A transcript file was found and does not contain the marker, so delivery is unconfirmed.'
     : 'No transcript file was found for this session, so delivery is unconfirmed.';
   const extra = notes.length ? ` ${notes.join(' ')}` : '';
+  if (UNRECALLABLE.test(routeStatus)) {
+    return {
+      confirmed: false,
+      status: `${routeStatus} ${where}${extra}`,
+    };
+  }
   return {
     confirmed: false,
     status:
       `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ` +
-      `${where} Strongest signal: ${routeStatus}${extra}`,
+      `${where} Strongest signal: ${signal}${extra}`,
   };
 }

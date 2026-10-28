@@ -8,7 +8,7 @@ import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
-import { isDeliveryOwner, isPeerAlive, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
+import { isDeliveryOwner, isPeerAlive, keepSessionName, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { startWakeFlusher } from './core/wake.ts';
@@ -27,13 +27,54 @@ interface PromptTarget {
   model?: unknown;
 }
 
+interface ListedSession {
+  id?: string;
+  parentID?: string;
+  info?: { id?: string; parentID?: string };
+}
+
 interface PluginInput {
   client: {
     session: {
       promptAsync(options: { path: { id: string }; body: { parts: { type: 'text'; text: string }[]; agent?: string; model?: unknown } }): Promise<unknown>;
+      /** Present on some OpenCode builds. A single primary session is the one this TUI is showing. */
+      list?(): Promise<unknown>;
     };
   };
   directory?: string;
+}
+
+/** `opencode --session ses_…` puts the resumed id on argv before the plugin's first prompt. */
+export function opencodeSessionFromArgv(argv: readonly string[] = process.argv): string | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--session') {
+      const next = argv[i + 1];
+      if (next && !next.startsWith('-')) return next;
+    }
+    const eq = /^--session=(.+)$/.exec(arg ?? '');
+    if (eq?.[1]) return eq[1];
+  }
+  return undefined;
+}
+
+function listedSessions(value: unknown): { id: string; parentID?: string }[] {
+  const rows = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as { data?: unknown }).data)
+      ? (value as { data: unknown[] }).data
+      : [];
+  const out: { id: string; parentID?: string }[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== 'object') continue;
+    const rec = row as ListedSession;
+    const id = typeof rec.id === 'string' ? rec.id : typeof rec.info?.id === 'string' ? rec.info.id : undefined;
+    if (!id) continue;
+    const parentID =
+      typeof rec.parentID === 'string' ? rec.parentID : typeof rec.info?.parentID === 'string' ? rec.info.parentID : undefined;
+    out.push({ id, parentID });
+  }
+  return out;
 }
 
 interface BusEvent {
@@ -119,6 +160,45 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     void deliver();
   }, 2000).unref();
 
+  /**
+   * Points this process at `sessionID`. The pid-era name is stored before the session-keyed name is generated,
+   * so a listing does not change suffix when the ses_ id appears. Resume (`--session` or a single listed
+   * session) binds here, before the first prompt, and registers the listener the old peer had.
+   */
+  const bind = (sessionID: string) => {
+    if (!sessionID || children.has(sessionID)) return;
+    const next = sessionPeerId(agent, pid, sessionID);
+    if (active?.sessionID === sessionID && id === next) {
+      registerListener(agent, pid, id);
+      return;
+    }
+    if (id === peerId(agent, pid)) {
+      const carried = readPeer(id)?.name;
+      if (carried) keepSessionName(agent, sessionID, carried);
+    }
+    const previous = id;
+    active = { sessionID, agent: active?.agent, model: active?.model };
+    id = next;
+    registerSession(agent, pid, { sessionId: sessionID, cwd: directory, source: 'plugin' });
+    registerPresence(agent, pid, { cwd: directory }, id);
+    registerListener(agent, pid, id);
+    watcher?.close();
+    watcher = undefined;
+    watch();
+    debugLog('opencode', `bound ${previous} to ${id}`);
+  };
+
+  const argvSession = opencodeSessionFromArgv();
+  if (argvSession) bind(argvSession);
+  else if (client.session.list) {
+    try {
+      const primary = listedSessions(await client.session.list()).filter((row) => !row.parentID);
+      if (primary.length === 1 && primary[0]) bind(primary[0].id);
+    } catch (err) {
+      debugLog('opencode', `session list failed: ${(err as Error).message}`);
+    }
+  }
+
   const self = () => selfPeer(agent, pid, id);
   const toolArgs = new Map<string, unknown>(); // by call id, from before a tool runs until it has run
 
@@ -133,23 +213,17 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
 
     'chat.message': async (input: { sessionID: string; agent?: string; model?: unknown }) => {
       if (children.has(input.sessionID)) return;
-      const changed = active?.sessionID !== input.sessionID;
       active = { sessionID: input.sessionID, agent: input.agent, model: input.model };
-      if (changed) {
-        // The ses_ id is the peer. A continued session reclaims that id, not the process pid.
-        id = sessionPeerId(agent, pid, input.sessionID);
-        registerSession(agent, pid, { sessionId: input.sessionID, cwd: directory, source: 'plugin' });
-        registerPresence(agent, pid, { cwd: directory }, id);
-        registerListener(agent, pid, id);
-        watcher?.close();
-        watcher = undefined;
-        watch();
-      }
+      bind(input.sessionID);
     },
 
     event: async ({ event }: { event: BusEvent }) => {
       const p = event.properties ?? {};
-      if (event.type === 'session.created' && p.info?.parentID && p.info.id) children.add(p.info.id);
+      if (event.type === 'session.created' || event.type === 'session.updated') {
+        const sessionID = p.info?.id ?? p.sessionID;
+        if (sessionID && p.info?.parentID) children.add(sessionID);
+        else if (sessionID) bind(sessionID);
+      }
       const status = statusOf(event, (sessionID) => !children.has(sessionID) && (!active || active.sessionID === sessionID));
       if (status) writeStatus(id, status);
       if (event.type === 'session.status' && p.sessionID) {

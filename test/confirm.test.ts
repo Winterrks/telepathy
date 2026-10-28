@@ -2,9 +2,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { confirmDelivery } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { messageMarker } from '../src/core/messages.ts';
-import { inboxDir, withdrawnDir } from '../src/core/paths.ts';
+import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { readPeer, registerPresence, registerSession } from '../src/core/peers.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox, waitFor } from './helpers.ts';
 
@@ -104,6 +105,8 @@ describe('transcript confirmation', () => {
     assert.equal(result.ok, true);
     if (!result.ok) return;
     assert.match(result.status, /The transcript shows telepathy-id:/);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), name)), false);
+    assert.equal(fs.existsSync(path.join(archiveDir(to.id), name)), true);
   });
 
   test('a claim without the marker is not success', async () => {
@@ -125,5 +128,60 @@ describe('transcript confirmation', () => {
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
     assert.match(result.error, /already claimed/);
+  });
+
+  test('a session that is not running keeps the inbox', async () => {
+    arm('5000', '5000');
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    const key = `closed${n++}`;
+    registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-closed');
+    registerSession('codex', fromProc.pid, { sessionId: 'thread-closed', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
+    registerPresence('opencode', toProc.pid, { cwd: '/w/ui' }, `opencode-${key}`);
+    registerSession('opencode', toProc.pid, { sessionId: key, cwd: '/w/ui', source: 'plugin' });
+    const from = readPeer('codex-thread-closed');
+    const to = readPeer(`opencode-${key}`);
+    assert.ok(from && to);
+    await killAndWait(toProc);
+    const result = await sendMessage(from, to.address, 'while you are closed');
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /not running/);
+    assert.match(result.error, /stays in its inbox/);
+    assert.doesNotMatch(result.error, /^Message failed:/);
+    assert.equal(fs.readdirSync(inboxDir(to.id)).length, 1);
+  });
+
+  test('a held socket result is not a clean failure, and an interrupt withdraw does not say the inbox stays', async () => {
+    arm('120', '40');
+    const { from, to } = pair();
+    const held = await confirmDelivery(
+      to,
+      { id: 'm-000000002-aabbcc', from: from, to, body: 'held copy', sentAt: new Date().toISOString() },
+      'Message not confirmed for gemini:x. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.',
+    );
+    assert.equal(held.confirmed, false);
+    assert.match(held.status, /cannot be recalled/);
+    assert.doesNotMatch(held.status, /^Message failed:/);
+
+    const interruptedMessage = {
+      id: 'm-000000003-bbccdd',
+      from,
+      to,
+      body: 'interrupted',
+      sentAt: new Date().toISOString(),
+    };
+    fs.mkdirSync(inboxDir(to.id), { recursive: true });
+    fs.writeFileSync(path.join(inboxDir(to.id), `${interruptedMessage.id}.json`), JSON.stringify(interruptedMessage));
+    const interrupted = await confirmDelivery(
+      to,
+      { id: 'm-000000003-bbccdd', from: from, to, body: 'interrupted', sentAt: new Date().toISOString() },
+      'Message stored for gemini:x. Codex was interrupted, so its queue will not deliver this. It stays in the inbox for the next prompt, or until the session calls read_messages.',
+    );
+    assert.equal(interrupted.confirmed, false);
+    assert.match(interrupted.status, /^Message failed:/);
+    assert.match(interrupted.status, /The inbox copy was withdrawn, so the next prompt will not see it/);
+    assert.doesNotMatch(interrupted.status, /It stays in the inbox/);
   });
 });

@@ -83,8 +83,8 @@ function armClaudeSocket(id: string): void {
   if (agent !== 'claude' || watchingSocket === id) return;
   if (!isDeliveryOwner(id, agentPid)) return;
   stopSocketWatcher?.();
-  recordClaudeSocket(id);
-  stopSocketWatcher = startClaudeSocketWatcher(id);
+  recordClaudeSocket(id, process.env, agentPid);
+  stopSocketWatcher = startClaudeSocketWatcher(id, agentPid);
   watchingSocket = id;
 }
 armClaudeSocket(selfId);

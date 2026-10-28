@@ -19941,6 +19941,9 @@ function isDeliveryOwner(id, pid) {
   const owners = sessionOwners(id);
   return owners.length === 0 || owners[0]?.pid === pid;
 }
+function keepSessionName(agent, sessionId, name) {
+  return rememberName(agent, sessionId, name);
+}
 function rememberName(agent, sessionId, generated) {
   const token = sessionToken(sessionId);
   if (!token) return generated;
@@ -20687,10 +20690,14 @@ function claimInbox(peerId2) {
   if (claimed.length) pruneArchive(peerId2);
   return claimed;
 }
-function archivePending(peerId2, id) {
-  try {
-    fs7.renameSync(path8.join(inboxDir(peerId2), `${id}.json`), path8.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
-  } catch {
+function archiveSettled(peerId2, id) {
+  const dest = path8.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
+  for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
+    try {
+      fs7.renameSync(path8.join(dir, `${id}.json`), dest);
+      return;
+    } catch {
+    }
   }
 }
 function readArchived(peerId2, id) {
@@ -21380,20 +21387,39 @@ async function untilMarker(peer, marker, budgetMs) {
     await sleep(Math.min(step, left));
   }
 }
+var UNRECALLABLE = /cannot be recalled/i;
+function signalAfterWithdraw(routeStatus, withdrawn) {
+  if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
+  const signal = routeStatus.replace(
+    "It stays in the inbox for the next prompt, or until the session calls read_messages.",
+    "The inbox copy was withdrawn, so the next prompt will not see it."
+  ).replace(
+    "It stays in the inbox until the session calls read_messages.",
+    "The inbox copy was withdrawn, so a later read will not see it."
+  );
+  return { signal, noted: signal !== routeStatus };
+}
 async function confirmDelivery(peer, message, routeStatus) {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
+    return {
+      confirmed: false,
+      kept: true,
+      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
+    };
+  }
   if (await untilMarker(peer, marker, confirmAbortMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
   const stored2 = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
+  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
   const notes = [];
-  if (/socket|holding peer messages/i.test(routeStatus)) {
-    notes.push("A post already written to the Claude inbox socket cannot be recalled.");
+  if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
+    notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
   }
-  if (withdrawn === "withdrawn") notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
   if (withdrawn === "claimed") notes.push("The inbox copy was already claimed, which is not proof the model saw it.");
   const queueId = stored2?.codexQueueId;
   const thread = stored2?.codexThreadId ?? peer.sessionId;
@@ -21410,15 +21436,21 @@ async function confirmDelivery(peer, message, routeStatus) {
     );
   }
   if (await untilMarker(peer, marker, confirmGraceMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
   const look = inspectTranscript(peer, marker);
   const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
   const extra = notes.length ? ` ${notes.join(" ")}` : "";
+  if (UNRECALLABLE.test(routeStatus)) {
+    return {
+      confirmed: false,
+      status: `${routeStatus} ${where}${extra}`
+    };
+  }
   return {
     confirmed: false,
-    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${routeStatus}${extra}`
+    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${signal}${extra}`
   };
 }
 
@@ -21429,24 +21461,15 @@ var listenerFile = (id) => path12.join(peerDir(id), "socket-listener.json");
 function readClaudeSocket(id) {
   const record2 = readJson(socketFile(id));
   if (!record2?.path) return void 0;
+  if (typeof record2.ownerPid === "number") {
+    const owners = sessionOwners(id);
+    if (owners.length > 0 && owners[0]?.pid !== record2.ownerPid) return void 0;
+  }
   return { path: record2.path, ...record2.token ? { token: record2.token } : {} };
 }
 function claudeSocketArmed(id) {
   const record2 = readJson(listenerFile(id));
   return !!record2 && isSameProcess(record2.pid, record2.procStart);
-}
-function crossSessionInbound(peer) {
-  const files = [
-    peer?.cwd ? path12.join(peer.cwd, ".claude", "settings.local.json") : "",
-    peer?.cwd ? path12.join(peer.cwd, ".claude", "settings.json") : "",
-    path12.join(claudeConfigDir(), "settings.json")
-  ].filter(Boolean);
-  let found;
-  for (const file2 of files) {
-    const value = readJson(file2)?.crossSessionInbound;
-    if (value === "accept" || value === "hold" || value === "refuse") found = value;
-  }
-  return found;
 }
 var flushImpl;
 async function flushClaudeSocket(id) {
@@ -21544,7 +21567,10 @@ async function sendMessage(self, to, body) {
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) return { ok: false, error: proof.status };
+  if (!proof.confirmed) {
+    if (proof.kept) recordSent(self.id, recipient.id, body);
+    return { ok: false, error: proof.status };
+  }
   recordSent(self.id, recipient.id, body);
   return {
     ok: true,
@@ -21598,27 +21624,37 @@ async function routeInbox(recipient, message) {
   if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
-    if (!stillPending(recipient.id, message.id)) {
+    if (socketOutcome !== "blocked" && !stillPending(recipient.id, message.id)) {
       attempts.push({ id: "claude-socket", result: "confirmed", when: "immediate" });
       return {
         status: `Message delivered to ${peerRef(recipient)} through Claude's inbox socket.`,
         report: { confirmed: true, attempts }
       };
     }
-    attempts.push({
-      id: "claude-socket",
-      result: socketOutcome === "failed" ? "failed" : "armed",
-      when: "immediate",
-      detail: socketOutcome === "idle" ? "not confirmed" : socketOutcome
-    });
-    if (claudeHolding(recipient, socketOutcome)) {
-      attempts.push({ id: "poll", result: "armed", when: "poll", detail: "crossSessionInbound hold" });
-      return { status: claudeHoldStatus(recipient), report: { confirmed: false, attempts } };
+    if (socketOutcome === "blocked") {
+      attempts.push({
+        id: "claude-socket",
+        result: "unsupported",
+        when: "immediate",
+        detail: "crossSessionInbound is hold or refuse"
+      });
+    } else if (socketOutcome === "held") {
+      withdrawPending(recipient.id, message.id);
+      attempts.push({ id: "claude-socket", result: "armed", when: "immediate", detail: "held" });
+      return { status: claudeSocketHeldStatus(recipient), report: { confirmed: false, attempts } };
+    } else {
+      attempts.push({
+        id: "claude-socket",
+        result: socketOutcome === "failed" ? "failed" : "armed",
+        when: "immediate",
+        detail: socketOutcome === "idle" ? "not confirmed" : socketOutcome
+      });
     }
   } else if (recipient.agent === "claude") {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
-  if (recipient.hasListener && !claudeSocketArmed(recipient.id)) {
+  const socketPosted = socketOutcome !== void 0 && socketOutcome !== "blocked";
+  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: "listener", result: "armed", when: "immediate" });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -21626,15 +21662,22 @@ async function routeInbox(recipient, message) {
     id: "listener",
     result: "unsupported",
     when: "immediate",
-    detail: recipient.hasListener ? "monitor stands down while the socket watcher is running" : void 0
+    detail: recipient.hasListener && socketPosted ? "monitor stands down while the socket watcher is running" : void 0
   });
   const wake = await notifyWake(recipient, message);
   if (wake) attempts.push(wakeAttempt(wake));
-  const socketBlockingHooks = recipient.agent === "claude" && recipient.hasListener && claudeSocketArmed(recipient.id);
+  const socketBlockingHooks = socketPosted && (claudeSocketArmed(recipient.id) || !!readClaudeSocket(recipient.id));
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
-  return { status: wakeStatus(recipient, inboxStatus(fallbackPeer), wake), report: { confirmed: false, attempts } };
+  const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
+  if (socketOutcome === "blocked") {
+    return {
+      status: `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. The inbox copy can still be withdrawn.`,
+      report: { confirmed: false, attempts }
+    };
+  }
+  return { status, report: { confirmed: false, attempts } };
 }
 function wakeAttempt(wake) {
   return {
@@ -21659,12 +21702,8 @@ async function waitForSocket(peerId2, messageId) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
-function claudeHolding(recipient, outcome) {
-  if (outcome === "held") return true;
-  return crossSessionInbound(recipient) === "hold";
-}
-function claudeHoldStatus(recipient) {
-  return `Message stored for ${peerRef(recipient)}. Claude is holding peer messages there (crossSessionInbound is hold), so this stays in the inbox until that session approves it or calls read_messages.`;
+function claudeSocketHeldStatus(recipient) {
+  return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
 }
 var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
 function codexHeldStatus(recipient, why) {
@@ -21757,6 +21796,31 @@ function readMessagesTool(selfId, { id, limit }) {
 
 // src/opencode.ts
 startWakeFlusher();
+function opencodeSessionFromArgv(argv = process.argv) {
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--session") {
+      const next = argv[i + 1];
+      if (next && !next.startsWith("-")) return next;
+    }
+    const eq = /^--session=(.+)$/.exec(arg ?? "");
+    if (eq?.[1]) return eq[1];
+  }
+  return void 0;
+}
+function listedSessions(value) {
+  const rows = Array.isArray(value) ? value : value && typeof value === "object" && Array.isArray(value.data) ? value.data : [];
+  const out2 = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const rec = row;
+    const id = typeof rec.id === "string" ? rec.id : typeof rec.info?.id === "string" ? rec.info.id : void 0;
+    if (!id) continue;
+    const parentID = typeof rec.parentID === "string" ? rec.parentID : typeof rec.info?.parentID === "string" ? rec.info.parentID : void 0;
+    out2.push({ id, parentID });
+  }
+  return out2;
+}
 function statusOf(event, isPrimary) {
   const sessionID = event.properties?.sessionID;
   if (event.type === "permission.asked" || event.type === "permission.updated") return "waiting";
@@ -21818,6 +21882,38 @@ var TelepathyPlugin = async ({ client, directory }) => {
     watch();
     void deliver2();
   }, 2e3).unref();
+  const bind = (sessionID) => {
+    if (!sessionID || children.has(sessionID)) return;
+    const next = sessionPeerId(agent, pid, sessionID);
+    if (active?.sessionID === sessionID && id === next) {
+      registerListener(agent, pid, id);
+      return;
+    }
+    if (id === peerId(agent, pid)) {
+      const carried = readPeer(id)?.name;
+      if (carried) keepSessionName(agent, sessionID, carried);
+    }
+    const previous = id;
+    active = { sessionID, agent: active?.agent, model: active?.model };
+    id = next;
+    registerSession(agent, pid, { sessionId: sessionID, cwd: directory, source: "plugin" });
+    registerPresence(agent, pid, { cwd: directory }, id);
+    registerListener(agent, pid, id);
+    watcher?.close();
+    watcher = void 0;
+    watch();
+    debugLog("opencode", `bound ${previous} to ${id}`);
+  };
+  const argvSession = opencodeSessionFromArgv();
+  if (argvSession) bind(argvSession);
+  else if (client.session.list) {
+    try {
+      const primary = listedSessions(await client.session.list()).filter((row) => !row.parentID);
+      if (primary.length === 1 && primary[0]) bind(primary[0].id);
+    } catch (err) {
+      debugLog("opencode", `session list failed: ${err.message}`);
+    }
+  }
   const self = () => selfPeer(agent, pid, id);
   const toolArgs = /* @__PURE__ */ new Map();
   return {
@@ -21830,21 +21926,16 @@ var TelepathyPlugin = async ({ client, directory }) => {
     },
     "chat.message": async (input2) => {
       if (children.has(input2.sessionID)) return;
-      const changed = active?.sessionID !== input2.sessionID;
       active = { sessionID: input2.sessionID, agent: input2.agent, model: input2.model };
-      if (changed) {
-        id = sessionPeerId(agent, pid, input2.sessionID);
-        registerSession(agent, pid, { sessionId: input2.sessionID, cwd: directory, source: "plugin" });
-        registerPresence(agent, pid, { cwd: directory }, id);
-        registerListener(agent, pid, id);
-        watcher?.close();
-        watcher = void 0;
-        watch();
-      }
+      bind(input2.sessionID);
     },
     event: async ({ event }) => {
       const p = event.properties ?? {};
-      if (event.type === "session.created" && p.info?.parentID && p.info.id) children.add(p.info.id);
+      if (event.type === "session.created" || event.type === "session.updated") {
+        const sessionID = p.info?.id ?? p.sessionID;
+        if (sessionID && p.info?.parentID) children.add(sessionID);
+        else if (sessionID) bind(sessionID);
+      }
       const status = statusOf(event, (sessionID) => !children.has(sessionID) && (!active || active.sessionID === sessionID));
       if (status) writeStatus(id, status);
       if (event.type === "session.status" && p.sessionID) {
@@ -22084,5 +22175,6 @@ var STATUS_EVENTS = {
 };
 var opencode_default = { id: "telepathy", server: TelepathyPlugin, setup: setupV2 };
 export {
-  opencode_default as default
+  opencode_default as default,
+  opencodeSessionFromArgv
 };

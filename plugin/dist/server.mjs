@@ -28377,6 +28377,16 @@ function archivePending(peerId2, id) {
   } catch {
   }
 }
+function archiveSettled(peerId2, id) {
+  const dest = path6.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
+  for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
+    try {
+      fs5.renameSync(path6.join(dir, `${id}.json`), dest);
+      return;
+    } catch {
+    }
+  }
+}
 function readArchived(peerId2, id) {
   if (!/^m-[0-9a-z]+-[0-9a-f]+$/.test(id)) return void 0;
   return readJson(path6.join(archiveDir(peerId2), `${id}.json`));
@@ -28662,6 +28672,28 @@ function findInstalls() {
 }
 
 // src/core/setup.ts
+var CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
+var CODEX_BRIDGE_TIMEOUT_MIN = 120;
+function codexBridgeTimeoutSec(config2) {
+  let found;
+  let inTable = false;
+  for (const line of config2.split("\n")) {
+    const header = /^\[([^\]]+)\]/.exec(line);
+    if (header) {
+      inTable = header[1] === 'plugins."telepathy@telepathy".mcp_servers.bridge';
+      continue;
+    }
+    const dotted = /plugins\."telepathy@telepathy"\.mcp_servers\.bridge\.tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (dotted?.[1]) {
+      found = Number(dotted[1]);
+      continue;
+    }
+    if (!inTable) continue;
+    const local = /^\s*tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (local?.[1]) found = Number(local[1]);
+  }
+  return found;
+}
 var CODEX_HOOKS = {
   session_start: "SessionStart",
   post_tool_use: "PostToolUse",
@@ -28699,6 +28731,21 @@ function setupNotes(self2) {
       ].filter(Boolean);
       notes.push(
         `[telepathy setup] Codex hasn't approved telepathy's ${listed(missing)} hook${missing.length > 1 ? "s" : ""}, so ${effects.join("; ")}. Tell your user: open /hooks in this session and trust them (press t).`
+      );
+    }
+    const codexHome = self2.codexHome ?? defaultCodexHome();
+    let timeout;
+    let config2 = "";
+    try {
+      config2 = fs7.readFileSync(path9.join(codexHome, "config.toml"), "utf8");
+      timeout = codexBridgeTimeoutSec(config2);
+    } catch {
+      config2 = "";
+    }
+    if (config2 && (timeout === void 0 || timeout < CODEX_BRIDGE_TIMEOUT_MIN)) {
+      const current = timeout === void 0 ? "unset, and Codex defaults it to 60s" : `${timeout}s`;
+      notes.push(
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${current}, which is below the 120s send_message waits for a transcript. Set that key to at least 120 in config.toml.`
       );
     }
   }
@@ -29380,20 +29427,39 @@ async function untilMarker(peer, marker, budgetMs) {
     await sleep2(Math.min(step, left));
   }
 }
+var UNRECALLABLE = /cannot be recalled/i;
+function signalAfterWithdraw(routeStatus, withdrawn) {
+  if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
+  const signal = routeStatus.replace(
+    "It stays in the inbox for the next prompt, or until the session calls read_messages.",
+    "The inbox copy was withdrawn, so the next prompt will not see it."
+  ).replace(
+    "It stays in the inbox until the session calls read_messages.",
+    "The inbox copy was withdrawn, so a later read will not see it."
+  );
+  return { signal, noted: signal !== routeStatus };
+}
 async function confirmDelivery(peer, message, routeStatus) {
   const marker = messageMarker(message.id);
   const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
+    return {
+      confirmed: false,
+      kept: true,
+      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
+    };
+  }
   if (await untilMarker(peer, marker, confirmAbortMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
   const stored2 = storedMessage(peer.id, message.id);
   const withdrawn = withdrawPending(peer.id, message.id);
+  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
   const notes = [];
-  if (/socket|holding peer messages/i.test(routeStatus)) {
-    notes.push("A post already written to the Claude inbox socket cannot be recalled.");
+  if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
+    notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
   }
-  if (withdrawn === "withdrawn") notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
   if (withdrawn === "claimed") notes.push("The inbox copy was already claimed, which is not proof the model saw it.");
   const queueId = stored2?.codexQueueId;
   const thread = stored2?.codexThreadId ?? peer.sessionId;
@@ -29410,33 +29476,57 @@ async function confirmDelivery(peer, message, routeStatus) {
     );
   }
   if (await untilMarker(peer, marker, confirmGraceMs())) {
-    archivePending(peer.id, message.id);
+    archiveSettled(peer.id, message.id);
     return { confirmed: true, status: delivered };
   }
   const look = inspectTranscript(peer, marker);
   const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
   const extra = notes.length ? ` ${notes.join(" ")}` : "";
+  if (UNRECALLABLE.test(routeStatus)) {
+    return {
+      confirmed: false,
+      status: `${routeStatus} ${where}${extra}`
+    };
+  }
   return {
     confirmed: false,
-    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${routeStatus}${extra}`
+    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${signal}${extra}`
   };
 }
 
 // src/core/claude-socket.ts
 var SOCKET_LINE_MAX = 1024 * 1024;
-var socketFile = (id) => path13.join(peerDir(id), "socket.json");
-var listenerFile = (id) => path13.join(peerDir(id), "socket-listener.json");
-function recordClaudeSocket(id, env = process.env) {
+var INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
+function socketFromEnv(env) {
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
   if (!socketPath) return void 0;
   const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
-  const record2 = { path: socketPath, ...token ? { token } : {}, recordedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  writeJsonAtomic(socketFile(id), record2);
   return { path: socketPath, ...token ? { token } : {} };
+}
+var socketFile = (id) => path13.join(peerDir(id), "socket.json");
+var listenerFile = (id) => path13.join(peerDir(id), "socket-listener.json");
+function recordClaudeSocket(id, env = process.env, ownerPid) {
+  const sock = socketFromEnv(env);
+  if (!sock) return void 0;
+  if (ownerPid !== void 0 && !isDeliveryOwner(id, ownerPid)) {
+    debugLog("claude-socket", `${id} pid ${ownerPid} is not the delivery owner; not recording its socket`);
+    return void 0;
+  }
+  const record2 = {
+    ...sock,
+    ...ownerPid !== void 0 ? { ownerPid } : {},
+    recordedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  writeJsonAtomic(socketFile(id), record2);
+  return sock;
 }
 function readClaudeSocket(id) {
   const record2 = readJson(socketFile(id));
   if (!record2?.path) return void 0;
+  if (typeof record2.ownerPid === "number") {
+    const owners = sessionOwners(id);
+    if (owners.length > 0 && owners[0]?.pid !== record2.ownerPid) return void 0;
+  }
   return { path: record2.path, ...record2.token ? { token: record2.token } : {} };
 }
 function claudeSocketArmed(id) {
@@ -29453,18 +29543,43 @@ function clearArmed(id) {
   } catch {
   }
 }
-function crossSessionInbound(peer) {
-  const files = [
-    peer?.cwd ? path13.join(peer.cwd, ".claude", "settings.local.json") : "",
-    peer?.cwd ? path13.join(peer.cwd, ".claude", "settings.json") : "",
-    path13.join(claudeConfigDir(), "settings.json")
-  ].filter(Boolean);
-  let found;
-  for (const file2 of files) {
-    const value = readJson(file2)?.crossSessionInbound;
-    if (value === "accept" || value === "hold" || value === "refuse") found = value;
+function readInbound(file2) {
+  const value = readJson(file2)?.crossSessionInbound;
+  if (value === "accept" || value === "hold" || value === "refuse") return value;
+  return void 0;
+}
+function managedSettingsDir() {
+  if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
+  if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
+  if (process.platform === "win32") return path13.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  return "/etc/claude-code";
+}
+function managedInbound() {
+  const dir = managedSettingsDir();
+  let found = readInbound(path13.join(dir, "managed-settings.json"));
+  let names = [];
+  try {
+    names = fs11.readdirSync(path13.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+  } catch {
+  }
+  for (const name of names) {
+    const value = readInbound(path13.join(dir, "managed-settings.d", name));
+    if (value) found = value;
   }
   return found;
+}
+function crossSessionInbound(peer) {
+  const managed = managedInbound();
+  const user = readInbound(path13.join(claudeConfigDir(), "settings.json"));
+  const higher = managed ?? user;
+  const project = peer?.cwd ? readInbound(path13.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path13.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  let effective = higher;
+  for (const value of [project, local]) {
+    if (!value) continue;
+    if (higher === void 0 || INBOUND_RANK[value] > INBOUND_RANK[higher]) effective = value;
+  }
+  return effective;
 }
 var classify = (line) => {
   let type = "";
@@ -29538,7 +29653,7 @@ async function flushClaudeSocket(id) {
   if (flushImpl) return flushImpl(id);
   return "idle";
 }
-function startClaudeSocketWatcher(id) {
+function startClaudeSocketWatcher(id, ownerPid) {
   let chain = Promise.resolve();
   const posted = /* @__PURE__ */ new Map();
   const FAILED_RETRY_MS = 1e4;
@@ -29547,7 +29662,13 @@ function startClaudeSocketWatcher(id) {
     return Number.isFinite(n) && n >= 0 ? n : 2e3;
   };
   const flush = async () => {
-    const sock = readClaudeSocket(id) ?? recordClaudeSocket(id);
+    if (ownerPid !== void 0 && !isDeliveryOwner(id, ownerPid)) {
+      clearArmed(id);
+      return "idle";
+    }
+    const envSock = ownerPid !== void 0 ? socketFromEnv(process.env) : void 0;
+    if (envSock) recordClaudeSocket(id, process.env, ownerPid);
+    const sock = envSock ?? readClaudeSocket(id);
     if (!sock) {
       clearArmed(id);
       return "idle";
@@ -29559,9 +29680,9 @@ function startClaudeSocketWatcher(id) {
       return "idle";
     }
     const inbound = crossSessionInbound(readPeer(id));
-    if (inbound === "refuse") {
-      debugLog("claude-socket", `${id} crossSessionInbound is refuse; leaving ${pending.length} message(s) in the inbox`);
-      return "refused";
+    if (inbound === "hold" || inbound === "refuse") {
+      debugLog("claude-socket", `${id} crossSessionInbound is ${inbound}; not posting ${pending.length} message(s)`);
+      return "blocked";
     }
     const inboundKey = inbound ?? "";
     const pendingIds = new Set(pending.map((msg) => msg.id));
@@ -29570,6 +29691,16 @@ function startClaudeSocketWatcher(id) {
     for (const msg of pending) {
       const prev = posted.get(msg.id);
       const marker = messageMarker(msg.id);
+      if (transcriptHasMarker(readPeer(id), marker)) {
+        archivePending(id, msg.id);
+        posted.delete(msg.id);
+        last = "delivered";
+        continue;
+      }
+      if (prev && (prev.outcome === "held" || prev.outcome === "refused" || prev.outcome === "expired")) {
+        last = prev.outcome;
+        continue;
+      }
       const settingKey = `${sock.path}\0${inboundKey}`;
       if (prev && (prev.socketPath !== sock.path || prev.inbound !== inboundKey)) {
         let changeAt = prev.changeAt ?? 0;
@@ -29836,7 +29967,10 @@ async function sendMessage(self2, to, body) {
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) return { ok: false, error: proof.status };
+  if (!proof.confirmed) {
+    if (proof.kept) recordSent(self2.id, recipient.id, body);
+    return { ok: false, error: proof.status };
+  }
   recordSent(self2.id, recipient.id, body);
   return {
     ok: true,
@@ -29890,27 +30024,37 @@ async function routeInbox(recipient, message) {
   if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
-    if (!stillPending(recipient.id, message.id)) {
+    if (socketOutcome !== "blocked" && !stillPending(recipient.id, message.id)) {
       attempts.push({ id: "claude-socket", result: "confirmed", when: "immediate" });
       return {
         status: `Message delivered to ${peerRef(recipient)} through Claude's inbox socket.`,
         report: { confirmed: true, attempts }
       };
     }
-    attempts.push({
-      id: "claude-socket",
-      result: socketOutcome === "failed" ? "failed" : "armed",
-      when: "immediate",
-      detail: socketOutcome === "idle" ? "not confirmed" : socketOutcome
-    });
-    if (claudeHolding(recipient, socketOutcome)) {
-      attempts.push({ id: "poll", result: "armed", when: "poll", detail: "crossSessionInbound hold" });
-      return { status: claudeHoldStatus(recipient), report: { confirmed: false, attempts } };
+    if (socketOutcome === "blocked") {
+      attempts.push({
+        id: "claude-socket",
+        result: "unsupported",
+        when: "immediate",
+        detail: "crossSessionInbound is hold or refuse"
+      });
+    } else if (socketOutcome === "held") {
+      withdrawPending(recipient.id, message.id);
+      attempts.push({ id: "claude-socket", result: "armed", when: "immediate", detail: "held" });
+      return { status: claudeSocketHeldStatus(recipient), report: { confirmed: false, attempts } };
+    } else {
+      attempts.push({
+        id: "claude-socket",
+        result: socketOutcome === "failed" ? "failed" : "armed",
+        when: "immediate",
+        detail: socketOutcome === "idle" ? "not confirmed" : socketOutcome
+      });
     }
   } else if (recipient.agent === "claude") {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
-  if (recipient.hasListener && !claudeSocketArmed(recipient.id)) {
+  const socketPosted = socketOutcome !== void 0 && socketOutcome !== "blocked";
+  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: "listener", result: "armed", when: "immediate" });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -29918,15 +30062,22 @@ async function routeInbox(recipient, message) {
     id: "listener",
     result: "unsupported",
     when: "immediate",
-    detail: recipient.hasListener ? "monitor stands down while the socket watcher is running" : void 0
+    detail: recipient.hasListener && socketPosted ? "monitor stands down while the socket watcher is running" : void 0
   });
   const wake = await notifyWake(recipient, message);
   if (wake) attempts.push(wakeAttempt(wake));
-  const socketBlockingHooks = recipient.agent === "claude" && recipient.hasListener && claudeSocketArmed(recipient.id);
+  const socketBlockingHooks = socketPosted && (claudeSocketArmed(recipient.id) || !!readClaudeSocket(recipient.id));
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
-  return { status: wakeStatus(recipient, inboxStatus(fallbackPeer), wake), report: { confirmed: false, attempts } };
+  const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
+  if (socketOutcome === "blocked") {
+    return {
+      status: `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. The inbox copy can still be withdrawn.`,
+      report: { confirmed: false, attempts }
+    };
+  }
+  return { status, report: { confirmed: false, attempts } };
 }
 function wakeAttempt(wake) {
   return {
@@ -29951,12 +30102,8 @@ async function waitForSocket(peerId2, messageId) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
-function claudeHolding(recipient, outcome) {
-  if (outcome === "held") return true;
-  return crossSessionInbound(recipient) === "hold";
-}
-function claudeHoldStatus(recipient) {
-  return `Message stored for ${peerRef(recipient)}. Claude is holding peer messages there (crossSessionInbound is hold), so this stays in the inbox until that session approves it or calls read_messages.`;
+function claudeSocketHeldStatus(recipient) {
+  return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
 }
 var waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
 function codexHeldStatus(recipient, why) {
@@ -30122,8 +30269,8 @@ function armClaudeSocket(id) {
   if (agent !== "claude" || watchingSocket === id) return;
   if (!isDeliveryOwner(id, agentPid)) return;
   stopSocketWatcher?.();
-  recordClaudeSocket(id);
-  stopSocketWatcher = startClaudeSocketWatcher(id);
+  recordClaudeSocket(id, process.env, agentPid);
+  stopSocketWatcher = startClaudeSocketWatcher(id, agentPid);
   watchingSocket = id;
 }
 armClaudeSocket(selfId);

@@ -3,6 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../src/core/agents.ts';
+import { readPeer } from '../src/core/peers.ts';
 import { after, afterEach, before, describe, test } from 'node:test';
 import type { Client } from '@modelcontextprotocol/client';
 import {
@@ -199,6 +200,25 @@ describe('telepathy plugin', () => {
     await Promise.race([exited, new Promise((_, rej) => setTimeout(() => rej(new Error('monitor did not exit')), 6000))]);
   });
 
+  test('the monitor exits immediately when the session exported an inbox socket', async () => {
+    const claudeAgent = spawnAgent();
+    runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/web' });
+    const monitor = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude'], {
+      env: {
+        ...sb.env,
+        TELEPATHY_AGENT_PID: String(claudeAgent.pid),
+        CLAUDE_CODE_MESSAGING_SOCKET: path.join(sb.home, 'inbox.sock'),
+      },
+      stdio: 'ignore',
+    });
+    const code = await new Promise((resolve) => {
+      if (monitor.exitCode !== null) resolve(monitor.exitCode);
+      else monitor.once('exit', resolve);
+    });
+    assert.equal(code, 0);
+    assert.equal(fs.existsSync(path.join(sb.home, 'peers', 'claude-s', 'listener.json')), false);
+  });
+
   test('read_messages without a monitor claims pending messages', async () => {
     const claudeAgent = spawnAgent();
     const codexAgent = spawnAgent();
@@ -356,7 +376,10 @@ describe('telepathy plugin', () => {
     runHook(sb, 'codex', codexAgent.pid, 'session-start', { session_id: 't-n', cwd: '/w/n' });
     const config = path.join(sb.codexHome, 'config.toml');
     const approve = (event: string) => `[hooks.state."telepathy@telepathy:hooks/codex-hooks.json:${event}:0:0"]\ntrusted_hash = "x"\n\n`;
-    fs.writeFileSync(config, `model = "m"\n\n[hooks.state]\n\n${approve('session_start')}`);
+    fs.writeFileSync(
+      config,
+      `model = "m"\n\n[plugins."telepathy@telepathy".mcp_servers.bridge]\ntool_timeout_sec = 180\n\n[hooks.state]\n\n${approve('session_start')}`,
+    );
     try {
       const codex = await connect('codex', codexAgent.pid);
       assert.match(
@@ -785,9 +808,9 @@ describe('telepathy plugin', () => {
 
   describe('OpenCode and Kilo Code plugin', () => {
     /** Runs the built plugin in its own process (its pid is the session identity) with a fake SDK client. */
-    function startOpenCode(directory: string) {
+    function startOpenCode(directory: string, extraEnv: Record<string, string> = {}) {
       const child = spawn(process.execPath, [path.join(ROOT, 'test', 'fixtures', 'opencode-driver.mjs'), path.join(DIST, 'opencode.mjs'), directory], {
-        env: sb.env,
+        env: { ...sb.env, ...extraEnv },
         stdio: ['pipe', 'pipe', 'inherit'],
       });
       agents.push(child as ReturnType<typeof fakeAgent>);
@@ -824,7 +847,10 @@ describe('telepathy plugin', () => {
       const claudeAgent = spawnAgent();
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
       const res = runHook(sb, 'claude', claudeAgent.pid, 'send-message', { tool_input: { to: 'opencode:ui', message: 'new daemon API is in' } });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`^Message delivered to ${named('opencode', 'ui', 'ses_main')} \\[opencode-ses_main\\]\\.`));
+      process.env.TELEPATHY_HOME = sb.home;
+      const bound = readPeer('opencode-ses_main');
+      assert.equal(bound?.name, readPeer(`opencode-${pid}`)?.name);
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason, new RegExp(`^Message delivered to ${bound?.address} \\[opencode-ses_main\\]\\.`));
 
       await new Promise((r) => setTimeout(r, 400));
       assert.ok(!oc.lines.some((l) => 'prompt' in l), 'must not prompt a busy session');
@@ -888,6 +914,40 @@ describe('telepathy plugin', () => {
       assert.match((await oc.take('tool')).output, /^Message stored for claude:api/);
       oc.send({ op: 'system' });
       assert.match((await oc.take('system')).system[0], /^telepathy: message other coding-agent sessions/);
+    });
+
+    test('keeps the pid-era name when a session id arrives, and resume rebinds that peer', async () => {
+      const first = startOpenCode('/w/resume');
+      const ready = await first.take('ready');
+      const pid = ready.ready as number;
+      process.env.TELEPATHY_HOME = sb.home;
+      const pidName = readPeer(`opencode-${pid}`)?.name;
+      assert.ok(pidName);
+      first.send({ op: 'event', event: { type: 'session.created', properties: { info: { id: 'ses_resume' } } } });
+      await first.take('done');
+      const bound = readPeer('opencode-ses_resume');
+      assert.equal(bound?.name, pidName);
+      assert.equal(bound?.hasListener, true);
+      assert.equal(bound?.sessionId, 'ses_resume');
+      await killAndWait(first.child);
+
+      const resumed = startOpenCode('/w/resume', { OPENCODE_TEST_SESSION: 'ses_resume' });
+      await resumed.take('ready');
+      const again = readPeer('opencode-ses_resume');
+      assert.equal(again?.name, pidName);
+      assert.equal(again?.id, 'opencode-ses_resume');
+      assert.equal(again?.hasListener, true);
+      assert.notEqual(again?.pid, pid);
+    });
+
+    test('a single listed session is bound before the first prompt', async () => {
+      const oc = startOpenCode('/w/listed', { OPENCODE_TEST_LIST: 'ses_listed' });
+      const ready = await oc.take('ready');
+      const pid = ready.ready as number;
+      process.env.TELEPATHY_HOME = sb.home;
+      const peer = readPeer('opencode-ses_listed');
+      assert.equal(peer?.hasListener, true);
+      assert.equal(peer?.name, readPeer(`opencode-${pid}`)?.name);
     });
   });
 

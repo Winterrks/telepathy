@@ -3,9 +3,16 @@
 import readline from 'node:readline';
 
 const [pluginPath, directory] = process.argv.slice(2);
+if (process.env.OPENCODE_TEST_SESSION) process.argv.push('--session', process.env.OPENCODE_TEST_SESSION);
 const mod = await import(pluginPath);
 const print = (value) => process.stdout.write(JSON.stringify(value) + '\n');
-const client = { session: { promptAsync: async (options) => print({ prompt: options }) } };
+const listed = process.env.OPENCODE_TEST_LIST?.split(',').filter(Boolean);
+const client = {
+  session: {
+    promptAsync: async (options) => print({ prompt: options }),
+    ...(listed ? { list: async () => listed.map((id) => ({ id })) } : {}),
+  },
+};
 const hooks = await mod.default.server({ client, directory });
 print({ ready: process.pid, tools: Object.keys(hooks.tool) });
 

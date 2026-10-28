@@ -160,6 +160,14 @@ export function linkedPeerId(agent: Agent, pid: number): string | undefined {
   return typeof link?.id === 'string' ? link.id : undefined;
 }
 
+/**
+ * Remembers `name` the first time this harness session is seen. A later call keeps the stored name, so an
+ * OpenCode process can carry the name it showed while it was still keyed by pid.
+ */
+export function keepSessionName(agent: Agent, sessionId: string, name: string): string {
+  return rememberName(agent, sessionId, name);
+}
+
 function rememberName(agent: Agent, sessionId: string, generated: string): string {
   const token = sessionToken(sessionId);
   if (!token) return generated;

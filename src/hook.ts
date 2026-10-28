@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { recordClaudeSocket } from './core/claude-socket.ts';
+import { claudeSocketArmed, crossSessionInbound, readClaudeSocket, recordClaudeSocket } from './core/claude-socket.ts';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
@@ -163,7 +163,7 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
   });
   registerStableName(agent, id);
-  if (agent === 'claude') recordClaudeSocket(id);
+  if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
   if (statusFromHooks(agent)) writeStatus(id, 'idle');
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
@@ -178,7 +178,9 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   // A Codex thread's record also names the process hosting it, which changes when Codex updates its daemon.
   const sameHost = existing?.pid === agentPid;
   registerStableName(agent, idOf(agent, agentPid, input));
-  if (agent === 'claude') recordClaudeSocket(idOf(agent, agentPid, input));
+  if (agent === 'claude' && isDeliveryOwner(idOf(agent, agentPid, input), agentPid)) {
+    recordClaudeSocket(idOf(agent, agentPid, input), process.env, agentPid);
+  }
   if (existing?.source === 'hook' && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,
@@ -193,6 +195,17 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
  * runs with its monitor tool. Then the hooks stay out of its way.
  */
 const hasListener = (selfId: string) => readPeer(selfId)?.hasListener ?? false;
+
+/**
+ * The socket watcher is the delivery path when a post can be confirmed. hold and refuse are not posted, so the
+ * hooks stay the path that can still be withdrawn. A recorded socket is enough: the monitor exits when the
+ * session exported one, and must not be what keeps the hooks quiet.
+ */
+function socketOwnsDelivery(selfId: string): boolean {
+  if (!readClaudeSocket(selfId) && !claudeSocketArmed(selfId)) return false;
+  const inbound = crossSessionInbound(readPeer(selfId));
+  return inbound !== 'hold' && inbound !== 'refuse';
+}
 
 /**
  * A Claude Code session driven over stream-json (the Claude app) runs no plugin monitor, so it keeps a one-shot
@@ -249,7 +262,7 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
   if (statusFromHooks(agent) || agent === 'codex') writeStatus(selfId, 'busy');
   const overlap = touchedFilesNote(agent, agentPid, input);
-  if (hasListener(selfId)) {
+  if (hasListener(selfId) || socketOwnsDelivery(selfId)) {
     if (overlap) reply(shape.context(overlap, event));
     return;
   }
@@ -284,7 +297,7 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   if (!isDeliveryOwner(selfId, agentPid)) return;
   const tracked = statusFromHooks(agent);
   if (tracked) writeStatus(selfId, 'idle');
-  if (!endedNormally(input) || hasListener(selfId)) return;
+  if (!endedNormally(input) || hasListener(selfId) || socketOwnsDelivery(selfId)) return;
   const messages = claimInbox(selfId);
   if (messages.length) {
     if (tracked) writeStatus(selfId, 'busy'); // the turn goes on with the messages

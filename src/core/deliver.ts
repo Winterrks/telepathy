@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
-import { claudeSocketArmed, crossSessionInbound, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
+import { claudeSocketArmed, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
 import { unapprovedCodexHooks } from './setup.ts';
 import {
@@ -15,7 +15,7 @@ import {
   writeToInbox,
 } from './messages.ts';
 import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { confirmDelivery, confirmWaitEnabled } from './confirm.ts';
+import { confirmDelivery, confirmWaitEnabled, withdrawPending } from './confirm.ts';
 import { agentLabel, keptPeers, listPeers, type Peer, peerRef, resolvePeer } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
@@ -133,7 +133,12 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
-  if (!proof.confirmed) return { ok: false, error: proof.status };
+  if (!proof.confirmed) {
+    // The inbox was left in place for a session that is not running. Remember the send so a retry does not
+    // stack a second copy, and do not call it a failure: the resume can still deliver it.
+    if (proof.kept) recordSent(self.id, recipient.id, body);
+    return { ok: false, error: proof.status };
+  }
   recordSent(self.id, recipient.id, body);
   return {
     ok: true,
@@ -206,38 +211,49 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
   const attempts: DeliveryAttempt[] = [];
   writeToInbox(message);
 
-  let socketOutcome: SocketOutcome | 'idle' | undefined;
+  let socketOutcome: SocketOutcome | 'idle' | 'blocked' | undefined;
   if (recipient.agent === 'claude' && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     // The watcher runs in the recipient's server. This process only posted if that server is this process.
     if (socketOutcome === 'idle') await waitForSocket(recipient.id, message.id);
-    if (!stillPending(recipient.id, message.id)) {
+    if (socketOutcome !== 'blocked' && !stillPending(recipient.id, message.id)) {
       attempts.push({ id: 'claude-socket', result: 'confirmed', when: 'immediate' });
       return {
         status: `Message delivered to ${peerRef(recipient)} through Claude's inbox socket.`,
         report: { confirmed: true, attempts },
       };
     }
-    attempts.push({
-      id: 'claude-socket',
-      result: socketOutcome === 'failed' ? 'failed' : 'armed',
-      when: 'immediate',
-      detail: socketOutcome === 'idle' ? 'not confirmed' : socketOutcome,
-    });
-    // A live socket plus a hold is not "no listener". The file stays until Claude approves it or someone reads it.
-    if (claudeHolding(recipient, socketOutcome)) {
-      attempts.push({ id: 'poll', result: 'armed', when: 'poll', detail: 'crossSessionInbound hold' });
-      return { status: claudeHoldStatus(recipient), report: { confirmed: false, attempts } };
+    if (socketOutcome === 'blocked') {
+      // Nothing was written. The inbox copy is what a hook or read_messages can still withdraw.
+      attempts.push({
+        id: 'claude-socket',
+        result: 'unsupported',
+        when: 'immediate',
+        detail: 'crossSessionInbound is hold or refuse',
+      });
+    } else if (socketOutcome === 'held') {
+      // The setting was not visible before the post. Claude has the bytes; withdrawing the inbox cannot undo that.
+      withdrawPending(recipient.id, message.id);
+      attempts.push({ id: 'claude-socket', result: 'armed', when: 'immediate', detail: 'held' });
+      return { status: claudeSocketHeldStatus(recipient), report: { confirmed: false, attempts } };
+    } else {
+      attempts.push({
+        id: 'claude-socket',
+        result: socketOutcome === 'failed' ? 'failed' : 'armed',
+        when: 'immediate',
+        detail: socketOutcome === 'idle' ? 'not confirmed' : socketOutcome,
+      });
     }
   } else if (recipient.agent === 'claude') {
     attempts.push({ id: 'claude-socket', result: 'unsupported', when: 'immediate' });
   }
 
+  const socketPosted = socketOutcome !== undefined && socketOutcome !== 'blocked';
   // A live listener (Claude's monitor, Grok's monitor, the OpenCode plugin) claims the inbox itself.
   // The status string is the one those sessions already show. The file stays unclaimed until that process renames it.
-  // While the socket watcher is armed, the monitor does not claim, and hooks stay quiet because a listener is
-  // registered, so an unconfirmed socket post falls through to read_messages rather than to that monitor.
-  if (recipient.hasListener && !claudeSocketArmed(recipient.id)) {
+  // While the socket watcher is armed and actually posting, the monitor does not claim. hold and refuse do not
+  // post, so the listener and the hooks remain the path.
+  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: 'listener', result: 'armed', when: 'immediate' });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -245,17 +261,28 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
     id: 'listener',
     result: 'unsupported',
     when: 'immediate',
-    detail: recipient.hasListener ? 'monitor stands down while the socket watcher is running' : undefined,
+    detail: recipient.hasListener && socketPosted ? 'monitor stands down while the socket watcher is running' : undefined,
   });
 
   const wake = await notifyWake(recipient, message);
   if (wake) attempts.push(wakeAttempt(wake));
 
-  const socketBlockingHooks = recipient.agent === 'claude' && recipient.hasListener && claudeSocketArmed(recipient.id);
+  // An unconfirmed post must not also be described as a hook delivery. A blocked post never happened, so the
+  // hook rung is real.
+  const socketBlockingHooks = socketPosted && (claudeSocketArmed(recipient.id) || !!readClaudeSocket(recipient.id));
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
-  return { status: wakeStatus(recipient, inboxStatus(fallbackPeer), wake), report: { confirmed: false, attempts } };
+  const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
+  if (socketOutcome === 'blocked') {
+    return {
+      status:
+        `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. ` +
+        'The inbox copy can still be withdrawn.',
+      report: { confirmed: false, attempts },
+    };
+  }
+  return { status, report: { confirmed: false, attempts } };
 }
 
 function wakeAttempt(wake: WakeResult): DeliveryAttempt {
@@ -285,16 +312,15 @@ async function waitForSocket(peerId: string, messageId: string): Promise<void> {
   }
 }
 
-function claudeHolding(recipient: Peer, outcome: SocketOutcome | 'idle'): boolean {
-  if (outcome === 'held') return true;
-  return crossSessionInbound(recipient) === 'hold';
-}
-
-/** Said to the sender when Claude's crossSessionInbound hold kept the socket post in the inbox. */
-function claudeHoldStatus(recipient: Peer): string {
+/**
+ * A socket reply of `held` means Claude already accepted bytes we cannot withdraw. This is not `Message failed`:
+ * that phrase means the message can never arrive.
+ */
+function claudeSocketHeldStatus(recipient: Peer): string {
   return (
-    `Message stored for ${peerRef(recipient)}. Claude is holding peer messages there (crossSessionInbound is hold), ` +
-    'so this stays in the inbox until that session approves it or calls read_messages.'
+    `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. ` +
+    'That copy cannot be recalled and may still be delivered if the hold is released. ' +
+    'The inbox copy was withdrawn so a later turn does not also show it.'
   );
 }
 

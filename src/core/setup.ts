@@ -6,6 +6,35 @@ import { findInstalls, isNewer } from './installs.ts';
 import { defaultCodexHome, listPeers, type Peer, sameStableName } from './peers.ts';
 import { VERSION } from './version.ts';
 
+/**
+ * Codex names this plugin's MCP server `bridge` (`plugin/codex.mcp.json`). `send_message` waits up to 120s, and
+ * Codex's default `tool_timeout_sec` is 60, so a value below 120 cuts the wait off.
+ */
+export const CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
+const CODEX_BRIDGE_TIMEOUT_MIN = 120;
+
+/** The configured `tool_timeout_sec` for telepathy's Codex MCP server, or undefined when the key is absent. Later entries win. */
+export function codexBridgeTimeoutSec(config: string): number | undefined {
+  let found: number | undefined;
+  let inTable = false;
+  for (const line of config.split('\n')) {
+    const header = /^\[([^\]]+)\]/.exec(line);
+    if (header) {
+      inTable = header[1] === 'plugins."telepathy@telepathy".mcp_servers.bridge';
+      continue;
+    }
+    const dotted = /plugins\."telepathy@telepathy"\.mcp_servers\.bridge\.tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (dotted?.[1]) {
+      found = Number(dotted[1]);
+      continue;
+    }
+    if (!inTable) continue;
+    const local = /^\s*tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (local?.[1]) found = Number(local[1]);
+  }
+  return found;
+}
+
 /** telepathy's Codex hooks, by the event key Codex uses when it records one as approved. */
 const CODEX_HOOKS: Record<string, string> = {
   session_start: 'SessionStart',
@@ -63,6 +92,22 @@ export function setupNotes(self: Peer): string[] {
       notes.push(
         `[telepathy setup] Codex hasn't approved telepathy's ${listed(missing)} hook${missing.length > 1 ? 's' : ''}, ` +
           `so ${effects.join('; ')}. Tell your user: open /hooks in this session and trust them (press t).`,
+      );
+    }
+    const codexHome = self.codexHome ?? defaultCodexHome();
+    let timeout: number | undefined;
+    let config = '';
+    try {
+      config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+      timeout = codexBridgeTimeoutSec(config);
+    } catch {
+      config = '';
+    }
+    if (config && (timeout === undefined || timeout < CODEX_BRIDGE_TIMEOUT_MIN)) {
+      const current = timeout === undefined ? 'unset, and Codex defaults it to 60s' : `${timeout}s`;
+      notes.push(
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${current}, which is below the 120s send_message waits ` +
+          'for a transcript. Set that key to at least 120 in config.toml.',
       );
     }
   }

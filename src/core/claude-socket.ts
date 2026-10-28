@@ -5,7 +5,7 @@ import { debugLog } from './debug.ts';
 import { confirmWaitEnabled, transcriptHasMarker } from './confirm.ts';
 import { archivePending, formatForClaudeSocket, messageMarker, pendingMessages } from './messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { claudeConfigDir, type Peer, readPeer } from './peers.ts';
+import { claudeConfigDir, isDeliveryOwner, type Peer, readPeer, sessionOwners } from './peers.ts';
 import { isSameProcess, procStart } from './proc.ts';
 
 /**
@@ -40,6 +40,19 @@ export interface ClaudeSocket {
 
 interface SocketRecord extends ClaudeSocket {
   recordedAt: string;
+  /** Claude pid that owned delivery when this path was written. A duplicate window must not replace it. */
+  ownerPid?: number;
+}
+
+export type InboundPolicy = 'accept' | 'hold' | 'refuse';
+
+const INBOUND_RANK: Record<InboundPolicy, number> = { accept: 0, hold: 1, refuse: 2 };
+
+function socketFromEnv(env: NodeJS.ProcessEnv): ClaudeSocket | undefined {
+  const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
+  if (!socketPath) return undefined;
+  const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
+  return { path: socketPath, ...(token ? { token } : {}) };
 }
 
 interface ListenerRecord {
@@ -59,18 +72,38 @@ export interface SocketPost {
 const socketFile = (id: string) => path.join(peerDir(id), 'socket.json');
 const listenerFile = (id: string) => path.join(peerDir(id), 'socket-listener.json');
 
-export function recordClaudeSocket(id: string, env: NodeJS.ProcessEnv = process.env): ClaudeSocket | undefined {
-  const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
-  if (!socketPath) return undefined;
-  const token = env.CLAUDE_CODE_MESSAGING_TOKEN;
-  const record: SocketRecord = { path: socketPath, ...(token ? { token } : {}), recordedAt: new Date().toISOString() };
+/**
+ * Records the socket this Claude process exported. `ownerPid` is that Claude process. A second window on the
+ * same session has its own `CLAUDE_CODE_MESSAGING_SOCKET`; writing it here would make the owner post into the
+ * other window. When `ownerPid` is set and it is not the delivery owner, this does not write.
+ */
+export function recordClaudeSocket(
+  id: string,
+  env: NodeJS.ProcessEnv = process.env,
+  ownerPid?: number,
+): ClaudeSocket | undefined {
+  const sock = socketFromEnv(env);
+  if (!sock) return undefined;
+  if (ownerPid !== undefined && !isDeliveryOwner(id, ownerPid)) {
+    debugLog('claude-socket', `${id} pid ${ownerPid} is not the delivery owner; not recording its socket`);
+    return undefined;
+  }
+  const record: SocketRecord = {
+    ...sock,
+    ...(ownerPid !== undefined ? { ownerPid } : {}),
+    recordedAt: new Date().toISOString(),
+  };
   writeJsonAtomic(socketFile(id), record);
-  return { path: socketPath, ...(token ? { token } : {}) };
+  return sock;
 }
 
 export function readClaudeSocket(id: string): ClaudeSocket | undefined {
   const record = readJson<SocketRecord>(socketFile(id));
   if (!record?.path) return undefined;
+  if (typeof record.ownerPid === 'number') {
+    const owners = sessionOwners(id);
+    if (owners.length > 0 && owners[0]?.pid !== record.ownerPid) return undefined;
+  }
   return { path: record.path, ...(record.token ? { token: record.token } : {}) };
 }
 
@@ -93,22 +126,65 @@ function clearArmed(id: string): void {
   }
 }
 
+function readInbound(file: string): InboundPolicy | undefined {
+  const value = readJson<{ crossSessionInbound?: unknown }>(file)?.crossSessionInbound;
+  if (value === 'accept' || value === 'hold' || value === 'refuse') return value;
+  return undefined;
+}
+
+/** Directory of `managed-settings.json`. `TELEPATHY_MANAGED_SETTINGS_DIR` isolates tests from the machine policy. */
+function managedSettingsDir(): string {
+  if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
+  if (process.platform === 'darwin') return '/Library/Application Support/ClaudeCode';
+  if (process.platform === 'win32') return path.join(process.env.ProgramFiles || 'C:\\Program Files', 'ClaudeCode');
+  return '/etc/claude-code';
+}
+
 /**
- * `crossSessionInbound` from the settings files this session can see. Any value, in any of them, means the
- * own-child exception does not apply. The full precedence (managed settings, `--settings`) is not visible here.
+ * Managed `crossSessionInbound`. `managed-settings.json` is merged first, then each `managed-settings.d/*.json`
+ * in alphabetical order; a later scalar replaces an earlier one. MDM and server-managed settings are not on disk.
+ * https://code.claude.com/docs/en/managed-settings (retrieved 28 Oct 2026).
  */
-export function crossSessionInbound(peer: Peer | undefined): 'accept' | 'hold' | 'refuse' | undefined {
-  const files = [
-    peer?.cwd ? path.join(peer.cwd, '.claude', 'settings.local.json') : '',
-    peer?.cwd ? path.join(peer.cwd, '.claude', 'settings.json') : '',
-    path.join(claudeConfigDir(), 'settings.json'),
-  ].filter(Boolean);
-  let found: 'accept' | 'hold' | 'refuse' | undefined;
-  for (const file of files) {
-    const value = readJson<{ crossSessionInbound?: unknown }>(file)?.crossSessionInbound;
-    if (value === 'accept' || value === 'hold' || value === 'refuse') found = value;
+function managedInbound(): InboundPolicy | undefined {
+  const dir = managedSettingsDir();
+  let found = readInbound(path.join(dir, 'managed-settings.json'));
+  let names: string[] = [];
+  try {
+    names = fs
+      .readdirSync(path.join(dir, 'managed-settings.d'))
+      .filter((name) => name.endsWith('.json') && !name.startsWith('.'))
+      .sort();
+  } catch {
+    // no drop-in directory
+  }
+  for (const name of names) {
+    const value = readInbound(path.join(dir, 'managed-settings.d', name));
+    if (value) found = value;
   }
   return found;
+}
+
+/**
+ * Effective `crossSessionInbound` from the files this process can read.
+ *
+ * Precedence, highest first: managed, then `--settings` (not visible here), project local, shared project, user.
+ * Exception from the settings page: a stricter project or local value on the `accept < hold < refuse` ladder
+ * beats managed, `--settings`, and user. A project or local value that is not stricter is ignored.
+ * https://code.claude.com/docs/en/settings (retrieved 28 Oct 2026).
+ */
+export function crossSessionInbound(peer: Peer | undefined): InboundPolicy | undefined {
+  const managed = managedInbound();
+  const user = readInbound(path.join(claudeConfigDir(), 'settings.json'));
+  // `--settings` sits between managed and user and is not a file we can see.
+  const higher = managed ?? user;
+  const project = peer?.cwd ? readInbound(path.join(peer.cwd, '.claude', 'settings.json')) : undefined;
+  const local = peer?.cwd ? readInbound(path.join(peer.cwd, '.claude', 'settings.local.json')) : undefined;
+  let effective = higher;
+  for (const value of [project, local]) {
+    if (!value) continue;
+    if (higher === undefined || INBOUND_RANK[value] > INBOUND_RANK[higher]) effective = value;
+  }
+  return effective;
 }
 
 const classify = (line: string): SocketOutcome | undefined => {
@@ -185,17 +261,20 @@ export function postClaudeSocket(sock: ClaudeSocket, content: string, timeoutMs 
  * Own-child rule from the docs: with no `crossSessionInbound` value, a verified child is delivered. `accept`
  * is also delivery. `hold` and `refuse` are not, and an explicit reply of held, refused, or expired is not.
  */
-export function socketConfirms(post: SocketPost, inbound: 'accept' | 'hold' | 'refuse' | undefined, ownChild: boolean): boolean {
+export function socketConfirms(post: SocketPost, inbound: InboundPolicy | undefined, ownChild: boolean): boolean {
   if (post.outcome === 'held' || post.outcome === 'refused' || post.outcome === 'expired' || post.outcome === 'failed') return false;
   if (post.outcome === 'delivered') return true;
   if (!ownChild) return false;
   return inbound === undefined || inbound === 'accept';
 }
 
-let flushImpl: ((id: string) => Promise<SocketOutcome | 'idle'>) | undefined;
+let flushImpl: ((id: string) => Promise<SocketOutcome | 'idle' | 'blocked'>) | undefined;
 
-/** Posts pending messages from this process, which is the recipient's server. Archives a message only when confirmed. */
-export async function flushClaudeSocket(id: string): Promise<SocketOutcome | 'idle'> {
+/**
+ * Posts pending messages from this process, which is the recipient's server. Archives a message only when
+ * confirmed. `blocked` means `crossSessionInbound` is hold or refuse, so nothing was written.
+ */
+export async function flushClaudeSocket(id: string): Promise<SocketOutcome | 'idle' | 'blocked'> {
   if (flushImpl) return flushImpl(id);
   return 'idle';
 }
@@ -205,7 +284,7 @@ export async function flushClaudeSocket(id: string): Promise<SocketOutcome | 'id
  * session's child, and a post from them is an ordinary peer message that the default inbound rules may hold.
  * Returns a stop function.
  */
-export function startClaudeSocketWatcher(id: string): () => void {
+export function startClaudeSocketWatcher(id: string, ownerPid?: number): () => void {
   let chain: Promise<unknown> = Promise.resolve();
 
   // A held or unconfirmed post is a message Claude already has. Posting it again on the 1s tick opens another
@@ -220,8 +299,17 @@ export function startClaudeSocketWatcher(id: string): () => void {
     return Number.isFinite(n) && n >= 0 ? n : 2_000;
   };
 
-  const flush = async (): Promise<SocketOutcome | 'idle'> => {
-    const sock = readClaudeSocket(id) ?? recordClaudeSocket(id);
+  const flush = async (): Promise<SocketOutcome | 'idle' | 'blocked'> => {
+    // A duplicate window's server must not post: its socket is a different process.
+    if (ownerPid !== undefined && !isDeliveryOwner(id, ownerPid)) {
+      clearArmed(id);
+      return 'idle';
+    }
+    // Tests start the watcher without an owner pid and point it at a recorded path. The owner's server passes
+    // its pid and posts the socket this process inherited, which a duplicate window cannot overwrite.
+    const envSock = ownerPid !== undefined ? socketFromEnv(process.env) : undefined;
+    if (envSock) recordClaudeSocket(id, process.env, ownerPid);
+    const sock = envSock ?? readClaudeSocket(id);
     if (!sock) {
       clearArmed(id);
       return 'idle';
@@ -233,9 +321,11 @@ export function startClaudeSocketWatcher(id: string): () => void {
       return 'idle';
     }
     const inbound = crossSessionInbound(readPeer(id));
-    if (inbound === 'refuse') {
-      debugLog('claude-socket', `${id} crossSessionInbound is refuse; leaving ${pending.length} message(s) in the inbox`);
-      return 'refused';
+    // hold and refuse both keep the bytes where a later failure can still withdraw them. A post Claude has
+    // queued as held is delivered when the user clears the hold, after the sender was already told it failed.
+    if (inbound === 'hold' || inbound === 'refuse') {
+      debugLog('claude-socket', `${id} crossSessionInbound is ${inbound}; not posting ${pending.length} message(s)`);
+      return 'blocked';
     }
     const inboundKey = inbound ?? '';
     const pendingIds = new Set(pending.map((msg) => msg.id));
@@ -244,6 +334,17 @@ export function startClaudeSocketWatcher(id: string): () => void {
     for (const msg of pending) {
       const prev = posted.get(msg.id);
       const marker = messageMarker(msg.id);
+      if (transcriptHasMarker(readPeer(id), marker)) {
+        archivePending(id, msg.id);
+        posted.delete(msg.id);
+        last = 'delivered';
+        continue;
+      }
+      // A reply of held, refused, or expired means Claude already has the bytes. Posting again cannot be recalled.
+      if (prev && (prev.outcome === 'held' || prev.outcome === 'refused' || prev.outcome === 'expired')) {
+        last = prev.outcome;
+        continue;
+      }
       const settingKey = `${sock.path}\0${inboundKey}`;
       if (prev && (prev.socketPath !== sock.path || prev.inbound !== inboundKey)) {
         let changeAt = prev.changeAt ?? 0;
@@ -300,7 +401,7 @@ export function startClaudeSocketWatcher(id: string): () => void {
     return last;
   };
 
-  const enqueue = (peerId: string): Promise<SocketOutcome | 'idle'> => {
+  const enqueue = (peerId: string): Promise<SocketOutcome | 'idle' | 'blocked'> => {
     if (peerId !== id) return Promise.resolve('idle');
     const run = chain.then(flush, flush);
     chain = run.then(

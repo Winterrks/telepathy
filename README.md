@@ -348,28 +348,34 @@ address still accepts a message during that day even though `list_peers` only sh
   `read_messages`) is taken back out of Codex's queue, so it doesn't arrive twice. Without the PostToolUse hook
   approved, messages wait for the turn to end.
 - **An interrupted Codex does not get the queue.** After you interrupt a turn (Esc), Codex leaves queued messages
-  paused and does not start them. Telepathy does not call `codex queue` in that state. The message stays in the inbox
-  for the next prompt's hook, or for `read_messages`. `list_peers` and ListAgents show the session as interrupted.
+  paused and does not start them. Telepathy does not call `codex queue` in that state. With confirmation off, the
+  message stays in the inbox for the next prompt's hook, or for `read_messages`. With confirmation on, a wait that
+  ends without the transcript marker withdraws that inbox copy, and the result says so; it does not also say the
+  copy is still waiting. `list_peers` and ListAgents show the session as interrupted.
 - **Claude receives through its inbox socket when the session has one.** Claude Code v2.1.224 or later (v2.1.234 on
-  native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there. A message is
-  not treated as delivered just because Claude accepted the socket post. `send_message` succeeds only when the
-  recipient's transcript contains `telepathy-id:<message id>`. A hold, refusal, or expiry leaves the inbox copy,
-  and the sender is told that Claude is holding peer messages. The same held message is not posted again on the
-  next tick. After `crossSessionInbound` or the socket path changes, telepathy waits a couple of seconds
-  (`TELEPATHY_HOLD_REPOST_DELAY_MS`, default 2000) and skips the re-post when the transcript already has the marker.
-  The post names the real sender (Codex, OpenCode, and the rest), which Claude
-  shows in place of "Another Claude session". Sessions without
-  the socket, including bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in
-  interactive terminal sessions.
+  native Windows) exports `CLAUDE_CODE_MESSAGING_SOCKET`. Telepathy's server in that session posts there, and only
+  the delivery owner's socket: a second window on the same session has its own path and must not replace it.
+  `send_message` succeeds only when the recipient's transcript contains `telepathy-id:<message id>`. Telepathy reads
+  the effective `crossSessionInbound` (managed settings, user settings, and a stricter project or local value; see
+  the settings precedence page) before writing. `hold` and `refuse` are not posted. The inbox copy stays, for a hook
+  or `read_messages`, and can still be withdrawn. A socket reply of `held` means Claude already has bytes that
+  cannot be recalled; the result says that, and does not start with `Message failed`. A marker that arrives in the
+  grace window moves the file from `withdrawn/` to `archive/`. The post names the real sender (Codex, OpenCode, and
+  the rest), which Claude shows in place of "Another Claude session". The long-running monitor exits when
+  `CLAUDE_CODE_MESSAGING_SOCKET` is set, so `/exit` is not asked to stop it. Sessions without the socket, including
+  bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in interactive terminal sessions.
   The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
   message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
   runs, the hooks hand messages over at the next prompt or when a turn ends.
 - **A resumed session keeps its telepathy id and name.** The key is the harness session id (Claude's `session_id`,
-  a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. The first name
-  is remembered under `~/.telepathy/identities/`. Messages already in the inbox, and messages sent to that address
-  while the process is gone, are waiting when it resumes. A new session id does not receive them. `TELEPATHY_NAME`
-  still overrides the name. Two live processes on one session id share the peer; the oldest one owns delivery.
+  a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. OpenCode binds
+  that id at plugin start when the process was given `--session`, when the client lists exactly one session, or on
+  `session.created` / `session.updated`, and the name from the pid-keyed moment is the one that is remembered.
+  The first name is stored under `~/.telepathy/identities/`. Messages already in the inbox, and messages sent to
+  that address while the process is gone, are waiting when it resumes; that send is not reported as `Message failed`.
+  A new session id does not receive them. `TELEPATHY_NAME` still overrides the name. Two live processes on one
+  session id share the peer; the oldest one owns delivery, and Claude delivery uses that process's socket.
 - **A stable name.** Set `TELEPATHY_NAME` or start the server with `--name my-bot`. The address becomes
   `grok:my-bot` and stays that way across restarts, and unread messages move to the new process. Two live sessions
   with the same name are called out in `list_peers` and in `[telepathy setup]`. Use the `[ref]` to pick one.
@@ -392,8 +398,10 @@ address still accepts a message during that day even though `list_peers` only sh
 - **Setup notes.** When something only the user can fix keeps messages from arriving on time, telepathy's tools add a
   `[telepathy setup]` line for the agent to pass on: Codex hooks that aren't approved in `/hooks`, a session running
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
-  [update-all](#updating-every-agent) command). If messages seem missing, the agent
-  can call `read_messages`, which always shows these notes.
+  [update-all](#updating-every-agent) command). Codex's MCP server in this plugin is named `bridge`, so the tool
+  timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 120
+  seconds. When that key is missing or below 120, the note names the key and asks for at least 120. If messages seem
+  missing, the agent can call `read_messages`, which always shows these notes.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
   dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
   whichever chat runs its hooks next.

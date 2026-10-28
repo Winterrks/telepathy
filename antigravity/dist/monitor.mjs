@@ -335,6 +335,10 @@ function claudeSocketArmed(id2) {
 // src/monitor.ts
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
+if (!once && process.env.CLAUDE_CODE_MESSAGING_SOCKET) {
+  debugLog("monitor", "CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener");
+  process.exit(0);
+}
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
 var id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
 var listenerFile2 = () => path7.join(peerDir(id), "listener.json");
