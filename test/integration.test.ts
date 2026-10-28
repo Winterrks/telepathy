@@ -200,6 +200,21 @@ describe('telepathy plugin', () => {
     await Promise.race([exited, new Promise((_, rej) => setTimeout(() => rej(new Error('monitor did not exit')), 6000))]);
   });
 
+  test('session start does not ask for a monitor when an inbox socket exists', () => {
+    const claudeAgent = spawnAgent();
+    sb.env.CLAUDE_CODE_MESSAGING_SOCKET = path.join(sb.home, 'inbox.sock');
+    try {
+      const withSocket = runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'sock', cwd: '/w/web' });
+      assert.equal(withSocket.stdout, '');
+    } finally {
+      delete sb.env.CLAUDE_CODE_MESSAGING_SOCKET;
+    }
+    const without = runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'plain', cwd: '/w/web' });
+    assert.match(without.stdout, /no inbox socket/);
+    assert.match(without.stdout, /Monitor tool/);
+    assert.equal(fs.readFileSync(path.join(ROOT, 'plugin', 'monitors', 'monitors.json'), 'utf8').trim(), '[]');
+  });
+
   test('the monitor exits immediately when the session exported an inbox socket', async () => {
     const claudeAgent = spawnAgent();
     runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/web' });
@@ -271,14 +286,15 @@ describe('telepathy plugin', () => {
     }
   });
 
-  test('SessionStart registers the session and prints nothing; the skill is a normal on-demand skill', () => {
+  test('SessionStart registers the session; Claude without a socket is asked to start the monitor', () => {
     const skill = fs.readFileSync(path.join(ROOT, 'plugin', 'skills', 'using-telepathy', 'SKILL.md'), 'utf8');
     assert.match(skill, /^---\nname: using-telepathy\ndescription: Use when .+\n---\n/);
     for (const agent of ['claude', 'codex'] as const) {
       for (const source of ['startup', 'resume', 'clear', 'compact', undefined]) {
         const { pid } = spawnAgent();
         const res = runHook(sb, agent, pid, 'session-start', { session_id: 's', cwd: '/w/x', ...(source ? { source } : {}) });
-        assert.equal(res.stdout, '', 'both agents add SessionStart stdout to context');
+        if (agent === 'claude') assert.match(res.stdout, /no inbox socket/);
+        else assert.equal(res.stdout, '', 'Codex does not add SessionStart stdout to context');
         // Both agents are keyed by the harness session id, so a resume keeps the directory.
         assert.ok(fs.existsSync(path.join(sb.home, 'peers', `${agent}-s`, 'session.json')));
       }
@@ -382,24 +398,19 @@ describe('telepathy plugin', () => {
     );
     try {
       const codex = await connect('codex', codexAgent.pid);
-      assert.match(
-        toolText(await call(codex, 'list_peers')),
-        /\n\n\[telepathy setup\] Codex hasn't approved telepathy's PostToolUse and UserPromptSubmit hooks, so messages sent while you work reach you only when your turn ends; after an interrupted turn, messages wait for a later turn\. Tell your user: open \/hooks in this session and trust them \(press t\)\.$/,
-      );
-      assert.doesNotMatch(toolText(await call(codex, 'list_peers')), /telepathy setup/, 'not again for ten minutes');
-      assert.match(toolText(await call(codex, 'read_messages')), /telepathy setup/, 'read_messages always says it');
+      assert.doesNotMatch(toolText(await call(codex, 'list_peers')), /hasn't approved|No telepathy hook has fired/);
+      assert.doesNotMatch(toolText(await call(codex, 'list_peers')), /telepathy setup/);
 
-      // A sender learns why a busy Codex gets the message late.
+      // A busy Codex is not described as missing a hook that this process cannot prove is untrusted.
       const claudeAgent = spawnAgent();
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/me' });
       const claude = await connect('claude', claudeAgent.pid);
       const day = path.join(sb.codexHome, 'sessions', '2026', '09', '25');
       fs.mkdirSync(day, { recursive: true });
       fs.writeFileSync(path.join(day, 'rollout-2026-09-25T11-00-00-t-n.jsonl'), JSON.stringify({ type: 'event_msg', payload: { type: 'task_started' } }) + '\n');
-      assert.match(
-        toolText(await call(claude, 'send_message', { to: 'codex:n', message: 'x' })),
-        /only after that turn ends \(telepathy's PostToolUse hook isn't approved there; its user can trust it with \/hooks in that session\)\.$/,
-      );
+      const busy = toolText(await call(claude, 'send_message', { to: 'codex:n', message: 'x' }));
+      assert.match(busy, /only after that turn ends\.$/);
+      assert.doesNotMatch(busy, /isn't approved/);
 
       fs.appendFileSync(config, approve('post_tool_use') + approve('user_prompt_submit'));
       assert.doesNotMatch(toolText(await call(codex, 'read_messages')), /telepathy setup/);
@@ -945,9 +956,18 @@ describe('telepathy plugin', () => {
       const ready = await oc.take('ready');
       const pid = ready.ready as number;
       process.env.TELEPATHY_HOME = sb.home;
-      const peer = readPeer('opencode-ses_listed');
+      const peer = await waitFor(() => readPeer('opencode-ses_listed'));
       assert.equal(peer?.hasListener, true);
       assert.equal(peer?.name, readPeer(`opencode-${pid}`)?.name);
+    });
+
+    test('plugin init returns without awaiting client.session.list', async () => {
+      const oc = startOpenCode('/w/hang', { OPENCODE_TEST_LIST: 'hang' });
+      const ready = await Promise.race([
+        oc.take('ready'),
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('init awaited session.list')), 1000)),
+      ]);
+      assert.equal(typeof ready.ready, 'number');
     });
   });
 

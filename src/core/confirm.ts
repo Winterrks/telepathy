@@ -221,7 +221,8 @@ function signalAfterWithdraw(routeStatus: string, withdrawn: WithdrawResult): { 
     .replace(
       'It stays in the inbox until the session calls read_messages.',
       'The inbox copy was withdrawn, so a later read will not see it.',
-    );
+    )
+    .replace('The inbox copy can still be withdrawn.', 'The inbox copy was withdrawn.');
   return { signal, noted: signal !== routeStatus };
 }
 

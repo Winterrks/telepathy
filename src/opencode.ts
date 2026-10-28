@@ -162,8 +162,8 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
 
   /**
    * Points this process at `sessionID`. The pid-era name is stored before the session-keyed name is generated,
-   * so a listing does not change suffix when the ses_ id appears. Resume (`--session` or a single listed
-   * session) binds here, before the first prompt, and registers the listener the old peer had.
+   * so a listing does not change suffix when the ses_ id appears. Resume binds here, before the first prompt,
+   * and registers the listener the old peer had.
    */
   const bind = (sessionID: string) => {
     if (!sessionID || children.has(sessionID)) return;
@@ -188,15 +188,25 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
     debugLog('opencode', `bound ${previous} to ${id}`);
   };
 
+  // `--session` is on the TUI argv. OpenCode 1.19 runs this plugin in another process, so it is often absent.
+  // Do not await `client.session.list` here: OpenCode cannot answer that call until plugin init returns, and
+  // waiting deadlocks the TUI and `opencode session list`. The timer runs after this function returns.
   const argvSession = opencodeSessionFromArgv();
   if (argvSession) bind(argvSession);
   else if (client.session.list) {
-    try {
-      const primary = listedSessions(await client.session.list()).filter((row) => !row.parentID);
-      if (primary.length === 1 && primary[0]) bind(primary[0].id);
-    } catch (err) {
-      debugLog('opencode', `session list failed: ${(err as Error).message}`);
-    }
+    const list = client.session.list.bind(client.session);
+    const timer = setTimeout(() => {
+      if (id !== peerId(agent, pid)) return;
+      void Promise.resolve()
+        .then(() => list())
+        .then((value) => {
+          if (id !== peerId(agent, pid)) return;
+          const primary = listedSessions(value).filter((row) => !row.parentID);
+          if (primary.length === 1 && primary[0]) bind(primary[0].id);
+        })
+        .catch((err) => debugLog('opencode', `session list failed: ${(err as Error).message}`));
+    }, 0);
+    timer.unref();
   }
 
   const self = () => selfPeer(agent, pid, id);
@@ -219,7 +229,9 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
 
     event: async ({ event }: { event: BusEvent }) => {
       const p = event.properties ?? {};
-      if (event.type === 'session.created' || event.type === 'session.updated') {
+      // session.created/updated, and TUI events that name the session on screen. `--session` is not on this
+      // process's argv in OpenCode 1.19, so these events (and chat.message) are what rebind a resume.
+      if (event.type === 'session.created' || event.type === 'session.updated' || event.type.startsWith('tui.')) {
         const sessionID = p.info?.id ?? p.sessionID;
         if (sessionID && p.info?.parentID) children.add(sessionID);
         else if (sessionID) bind(sessionID);

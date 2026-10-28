@@ -5,7 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
-import { setupNotes } from './core/setup.ts';
+import { unseenSetupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
 import { recordClaudeSocket, startClaudeSocketWatcher } from './core/claude-socket.ts';
 import { startWakeFlusher } from './core/wake.ts';
@@ -154,18 +154,12 @@ const text = ({ text, isError, structured }: ToolResult) => ({
   ...(isError ? { isError } : {}),
 });
 
-const NOTE_EVERY_MS = 10 * 60_000;
-const noteShownAt = new Map<string, number>();
-
 /**
- * Adds `[telepathy setup]` notes: things the user has to fix before messages reach this session on time.
- * read_messages always shows them (an agent calls it when messages seem not to arrive); the other tools at most
- * every ten minutes per note.
+ * Adds `[telepathy setup]` notes the first time this session would show each one. A later tool call, including
+ * from a new server process, does not repeat a note it has already shown.
  */
-function withSetupNotes(selfId: string, result: ToolResult, always = false): ToolResult {
-  const now = Date.now();
-  const notes = setupNotes(selfPeer(agent, agentPid, selfId)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
-  for (const note of notes) noteShownAt.set(note, now);
+function withSetupNotes(selfId: string, result: ToolResult): ToolResult {
+  const notes = unseenSetupNotes(selfPeer(agent, agentPid, selfId));
   return notes.length ? { ...result, text: `${result.text}\n\n${notes.join('\n')}` } : result;
 }
 
@@ -211,7 +205,7 @@ server.registerTool(
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit }), true));
+    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit })));
   },
 );
 

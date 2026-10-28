@@ -165,7 +165,23 @@ function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   registerStableName(agent, id);
   if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
   if (statusFromHooks(agent)) writeStatus(id, 'idle');
-  reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
+  const monitor = claudeMonitorNote(agent, agentPid);
+  if (monitor) reply(hookSpecificContext(monitor, 'SessionStart'));
+  else reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
+}
+
+/**
+ * Claude starts every plugin monitor, and a process that then exits is a "background task exited" notice the
+ * model answers. The manifest therefore does not start one. A session with an inbox socket does not need it.
+ * A session without one is asked to start it, which is the path whose stdout Claude actually reads.
+ */
+function claudeMonitorNote(agent: Agent, agentPid: number): string | undefined {
+  if (agent !== 'claude' || process.env.CLAUDE_CODE_MESSAGING_SOCKET || isStreamJsonClaude(agentPid)) return undefined;
+  const cmd = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude`;
+  return (
+    '[telepathy] This session has no inbox socket, so no background monitor was started. Start this with the Monitor tool ' +
+    `(persistent: true, description "telepathy inbox") so messages can wake you while idle: ${cmd}`
+  );
 }
 
 /**

@@ -18,9 +18,9 @@ import { findAgent, isAlive, parseAgent } from './core/proc.ts';
  */
 const argv = process.argv.slice(2);
 const once = argv.includes('--once');
-// The plugin manifest always starts this process. A session that exported an inbox socket does not need it,
-// and a process that stays up is what makes `/exit` ask to stop background tasks. `--once` is the app waiter;
-// it is not the long-running monitor Claude counts.
+// The plugin manifest does not start this process: Claude reports a monitor that exits, and a monitor that
+// stays up is what `/exit` asks to stop. This exit is only a backstop for a launch that still happens.
+// `--once` is the app waiter; it is not the long-running monitor Claude counts.
 if (!once && process.env.CLAUDE_CODE_MESSAGING_SOCKET) {
   debugLog('monitor', 'CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener');
   process.exit(0);

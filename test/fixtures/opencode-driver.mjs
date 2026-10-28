@@ -6,11 +6,17 @@ const [pluginPath, directory] = process.argv.slice(2);
 if (process.env.OPENCODE_TEST_SESSION) process.argv.push('--session', process.env.OPENCODE_TEST_SESSION);
 const mod = await import(pluginPath);
 const print = (value) => process.stdout.write(JSON.stringify(value) + '\n');
-const listed = process.env.OPENCODE_TEST_LIST?.split(',').filter(Boolean);
+const listMode = process.env.OPENCODE_TEST_LIST;
 const client = {
   session: {
     promptAsync: async (options) => print({ prompt: options }),
-    ...(listed ? { list: async () => listed.map((id) => ({ id })) } : {}),
+    ...(listMode
+      ? {
+          // 'hang' never resolves. Plugin init must return without awaiting it.
+          list: () =>
+            listMode === 'hang' ? new Promise(() => {}) : Promise.resolve(listMode.split(',').filter(Boolean).map((id) => ({ id }))),
+        }
+      : {}),
   },
 };
 const hooks = await mod.default.server({ client, directory });

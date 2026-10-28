@@ -2,9 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
-import { claudeSocketArmed, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
+import { claudeSocketArmed, crossSessionInbound, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
-import { unapprovedCodexHooks } from './setup.ts';
 import {
   archiveMessage,
   formatAsUserTurn,
@@ -211,8 +210,20 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
   const attempts: DeliveryAttempt[] = [];
   writeToInbox(message);
 
+  // The watcher that would post lives in the recipient's server. This process's flush is 'idle' then, so a
+  // hold would otherwise be described as "no listener". The setting is on disk; read it before any wait.
+  const inbound = recipient.agent === 'claude' ? crossSessionInbound(recipient) : undefined;
+  const inboundBlocks = inbound === 'hold' || inbound === 'refuse';
+
   let socketOutcome: SocketOutcome | 'idle' | 'blocked' | undefined;
-  if (recipient.agent === 'claude' && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+  if (inboundBlocks) {
+    attempts.push({
+      id: 'claude-socket',
+      result: 'unsupported',
+      when: 'immediate',
+      detail: `crossSessionInbound is ${inbound}`,
+    });
+  } else if (recipient.agent === 'claude' && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     // The watcher runs in the recipient's server. This process only posted if that server is this process.
     if (socketOutcome === 'idle') await waitForSocket(recipient.id, message.id);
@@ -253,7 +264,7 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
   // The status string is the one those sessions already show. The file stays unclaimed until that process renames it.
   // While the socket watcher is armed and actually posting, the monitor does not claim. hold and refuse do not
   // post, so the listener and the hooks remain the path.
-  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
+  if (!inboundBlocks && recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: 'listener', result: 'armed', when: 'immediate' });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -273,14 +284,12 @@ async function routeInbox(recipient: Peer, message: Message): Promise<Route> {
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
+  if (inbound === 'hold' || inbound === 'refuse') {
+    return { status: claudeInboundBlockedStatus(recipient, inbound), report: { confirmed: false, attempts } };
+  }
   const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
   if (socketOutcome === 'blocked') {
-    return {
-      status:
-        `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. ` +
-        'The inbox copy can still be withdrawn.',
-      report: { confirmed: false, attempts },
-    };
+    return { status: claudeInboundBlockedStatus(recipient, 'hold'), report: { confirmed: false, attempts } };
   }
   return { status, report: { confirmed: false, attempts } };
 }
@@ -310,6 +319,22 @@ async function waitForSocket(peerId: string, messageId: string): Promise<void> {
   while (stillPending(peerId, messageId) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
+}
+
+/**
+ * `hold` or `refuse` means nothing was written to the socket. The failure text has to say that. "No listener"
+ * is a different path and is what a sender reports when it never looked at the setting.
+ */
+function claudeInboundBlockedStatus(recipient: Peer, inbound: 'hold' | 'refuse'): string {
+  const ref = peerRef(recipient);
+  const why =
+    inbound === 'hold'
+      ? 'is holding peer messages (crossSessionInbound is hold)'
+      : 'is refusing peer messages (crossSessionInbound is refuse)';
+  return (
+    `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. ` +
+    'The inbox copy can still be withdrawn.'
+  );
 }
 
 /**
@@ -349,16 +374,11 @@ function codexQueueStatus(recipient: Peer): string {
   const ref = peerRef(recipient);
   const activity = peerStatus(recipient)?.status;
   if (activity === 'waiting') return waitingNote(ref, 'queued for');
-  // Which of telepathy's hooks Codex hasn't approved; undefined when that can't be told.
-  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : undefined;
   if (activity === 'busy') {
     if (recipient.toolHookRan) {
       return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
     }
-    const why = unapproved?.includes('PostToolUse')
-      ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)"
-      : '';
-    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }

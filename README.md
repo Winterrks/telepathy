@@ -360,18 +360,23 @@ address still accepts a message during that day even though `list_peers` only sh
   the settings precedence page) before writing. `hold` and `refuse` are not posted. The inbox copy stays, for a hook
   or `read_messages`, and can still be withdrawn. A socket reply of `held` means Claude already has bytes that
   cannot be recalled; the result says that, and does not start with `Message failed`. A marker that arrives in the
-  grace window moves the file from `withdrawn/` to `archive/`. The post names the real sender (Codex, OpenCode, and
-  the rest), which Claude shows in place of "Another Claude session". The long-running monitor exits when
-  `CLAUDE_CODE_MESSAGING_SOCKET` is set, so `/exit` is not asked to stop it. Sessions without the socket, including
-  bare mode, keep the monitor and the hooks. Claude Code runs plugin monitors only in interactive terminal sessions.
+  grace window moves the file from `withdrawn/` to `archive/`. A failure after a hold says the receiver is holding
+  peer messages and that nothing was posted. The post names the real sender (Codex, OpenCode, and
+  the rest), which Claude shows in place of "Another Claude session". The plugin does not start its background
+  monitor: a process Claude launched and that then exited is a "background task exited" notice, and a process that
+  stays up is what `/exit` asks to stop. A session with an inbox socket does not need the monitor. A session without
+  one is asked, at session start, to start it with the Monitor tool. Claude Code runs plugin monitors only in
+  interactive terminal sessions.
   The Claude app's Code tab drives Claude Code over stream-json instead, so there telepathy's hooks have Claude start
   a one-shot waiter as a background command (the app asks you to allow it the first time). The waiter exits when a
   message arrives, which wakes the session, and Claude starts it again. Until it runs, and in one-shot `claude -p`
   runs, the hooks hand messages over at the next prompt or when a turn ends.
 - **A resumed session keeps its telepathy id and name.** The key is the harness session id (Claude's `session_id`,
   a Codex thread id, an OpenCode `ses_` id, and the same fields from the other hooks), not the pid. OpenCode binds
-  that id at plugin start when the process was given `--session`, when the client lists exactly one session, or on
-  `session.created` / `session.updated`, and the name from the pid-keyed moment is the one that is remembered.
+  that id when the process was given `--session`, from `session.created` / `session.updated` / a TUI event that
+  names the session, from the first `chat.message`, or from `session.list` after plugin init has returned. Plugin
+  init does not wait on that call: OpenCode cannot answer it until init returns. The name from the pid-keyed moment
+  is the one that is remembered.
   The first name is stored under `~/.telepathy/identities/`. Messages already in the inbox, and messages sent to
   that address while the process is gone, are waiting when it resumes; that send is not reported as `Message failed`.
   A new session id does not receive them. `TELEPATHY_NAME` still overrides the name. Two live processes on one
@@ -400,8 +405,11 @@ address still accepts a message during that day even though `list_peers` only sh
   an older telepathy than is installed (restart it), or agents with an older copy installed (the note includes the
   [update-all](#updating-every-agent) command). Codex's MCP server in this plugin is named `bridge`, so the tool
   timeout key is `plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec`. `send_message` waits up to 120
-  seconds. When that key is missing or below 120, the note names the key and asks for at least 120. If messages seem
-  missing, the agent can call `read_messages`, which always shows these notes.
+  seconds. A value read from `config.toml` or from a `-c` override on the Codex process is trusted. When that
+  effective value is below 120, the note names the key. When the file is readable and neither place shows the key,
+  the note says the value could not be verified, once per session, and does not claim the key is unset. A note that
+  Codex has not approved its hooks is shown only when no telepathy hook has fired for that session. Each note is
+  shown once per session. If messages seem missing, the agent can call `read_messages`.
 - **One session per process.** Identities are per agent process. Where one process hosts several chats (Grok's
   dashboard, Copilot's backgrounded sessions, Antigravity subagents), they share one address, and a message goes to
   whichever chat runs its hooks next.

@@ -28694,25 +28694,15 @@ function codexBridgeTimeoutSec(config2) {
   }
   return found;
 }
-var CODEX_HOOKS = {
-  session_start: "SessionStart",
-  post_tool_use: "PostToolUse",
-  user_prompt_submit: "UserPromptSubmit"
-};
-function unapprovedCodexHooks(codexHome) {
-  let config2;
-  try {
-    config2 = fs7.readFileSync(path9.join(codexHome, "config.toml"), "utf8");
-  } catch {
-    return void 0;
+function codexBridgeTimeoutFromCommandLine(args) {
+  const re = /mcp_servers\.bridge\.tool_timeout_sec\s*=\s*["']?([0-9]+)/g;
+  let found;
+  for (const match of args.matchAll(re)) {
+    if (match[1]) found = Number(match[1]);
   }
-  const approved = new Set(
-    [...config2.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
-  );
-  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
+  return found;
 }
 var updateAllCommand = () => `node "${path9.join(path9.dirname(fileURLToPath(import.meta.url)), "update-all.mjs")}"`;
-var listed = (names) => names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names.at(-1)}` : names[0];
 function setupNotes(self2) {
   const notes = [];
   const dupes = listPeers().filter((p) => sameStableName(self2, p));
@@ -28722,15 +28712,9 @@ function setupNotes(self2) {
     );
   }
   if (self2.agent === "codex") {
-    const missing = unapprovedCodexHooks(self2.codexHome ?? defaultCodexHome());
-    if (missing?.length) {
-      const effects = [
-        missing.includes("SessionStart") && "other sessions can't reach this one until it calls a telepathy tool",
-        missing.includes("PostToolUse") && "messages sent while you work reach you only when your turn ends",
-        missing.includes("UserPromptSubmit") && "after an interrupted turn, messages wait for a later turn"
-      ].filter(Boolean);
+    if (!self2.hookRan && !self2.toolHookRan) {
       notes.push(
-        `[telepathy setup] Codex hasn't approved telepathy's ${listed(missing)} hook${missing.length > 1 ? "s" : ""}, so ${effects.join("; ")}. Tell your user: open /hooks in this session and trust them (press t).`
+        `[telepathy setup] No telepathy hook has fired for this session, so other sessions may not reach it until one does. If /hooks shows telepathy's hooks untrusted, trust them (press t).`
       );
     }
     const codexHome = self2.codexHome ?? defaultCodexHome();
@@ -28742,10 +28726,15 @@ function setupNotes(self2) {
     } catch {
       config2 = "";
     }
-    if (config2 && (timeout === void 0 || timeout < CODEX_BRIDGE_TIMEOUT_MIN)) {
-      const current = timeout === void 0 ? "unset, and Codex defaults it to 60s" : `${timeout}s`;
+    const fromArgs = self2.pid ? codexBridgeTimeoutFromCommandLine(commandLine(self2.pid) ?? "") : void 0;
+    const effective = fromArgs ?? timeout;
+    if (effective !== void 0 && effective < CODEX_BRIDGE_TIMEOUT_MIN) {
       notes.push(
-        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${current}, which is below the 120s send_message waits for a transcript. Set that key to at least 120 in config.toml.`
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 120s send_message waits for a transcript. Set that key to at least 120.`
+      );
+    } else if (config2 && effective === void 0) {
+      notes.push(
+        `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override was visible on this Codex process. If it is below 120, send_message can be cut off. Set that key to at least 120 if it is not already.`
       );
     }
   }
@@ -28770,6 +28759,14 @@ function setupNotes(self2) {
     );
   }
   return notes;
+}
+var shownFile = (id) => path9.join(peerDir(id), "setup-shown.json");
+function unseenSetupNotes(self2) {
+  const notes = setupNotes(self2);
+  const shown = new Set(readJson(shownFile(self2.id)) ?? []);
+  const fresh = notes.filter((note) => !shown.has(note));
+  if (fresh.length) writeJsonAtomic(shownFile(self2.id), [...shown, ...fresh]);
+  return fresh;
 }
 
 // src/core/guide.ts
@@ -29436,7 +29433,7 @@ function signalAfterWithdraw(routeStatus, withdrawn) {
   ).replace(
     "It stays in the inbox until the session calls read_messages.",
     "The inbox copy was withdrawn, so a later read will not see it."
-  );
+  ).replace("The inbox copy can still be withdrawn.", "The inbox copy was withdrawn.");
   return { signal, noted: signal !== routeStatus };
 }
 async function confirmDelivery(peer, message, routeStatus) {
@@ -29656,6 +29653,7 @@ async function flushClaudeSocket(id) {
 function startClaudeSocketWatcher(id, ownerPid) {
   let chain = Promise.resolve();
   const posted = /* @__PURE__ */ new Map();
+  let blockedLog;
   const FAILED_RETRY_MS = 1e4;
   const holdRepostDelayMs = () => {
     const n = Number(process.env.TELEPATHY_HOLD_REPOST_DELAY_MS);
@@ -29681,9 +29679,13 @@ function startClaudeSocketWatcher(id, ownerPid) {
     }
     const inbound = crossSessionInbound(readPeer(id));
     if (inbound === "hold" || inbound === "refuse") {
-      debugLog("claude-socket", `${id} crossSessionInbound is ${inbound}; not posting ${pending.length} message(s)`);
+      if (blockedLog !== inbound) {
+        debugLog("claude-socket", `${id} crossSessionInbound is ${inbound}; not posting`);
+        blockedLog = inbound;
+      }
       return "blocked";
     }
+    blockedLog = void 0;
     const inboundKey = inbound ?? "";
     const pendingIds = new Set(pending.map((msg) => msg.id));
     for (const seen of posted.keys()) if (!pendingIds.has(seen)) posted.delete(seen);
@@ -30020,8 +30022,17 @@ async function routeCodex(recipient, message) {
 async function routeInbox(recipient, message) {
   const attempts = [];
   writeToInbox(message);
+  const inbound = recipient.agent === "claude" ? crossSessionInbound(recipient) : void 0;
+  const inboundBlocks = inbound === "hold" || inbound === "refuse";
   let socketOutcome;
-  if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+  if (inboundBlocks) {
+    attempts.push({
+      id: "claude-socket",
+      result: "unsupported",
+      when: "immediate",
+      detail: `crossSessionInbound is ${inbound}`
+    });
+  } else if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
     if (socketOutcome !== "blocked" && !stillPending(recipient.id, message.id)) {
@@ -30054,7 +30065,7 @@ async function routeInbox(recipient, message) {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
   const socketPosted = socketOutcome !== void 0 && socketOutcome !== "blocked";
-  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
+  if (!inboundBlocks && recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: "listener", result: "armed", when: "immediate" });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -30070,12 +30081,12 @@ async function routeInbox(recipient, message) {
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
+  if (inbound === "hold" || inbound === "refuse") {
+    return { status: claudeInboundBlockedStatus(recipient, inbound), report: { confirmed: false, attempts } };
+  }
   const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
   if (socketOutcome === "blocked") {
-    return {
-      status: `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. The inbox copy can still be withdrawn.`,
-      report: { confirmed: false, attempts }
-    };
+    return { status: claudeInboundBlockedStatus(recipient, "hold"), report: { confirmed: false, attempts } };
   }
   return { status, report: { confirmed: false, attempts } };
 }
@@ -30102,6 +30113,11 @@ async function waitForSocket(peerId2, messageId) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+function claudeInboundBlockedStatus(recipient, inbound) {
+  const ref = peerRef(recipient);
+  const why = inbound === "hold" ? "is holding peer messages (crossSessionInbound is hold)" : "is refusing peer messages (crossSessionInbound is refuse)";
+  return `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+}
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
 }
@@ -30116,13 +30132,11 @@ function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = peerStatus(recipient)?.status;
   if (activity === "waiting") return waitingNote(ref, "queued for");
-  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
     if (recipient.toolHookRan) {
       return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
     }
-    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
-    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -30147,16 +30161,22 @@ function wakeStatus(recipient, base, wake) {
 }
 
 // src/core/listing.ts
+function deliveryHint(peer) {
+  if (peer.agent === "codex" || peer.hasListener) return void 0;
+  if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
+    const inbound = crossSessionInbound(peer);
+    if (inbound !== "hold" && inbound !== "refuse") return "sees messages through its inbox socket";
+  }
+  if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return "sees messages at its next turn";
+  return "no listener: it reads messages only via read_messages";
+}
 function describePeer(peer) {
   const notes = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   const status = statusText(peerStatus(peer));
   if (status) notes.push(status);
-  if (peer.agent !== "codex" && !peer.hasListener) {
-    notes.push(
-      agentSpec(peer.agent).nextTurnHook && peer.hookRan ? "sees messages at its next turn" : "no listener: it reads messages only via read_messages"
-    );
-  }
+  const delivery = deliveryHint(peer);
+  if (delivery) notes.push(delivery);
   return [`- ${peerRef(peer)}`, ...notes].join(" \xB7 ");
 }
 function formatPeerList(self2, peers) {
@@ -30327,12 +30347,8 @@ var text = ({ text: text2, isError, structured }) => ({
   ...structured ? { structuredContent: structured } : {},
   ...isError ? { isError } : {}
 });
-var NOTE_EVERY_MS = 10 * 6e4;
-var noteShownAt = /* @__PURE__ */ new Map();
-function withSetupNotes(selfId2, result, always = false) {
-  const now = Date.now();
-  const notes = setupNotes(selfPeer(agent, agentPid, selfId2)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
-  for (const note of notes) noteShownAt.set(note, now);
+function withSetupNotes(selfId2, result) {
+  const notes = unseenSetupNotes(selfPeer(agent, agentPid, selfId2));
   return notes.length ? { ...result, text: `${result.text}
 
 ${notes.join("\n")}` } : result;
@@ -30377,7 +30393,7 @@ server.registerTool(
       const session = readSession(selfId2);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId2, session.sessionId, session.codexHome);
     }
-    return text(withSetupNotes(selfId2, readMessagesTool(selfId2, { id, limit }), true));
+    return text(withSetupNotes(selfId2, readMessagesTool(selfId2, { id, limit })));
   }
 );
 await server.connect(new StdioServerTransport());

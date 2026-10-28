@@ -7,7 +7,7 @@ var __export = (target, all) => {
 
 // src/opencode.ts
 import fs12 from "node:fs";
-import path15 from "node:path";
+import path14 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // node_modules/zod/v4/classic/external.js
@@ -826,10 +826,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path16) {
-  if (!path16)
+function getElementAtPath(obj, path15) {
+  if (!path15)
     return obj;
-  return path16.reduce((acc, key) => acc?.[key], obj);
+  return path15.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1169,11 +1169,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path16, issues) {
+function prefixIssues(path15, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path16);
+    iss.path.unshift(path15);
     return iss;
   });
 }
@@ -1623,16 +1623,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path16 = []) => {
+  const processError = (error63, path15 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else {
-        const fullpath = [...path16, ...issue2.path];
+        const fullpath = [...path15, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1671,17 +1671,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path16 = []) => {
+  const processError = (error63, path15 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path16, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path15, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path16, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path15, ...issue2.path]);
       } else {
-        const fullpath = [...path16, ...issue2.path];
+        const fullpath = [...path15, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1720,8 +1720,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path16 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path16) {
+  const path15 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path15) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18823,13 +18823,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path16 = ref.slice(1).split("/").filter(Boolean);
-  if (path16.length === 0) {
+  const path15 = ref.slice(1).split("/").filter(Boolean);
+  if (path15.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path16[0] === defsKey) {
-    const key = path16[1] === void 0 ? void 0 : decodeJSONPointerSegment(path16[1]);
+  if (path15[0] === defsKey) {
+    const key = path15[1] === void 0 ? void 0 : decodeJSONPointerSegment(path15[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -19725,8 +19725,8 @@ function debugLog(component, line) {
 
 // src/core/edits.ts
 import { createHash as createHash2 } from "node:crypto";
-import fs6 from "node:fs";
-import path7 from "node:path";
+import fs10 from "node:fs";
+import path12 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -19804,25 +19804,132 @@ var agentSpec = (agent) => SPECS[agent];
 var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
+// src/core/claude-socket.ts
+import fs9 from "node:fs";
+import path10 from "node:path";
+
+// src/core/confirm.ts
+import fs8 from "node:fs";
+import os4 from "node:os";
+import path9 from "node:path";
+
+// src/core/codex-activity.ts
+import fs3 from "node:fs";
+import path3 from "node:path";
+var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
+var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
+function findRollout(codexHome, threadId) {
+  const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
+  const sorted = (dir) => {
+    try {
+      return fs3.readdirSync(dir).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const root = path3.join(codexHome, "sessions");
+  for (const year of sorted(root)) {
+    for (const month of sorted(path3.join(root, year))) {
+      for (const day of sorted(path3.join(root, year, month))) {
+        const dir = path3.join(root, year, month, day);
+        const file2 = sorted(dir).find(isRollout);
+        if (file2) return path3.join(dir, file2);
+      }
+    }
+  }
+  return void 0;
+}
+function readTail(file2, bytes) {
+  const fd = fs3.openSync(file2, "r");
+  try {
+    const { size } = fs3.fstatSync(fd);
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    fs3.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    return { text: start > 0 ? text.slice(text.indexOf("\n") + 1) : text, whole: start === 0 };
+  } finally {
+    fs3.closeSync(fd);
+  }
+}
+function lastTurnEvent(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"event_msg"')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
+    if (state) return state;
+  }
+  return void 0;
+}
+function codexActivity(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    for (const bytes of TAIL_STEPS) {
+      const { text, whole } = readTail(file2, bytes);
+      const state = lastTurnEvent(text);
+      if (state || whole) return state;
+    }
+  } catch {
+  }
+  return void 0;
+}
+function codexLastResponse(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    const lines = readTail(file2, 256 * 1024).text.trimEnd().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"response_item"')) continue;
+      try {
+        const entry = JSON.parse(lines[i]);
+        const at = Date.parse(entry.timestamp ?? "");
+        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+
+// src/core/codex-queue.ts
+import { execFile, spawn } from "node:child_process";
+import os3 from "node:os";
+import path7 from "node:path";
+import readline from "node:readline";
+import { promisify } from "node:util";
+
+// src/core/messages.ts
+import crypto from "node:crypto";
+import fs6 from "node:fs";
+import path6 from "node:path";
+
 // src/core/peers.ts
 import { createHash } from "node:crypto";
-import fs4 from "node:fs";
+import fs5 from "node:fs";
 import os2 from "node:os";
-import path4 from "node:path";
+import path5 from "node:path";
 
 // src/core/version.ts
 var VERSION = true ? "0.9.0" : "0.0.0-dev";
 
 // src/core/codex-threads.ts
 import { execFileSync } from "node:child_process";
-import fs3 from "node:fs";
-import path3 from "node:path";
-var locksDir = (codexHome) => path3.join(codexHome, "thread-writer-locks");
+import fs4 from "node:fs";
+import path4 from "node:path";
+var locksDir = (codexHome) => path4.join(codexHome, "thread-writer-locks");
 var cache;
 function heldLocks(dir, maxAgeMs = 1e3) {
   let files;
   try {
-    files = fs3.readdirSync(dir).filter((f) => f.endsWith(".lock") && !f.startsWith("."));
+    files = fs4.readdirSync(dir).filter((f) => f.endsWith(".lock") && !f.startsWith("."));
   } catch {
     return void 0;
   }
@@ -19843,7 +19950,7 @@ ${files.sort().join("\n")}`;
         out2 = e.stdout ?? "";
       }
       held = new Set(
-        out2.split("\n").filter((l) => l.startsWith("n")).map((l) => path3.basename(l.slice(1)).replace(/\.lock$/, ""))
+        out2.split("\n").filter((l) => l.startsWith("n")).map((l) => path4.basename(l.slice(1)).replace(/\.lock$/, ""))
       );
     }
   } catch {
@@ -19854,8 +19961,8 @@ ${files.sort().join("\n")}`;
 }
 function codexThreadLoaded(codexHome, threadId) {
   const dir = locksDir(codexHome);
-  if (!fs3.existsSync(dir)) return void 0;
-  if (!fs3.existsSync(path3.join(dir, `${threadId}.lock`))) return false;
+  if (!fs4.existsSync(dir)) return void 0;
+  if (!fs4.existsSync(path4.join(dir, `${threadId}.lock`))) return false;
   return heldLocks(dir)?.has(threadId) ?? true;
 }
 
@@ -19921,9 +20028,9 @@ function sessionToken(sessionId) {
   return /^[A-Za-z0-9]/.test(safe) ? safe : void 0;
 }
 var sessionPeerId = (agent, pid, sessionId) => peerId(agent, sessionKey(agent, pid, sessionId));
-var ownersFile = (id) => path4.join(peerDir(id), "owners.json");
-var linkFile = (agent, pid) => path4.join(peerDir(peerId(agent, pid)), "link.json");
-var rememberedFile = (agent, sessionId) => path4.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
+var ownersFile = (id) => path5.join(peerDir(id), "owners.json");
+var linkFile = (agent, pid) => path5.join(peerDir(peerId(agent, pid)), "link.json");
+var rememberedFile = (agent, sessionId) => path5.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
 function sessionOwners(id) {
   const owners = readJson(ownersFile(id)) ?? [];
   return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
@@ -19960,10 +20067,10 @@ function rememberedName(agent, sessionId) {
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-var defaultCodexHome = () => process.env.CODEX_HOME || path4.join(os2.homedir(), ".codex");
-var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path4.join(os2.homedir(), ".claude");
+var defaultCodexHome = () => process.env.CODEX_HOME || path5.join(os2.homedir(), ".codex");
+var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path5.join(os2.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
-  const file2 = path4.join(peerDir(id), "session.json");
+  const file2 = path5.join(peerDir(id), "session.json");
   const previous = readJson(file2);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const owner = fields.sessionId ? claimSessionOwner(id, pid) : true;
@@ -19992,13 +20099,13 @@ function moveInbox(fromId, toId) {
   if (fromId === toId) return;
   let files = [];
   try {
-    files = fs4.readdirSync(inboxDir(fromId));
+    files = fs5.readdirSync(inboxDir(fromId));
   } catch {
     return;
   }
   for (const file2 of files) {
     try {
-      fs4.renameSync(path4.join(inboxDir(fromId), file2), path4.join(ensureDir(inboxDir(toId)), file2));
+      fs5.renameSync(path5.join(inboxDir(fromId), file2), path5.join(ensureDir(inboxDir(toId)), file2));
     } catch {
     }
   }
@@ -20007,7 +20114,7 @@ var HOLD_MS = 60 * 6e4;
 var SESSION_KEEP_MS = 24 * 60 * 6e4;
 var SERVICE_SESSION_ACTIVE_MS = 12 * 60 * 6e4;
 function lastActivity(id) {
-  const times = [readSession(id)?.updatedAt, readJson(path4.join(peerDir(id), "status.json"))?.at];
+  const times = [readSession(id)?.updatedAt, readJson(path5.join(peerDir(id), "status.json"))?.at];
   return Math.max(...times.map((t) => Date.parse(t ?? "")).filter((t) => !Number.isNaN(t)), 0);
 }
 function keepsSession(peer, now = Date.now()) {
@@ -20015,7 +20122,7 @@ function keepsSession(peer, now = Date.now()) {
 }
 function holdsUnread(id, now = Date.now()) {
   try {
-    return fs4.readdirSync(inboxDir(id)).some((f) => now - fs4.statSync(path4.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+    return fs5.readdirSync(inboxDir(id)).some((f) => now - fs5.statSync(path5.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
   } catch {
     return false;
   }
@@ -20023,26 +20130,26 @@ function holdsUnread(id, now = Date.now()) {
 function adoptHeldMessages(agent, selfId, sessionId) {
   let names;
   try {
-    names = fs4.readdirSync(peersDir());
+    names = fs5.readdirSync(peersDir());
   } catch {
     return;
   }
   for (const name of names) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
-    const old = readJson(path4.join(peerDir(name), "session.json"));
+    const old = readJson(path5.join(peerDir(name), "session.json"));
     if (old?.agent !== agent || old.sessionId !== sessionId || isPeerAlive(readPeer(name))) continue;
     let files = [];
     try {
-      files = fs4.readdirSync(inboxDir(name));
+      files = fs5.readdirSync(inboxDir(name));
     } catch {
     }
     for (const file2 of files) {
       try {
-        fs4.renameSync(path4.join(inboxDir(name), file2), path4.join(ensureDir(inboxDir(selfId)), file2));
+        fs5.renameSync(path5.join(inboxDir(name), file2), path5.join(ensureDir(inboxDir(selfId)), file2));
       } catch {
       }
     }
-    fs4.rmSync(peerDir(name), { recursive: true, force: true });
+    fs5.rmSync(peerDir(name), { recursive: true, force: true });
   }
 }
 function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
@@ -20054,28 +20161,28 @@ function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
     ...fields,
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  writeJsonAtomic(path4.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
+  writeJsonAtomic(path5.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
 }
 function registerListener(agent, pid, id = peerId(agent, pid)) {
   const record2 = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  writeJsonAtomic(path4.join(peerDir(id), "listener.json"), record2);
+  writeJsonAtomic(path5.join(peerDir(id), "listener.json"), record2);
 }
 var sameStableName = (a, b) => !!a.stableName && a.id !== b.id && a.agent === b.agent && a.stableName === b.stableName;
 function readSession(id) {
-  return readJson(path4.join(peerDir(id), "session.json"));
+  return readJson(path5.join(peerDir(id), "session.json"));
 }
 function slugify2(value) {
   return value.normalize("NFKD").replace(new RegExp("(\\p{Script=Latin})\\p{M}+", "gu"), "$1").normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40).replace(/[-.]+$/g, "");
 }
 function claudeSessionName(pid) {
-  const record2 = readJson(path4.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path5.join(claudeConfigDir(), "sessions", `${pid}.json`));
   return typeof record2?.name === "string" && record2.name ? record2.name : void 0;
 }
 function codexThreadName(codexHome, sessionId) {
   if (!sessionId) return void 0;
   let text;
   try {
-    text = fs4.readFileSync(path4.join(codexHome, "session_index.jsonl"), "utf8");
+    text = fs5.readFileSync(path5.join(codexHome, "session_index.jsonl"), "utf8");
   } catch {
     return void 0;
   }
@@ -20092,7 +20199,7 @@ function codexThreadName(codexHome, sessionId) {
 }
 var nameSuffix = (agent, key) => agent[0] + createHash("sha1").update(String(key)).digest("hex").slice(0, 2);
 function displayName(agent, pid, key, cwd) {
-  const folder = cwd ? slugify2(path4.basename(cwd)) : "";
+  const folder = cwd ? slugify2(path5.basename(cwd)) : "";
   if (agent === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
   const k = /^\d+$/.test(key) ? Number(key) : key;
   return folder ? `${folder}-${nameSuffix(agent, k)}` : `session-${key}`;
@@ -20123,20 +20230,20 @@ function readPeer(id) {
   if (!m) return void 0;
   const agent = m[1];
   const dir = peerDir(id);
-  const session = readJson(path4.join(dir, "session.json"));
-  const presence = readJson(path4.join(dir, "presence.json"));
-  const listener = readJson(path4.join(dir, "listener.json"));
+  const session = readJson(path5.join(dir, "session.json"));
+  const presence = readJson(path5.join(dir, "presence.json"));
+  const listener = readJson(path5.join(dir, "listener.json"));
   if (!session && !presence) return void 0;
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
   const generated = displayName(agent, pid, m[2], cwd);
-  const identity = readJson(path4.join(dir, "identity.json"));
+  const identity = readJson(path5.join(dir, "identity.json"));
   const stable = identity?.name && slugify2(identity.name) === identity.name ? identity.name : void 0;
   const name = stable || rememberedName(agent, session?.sessionId) || generated;
   const sessionKeyed = !!session?.sessionId && m[2] === sessionToken(session.sessionId);
   const aliases = [
-    cwd ? slugify2(path4.basename(cwd)) : "",
+    cwd ? slugify2(path5.basename(cwd)) : "",
     agent === "codex" ? slugify2(codexThreadName(codexHome, session?.sessionId) ?? "") : "",
     stable ? slugify2(generated) : ""
   ];
@@ -20159,14 +20266,14 @@ function readPeer(id) {
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     version: presence?.version,
     hookRan: session?.source === "hook",
-    toolHookRan: fs4.existsSync(path4.join(dir, "tool-hook.json")),
+    toolHookRan: fs5.existsSync(path5.join(dir, "tool-hook.json")),
     aliases: [...new Set(aliases)].filter((a) => a && a !== slugify2(name))
   };
 }
 function listPeers() {
   let names = [];
   try {
-    names = fs4.readdirSync(peersDir());
+    names = fs5.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -20178,7 +20285,7 @@ function listPeers() {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : void 0);
     if (pid === void 0) continue;
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, void 0)) {
-      if (!holdsUnread(name) && !keepsSession(peer)) fs4.rmSync(peerDir(name), { recursive: true, force: true });
+      if (!holdsUnread(name) && !keepsSession(peer)) fs5.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
@@ -20187,7 +20294,7 @@ function listPeers() {
   const ids = new Set(peers.map((p) => p.id));
   return peers.filter((p) => {
     if (p.agent === "codex" && !isThreadKeyed(p) && !!p.sessionId && threads.has(p.sessionId)) return false;
-    const link = readJson(path4.join(peerDir(p.id), "link.json"));
+    const link = readJson(path5.join(peerDir(p.id), "link.json"));
     if (typeof link?.id === "string" && link.id !== p.id && ids.has(link.id)) return false;
     return p.agent !== "codex" || isThreadKeyed(p) || !!p.sessionId && !threads.has(p.sessionId);
   });
@@ -20195,7 +20302,7 @@ function listPeers() {
 function keptPeers() {
   let names = [];
   try {
-    names = fs4.readdirSync(peersDir());
+    names = fs5.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -20244,99 +20351,855 @@ function resolvePeer(to, peers) {
   };
 }
 
-// src/core/status.ts
-import path6 from "node:path";
-
-// src/core/codex-activity.ts
-import fs5 from "node:fs";
-import path5 from "node:path";
-var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
-var TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
-function findRollout(codexHome, threadId) {
-  const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
-  const sorted = (dir) => {
-    try {
-      return fs5.readdirSync(dir).sort().reverse();
-    } catch {
-      return [];
-    }
-  };
-  const root = path5.join(codexHome, "sessions");
-  for (const year of sorted(root)) {
-    for (const month of sorted(path5.join(root, year))) {
-      for (const day of sorted(path5.join(root, year, month))) {
-        const dir = path5.join(root, year, month, day);
-        const file2 = sorted(dir).find(isRollout);
-        if (file2) return path5.join(dir, file2);
-      }
-    }
-  }
-  return void 0;
+// src/core/messages.ts
+var MAX_MESSAGE_CHARS = 1e5;
+var ARCHIVE_KEEP = 200;
+var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
+var partyOf = (peer) => ({ id: peer.id, agent: peer.agent, name: peer.name, address: peer.address });
+function newMessageId() {
+  return `m-${Date.now().toString(36).padStart(9, "0")}-${crypto.randomBytes(3).toString("hex")}`;
 }
-function readTail(file2, bytes) {
-  const fd = fs5.openSync(file2, "r");
+function writeToInbox(msg) {
+  writeJsonAtomic(path6.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
+}
+function archiveMessage(msg) {
+  writeJsonAtomic(path6.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
+  pruneArchive(msg.to.id);
+}
+function claimInbox(peerId2) {
+  let files;
   try {
-    const { size } = fs5.fstatSync(fd);
-    const start = Math.max(0, size - bytes);
-    const buf = Buffer.alloc(size - start);
-    fs5.readSync(fd, buf, 0, buf.length, start);
-    const text = buf.toString("utf8");
-    return { text: start > 0 ? text.slice(text.indexOf("\n") + 1) : text, whole: start === 0 };
-  } finally {
-    fs5.closeSync(fd);
+    files = fs6.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+  } catch {
+    return [];
   }
-}
-function lastTurnEvent(text) {
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"event_msg"')) continue;
-    let entry;
+  const claimed = [];
+  for (const file2 of files) {
+    const target = path6.join(ensureDir(archiveDir(peerId2)), file2);
     try {
-      entry = JSON.parse(lines[i]);
+      fs6.renameSync(path6.join(inboxDir(peerId2), file2), target);
     } catch {
       continue;
     }
-    const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
-    if (state) return state;
+    const msg = readJson(target);
+    if (msg) claimed.push(msg);
   }
-  return void 0;
+  if (claimed.length) pruneArchive(peerId2);
+  return claimed;
 }
-function codexActivity(codexHome, threadId) {
+function archiveSettled(peerId2, id) {
+  const dest = path6.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
+  for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
+    try {
+      fs6.renameSync(path6.join(dir, `${id}.json`), dest);
+      return;
+    } catch {
+    }
+  }
+}
+function readArchived(peerId2, id) {
+  if (!/^m-[0-9a-z]+-[0-9a-f]+$/.test(id)) return void 0;
+  return readJson(path6.join(archiveDir(peerId2), `${id}.json`));
+}
+function recentArchived(peerId2, limit) {
+  let files;
   try {
-    const file2 = findRollout(codexHome, threadId);
-    if (!file2) return void 0;
-    for (const bytes of TAIL_STEPS) {
-      const { text, whole } = readTail(file2, bytes);
-      const state = lastTurnEvent(text);
-      if (state || whole) return state;
+    files = fs6.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+  } catch {
+    return [];
+  }
+  return files.slice(-limit).map((f) => readJson(path6.join(archiveDir(peerId2), f))).filter((m) => !!m);
+}
+function pruneArchive(peerId2) {
+  try {
+    const files = fs6.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    for (const f of files.slice(0, Math.max(0, files.length - ARCHIVE_KEEP))) {
+      fs6.rmSync(path6.join(archiveDir(peerId2), f), { force: true });
     }
   } catch {
   }
+}
+var describeSender = (from) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
+var messageMarker = (id) => `telepathy-id:${id}`;
+function formatAsUserTurn(msg) {
+  return [
+    `[telepathy] Message from ${describeSender(msg.from)}.`,
+    messageMarker(msg.id),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. To reply, call the telepathy send_message tool with to: "${msg.from.address}".`,
+    "",
+    msg.body
+  ].join("\n");
+}
+function formatForContext(messages, { lead: withLead = true, inlineLimit = 4e3 } = {}) {
+  const lead = `[telepathy] ${messages.length === 1 ? "A new message" : `${messages.length} new messages`} from another AI agent session (not your user). Deal with it alongside your current work: reply with send_message if it asks for something.`;
+  const bodies = messages.map((msg) => {
+    if (msg.body.length <= inlineLimit) return formatAsUserTurn(msg);
+    const preview = {
+      ...msg,
+      body: `${msg.body.slice(0, 1500)}\u2026
+
+(First 1500 of ${msg.body.length} characters. Call read_messages with id "${msg.id}" for the full text.)`
+    };
+    return formatAsUserTurn(preview);
+  }).join("\n\n");
+  return withLead ? `${lead}
+
+${bodies}` : bodies;
+}
+function formatForReading(msg) {
+  return [
+    `--- ${msg.id} \xB7 from ${describeSender(msg.from)} \xB7 ${msg.sentAt}`,
+    messageMarker(msg.id),
+    `(reply with send_message to: "${msg.from.address}")`,
+    msg.body
+  ].join("\n");
+}
+
+// src/core/codex-queue.ts
+var execFileAsync = promisify(execFile);
+function codexCandidates() {
+  const configured = process.env.TELEPATHY_CODEX_BIN;
+  if (configured) return [configured];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path7.join(os3.homedir(), ".local", "bin", "codex")];
+}
+var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
+async function queueIntoCodex(threadId, text, codexHome) {
+  const args = ["queue", `--thread=${threadId}`, `--message=${text}`];
+  let lastError;
+  for (const bin of codexCandidates()) {
+    try {
+      const { stdout } = await execFileAsync(bin, args, { env: codexEnv(codexHome), timeout: 3e4, maxBuffer: 1024 * 1024 });
+      return /Queued message (\S+) for thread/.exec(stdout)?.[1];
+    } catch (err) {
+      lastError = err;
+      if (err.code !== "ENOENT") break;
+    }
+  }
+  const e = lastError;
+  if (e?.code === "ENOENT") {
+    throw new Error("The codex CLI was not found on PATH; set TELEPATHY_CODEX_BIN to its path.");
+  }
+  throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
+}
+async function deleteFromCodexQueue(threadId, queueIds, codexHome) {
+  if (!queueIds.length) return /* @__PURE__ */ new Map();
+  for (const bin of codexCandidates()) {
+    try {
+      return await appServerDeletes(bin, threadId, queueIds, codexHome);
+    } catch (err) {
+      if (err.code !== "ENOENT") return void 0;
+    }
+  }
   return void 0;
 }
-function codexLastResponse(codexHome, threadId) {
-  try {
-    const file2 = findRollout(codexHome, threadId);
-    if (!file2) return void 0;
-    const lines = readTail(file2, 256 * 1024).text.trimEnd().split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"response_item"')) continue;
+function appServerDeletes(bin, threadId, queueIds, codexHome) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(bin, ["app-server"], { env: codexEnv(codexHome), stdio: ["pipe", "pipe", "ignore"] });
+    const results = /* @__PURE__ */ new Map();
+    const finish = (err) => {
+      clearTimeout(timer2);
+      child.kill();
+      if (err) reject(err);
+      else resolve(results);
+    };
+    const timer2 = setTimeout(() => finish(new Error("codex app-server timed out")), 1e4);
+    child.on("error", (err) => finish(err));
+    const send = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
+    readline.createInterface({ input: child.stdout }).on("line", (line) => {
+      let msg;
       try {
-        const entry = JSON.parse(lines[i]);
-        const at = Date.parse(entry.timestamp ?? "");
-        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
+        msg = JSON.parse(line);
+      } catch {
+        return;
+      }
+      if (msg.id === 0) {
+        if (msg.error) return finish(new Error(msg.error.message ?? "initialize failed"));
+        send({ method: "initialized" });
+        queueIds.forEach(
+          (queuedSubmissionId, i) => send({ id: i + 1, method: "thread/queue/delete", params: { threadId, queuedSubmissionId } })
+        );
+      } else if (typeof msg.id === "number" && msg.id >= 1 && msg.id <= queueIds.length) {
+        if (msg.error) return finish(new Error(msg.error.message ?? "thread/queue/delete failed"));
+        results.set(queueIds[msg.id - 1], msg.result?.deleted === true);
+        if (results.size === queueIds.length) finish();
+      }
+    });
+    send({
+      id: 0,
+      method: "initialize",
+      params: { clientInfo: { name: "telepathy", version: VERSION }, capabilities: { experimentalApi: true } }
+    });
+  });
+}
+
+// src/core/wake.ts
+import { spawn as spawn2 } from "node:child_process";
+import crypto2 from "node:crypto";
+import fs7 from "node:fs";
+import path8 from "node:path";
+var WAKE_DEBOUNCE_MS = 400;
+var WAKE_DEBOUNCE_MAX_MS = 1500;
+var DEFAULT_TIMEOUT_MS = 8e3;
+var DEFAULT_AUTH_HEADERS = ["Authorization", "X-Automation-Key"];
+var deliveryConfigPath = () => path8.join(stateDir(), "delivery.json");
+var wakeLogPath = () => path8.join(stateDir(), "wake.log");
+function wakeDebounceMs() {
+  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MS);
+  if (Number.isFinite(n) && n >= 0) return n;
+  return WAKE_DEBOUNCE_MS;
+}
+function wakeDebounceMaxMs() {
+  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MAX_MS);
+  const configured = Number.isFinite(n) && n >= 0 ? n : WAKE_DEBOUNCE_MAX_MS;
+  return Math.max(configured, wakeDebounceMs());
+}
+var wakeDir = () => path8.join(stateDir(), "wake");
+var batchPath = (key) => path8.join(wakeDir(), `${key}.json`);
+function batchKey(target) {
+  const material = JSON.stringify({ url: target.webhook?.url ?? "", command: target.command ?? [] });
+  return crypto2.createHash("sha256").update(material).digest("hex").slice(0, 32);
+}
+function readDeliveryConfig() {
+  const file2 = deliveryConfigPath();
+  let mode;
+  try {
+    mode = fs7.statSync(file2).mode & 511;
+  } catch {
+    return void 0;
+  }
+  if ((mode & 63) !== 0) {
+    debugLog("wake", `delivery.json is mode ${mode.toString(8)}, not 600; webhook config was not loaded`);
+    return void 0;
+  }
+  return readJson(file2);
+}
+function wakeForPeer(peer, config2 = readDeliveryConfig()) {
+  if (!config2) return void 0;
+  const keys = [peer.address, peer.stableName, peer.id].filter((k) => !!k);
+  for (const key of keys) {
+    const hit = config2.peers?.[key];
+    if (hit?.webhook?.url || hit?.command?.length) return hit;
+  }
+  if (!config2.webhook?.url && !config2.command?.length) return void 0;
+  const name = config2.name?.trim().toLowerCase();
+  if (!name) return void 0;
+  if (peer.stableName === name || peer.address.toLowerCase() === `${peer.agent}:${name}`) {
+    return { webhook: config2.webhook, command: config2.command };
+  }
+  return void 0;
+}
+function webhookHeaders(target) {
+  const headers = { "content-type": "application/json" };
+  const key = target.key?.trim();
+  if (key) {
+    const names = target.authHeaders?.length ? target.authHeaders : DEFAULT_AUTH_HEADERS;
+    for (const name of names) {
+      headers[name] = name.toLowerCase() === "authorization" ? `Bearer ${key}` : key;
+    }
+  }
+  for (const [name, value] of Object.entries(target.headers ?? {})) headers[name] = value;
+  return headers;
+}
+function headerSecrets(headers) {
+  return Object.values(headers ?? {}).filter((v) => v.length >= 4);
+}
+function secretValues(target) {
+  const values = headerSecrets(webhookHeaders(target ?? { url: "" }));
+  const key = target?.key?.trim();
+  if (key && key.length >= 4) values.push(key);
+  if (target?.url) {
+    try {
+      for (const value of new URL(target.url).searchParams.values()) {
+        if (value.length >= 4) values.push(value);
+      }
+    } catch {
+    }
+  }
+  return values;
+}
+var scrub = (text, secrets) => {
+  let out2 = text;
+  for (const secret of secrets) {
+    if (secret.length < 4) continue;
+    out2 = out2.split(secret).join("[redacted]");
+  }
+  return out2.slice(0, 200);
+};
+function hostOf(url2) {
+  try {
+    return new URL(url2).host || "webhook";
+  } catch {
+    return "webhook";
+  }
+}
+function logFailure(kind, target, detail, secrets, url2) {
+  let text = `${kind} ${target} ${detail}`;
+  if (url2) text = text.split(url2).join(target);
+  const safe = scrub(text, secrets);
+  try {
+    ensureDir(stateDir());
+    fs7.appendFileSync(wakeLogPath(), `${(/* @__PURE__ */ new Date()).toISOString()} ${safe}
+`);
+    fs7.chmodSync(wakeLogPath(), 384);
+  } catch {
+  }
+  debugLog("wake", safe);
+}
+function sleepSync(ms) {
+  const until = Date.now() + ms;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    while (Date.now() < until) {
+    }
+  }
+}
+function withLockSync(fn) {
+  ensureDir(wakeDir());
+  const lock = path8.join(wakeDir(), ".lock");
+  const start = Date.now();
+  for (; ; ) {
+    try {
+      const fd = fs7.openSync(lock, "wx");
+      try {
+        return fn();
+      } finally {
+        fs7.closeSync(fd);
+        try {
+          fs7.unlinkSync(lock);
+        } catch {
+        }
+      }
+    } catch (err) {
+      if (err.code !== "EEXIST") throw err;
+      try {
+        if (Date.now() - fs7.statSync(lock).mtimeMs > 5e3) fs7.unlinkSync(lock);
       } catch {
       }
+      if (Date.now() - start > 2e3) throw new Error("wake lock timed out");
+      sleepSync(10);
+    }
+  }
+}
+function pendingItems(items) {
+  return items.filter((item) => {
+    try {
+      return fs7.existsSync(path8.join(inboxDir(item.peerId), `${item.id}.json`));
+    } catch {
+      return false;
+    }
+  });
+}
+function wakePayload(items) {
+  const last = items[items.length - 1];
+  return {
+    id: last?.id ?? "",
+    ids: items.map((item) => item.id),
+    from: last?.from ?? "",
+    count: items.length,
+    at: last?.at ?? ""
+  };
+}
+var refTimers = true;
+var timer;
+var flushing;
+var flusherStarted = false;
+function armTimer(ms) {
+  if (timer) clearTimeout(timer);
+  timer = setTimeout(() => {
+    timer = void 0;
+    void kick();
+  }, ms);
+  if (!refTimers) timer.unref();
+}
+function scheduleFlush() {
+  armTimer(wakeDebounceMs());
+}
+async function kick() {
+  if (flushing) {
+    await flushing;
+    return;
+  }
+  flushing = flushDue().finally(() => {
+    flushing = void 0;
+  });
+  await flushing;
+}
+function startWakeFlusher() {
+  if (flusherStarted) return;
+  flusherStarted = true;
+  refTimers = true;
+  ensureDir(wakeDir());
+  const tick = () => {
+    void kick();
+  };
+  setInterval(tick, 200).unref();
+  try {
+    const watcher = fs7.watch(wakeDir(), tick);
+    watcher.unref();
+  } catch {
+  }
+}
+function listBatches() {
+  try {
+    return fs7.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path8.join(wakeDir(), name));
+  } catch {
+    return [];
+  }
+}
+function dueIn(file2) {
+  const batch = readJson(file2);
+  if (!batch) return 0;
+  const due = Math.min(batch.lastAtMs + wakeDebounceMs(), batch.firstAtMs + wakeDebounceMaxMs());
+  return Math.max(0, due - Date.now());
+}
+async function flushDue() {
+  for (const file2 of listBatches()) {
+    const peek = readJson(file2);
+    if (!peek || dueIn(file2) > 0) continue;
+    let taken;
+    withLockSync(() => {
+      const cur = readJson(file2);
+      if (!cur) return;
+      const due = Math.min(cur.lastAtMs + wakeDebounceMs(), cur.firstAtMs + wakeDebounceMaxMs());
+      if (Date.now() < due) return;
+      taken = cur;
+      try {
+        fs7.unlinkSync(file2);
+      } catch {
+        taken = void 0;
+      }
+    });
+    if (taken) await deliverBatch(taken);
+  }
+}
+async function deliverBatch(batch) {
+  const items = pendingItems(batch.items);
+  if (!items.length) return;
+  const payload = wakePayload(items);
+  const target = { webhook: batch.webhook, command: batch.command };
+  await deliver(target, payload);
+}
+async function deliver(target, payload) {
+  if (target.webhook?.url) {
+    const posted = await postWebhook(target.webhook, payload);
+    if (posted.ok || !target.command?.length) return posted;
+    const ran = await runCommand(target.command, payload, target.webhook.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    if (ran.ok) return ran;
+    return { ok: false, how: "webhook", detail: `${posted.detail}; command failed (${ran.detail})` };
+  }
+  if (target.command?.length) return runCommand(target.command, payload, DEFAULT_TIMEOUT_MS);
+  return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+}
+async function postWebhook(target, payload) {
+  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const secrets = secretValues(target);
+  let host = "webhook";
+  try {
+    host = new URL(target.url).host || host;
+  } catch {
+    logFailure("webhook", host, "failed: url is invalid", secrets);
+    return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+  }
+  try {
+    const res = await fetch(target.url, {
+      method: "POST",
+      headers: webhookHeaders(target),
+      body: JSON.stringify(payload),
+      redirect: "error",
+      signal: AbortSignal.timeout(timeoutMs)
+    });
+    if (!res.ok) {
+      logFailure("webhook", host, `HTTP ${res.status}`, secrets, target.url);
+      return { ok: false, how: "webhook", detail: `HTTP ${res.status}`, status: res.status };
+    }
+    debugLog("wake", `webhook ${host} HTTP ${res.status}`);
+    return { ok: true, how: "webhook", status: res.status };
+  } catch (err) {
+    const detail = scrub(err.name === "TimeoutError" ? "timed out" : err.message, secrets);
+    logFailure("webhook", host, `failed: ${detail}`, secrets, target.url);
+    return { ok: false, how: "webhook", detail };
+  }
+}
+function runCommand(argv, payload, timeoutMs) {
+  const bin = argv[0];
+  const name = bin ? path8.basename(bin) : "command";
+  if (!bin) {
+    logFailure("command", name, "failed: command is empty", []);
+    return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
+  }
+  return new Promise((resolve) => {
+    const child = spawn2(bin, argv.slice(1), { stdio: ["pipe", "ignore", "ignore"] });
+    const timerId = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.on("error", (err) => {
+      clearTimeout(timerId);
+      const detail = scrub(err.message, []);
+      logFailure("command", name, `failed: ${detail}`, []);
+      resolve({ ok: false, how: "command", detail });
+    });
+    child.on("close", (code) => {
+      clearTimeout(timerId);
+      if (code === 0) {
+        debugLog("wake", `command ${name} exited 0`);
+        resolve({ ok: true, how: "command", status: 0 });
+        return;
+      }
+      logFailure("command", name, `exited ${code ?? "signal"}`, []);
+      resolve({ ok: false, how: "command", detail: `exit ${code ?? "signal"}`, status: code ?? void 0 });
+    });
+    child.stdin.end(JSON.stringify(payload));
+  });
+}
+function notifyWake(peer, message) {
+  const target = wakeForPeer(peer);
+  if (!target) return void 0;
+  if (target.webhook?.url) {
+    try {
+      void new URL(target.webhook.url);
+    } catch {
+      return { ok: false, how: "webhook", detail: "webhook url is invalid" };
+    }
+  }
+  const key = batchKey(target);
+  const file2 = batchPath(key);
+  try {
+    withLockSync(() => {
+      const batch = readJson(file2) ?? {
+        items: [],
+        firstAtMs: Date.now(),
+        lastAtMs: Date.now(),
+        webhook: target.webhook,
+        command: target.command
+      };
+      if (!batch.items.some((item) => item.id === message.id)) {
+        batch.items.push({ id: message.id, peerId: message.to.id, from: message.from.address, at: message.sentAt });
+      }
+      batch.lastAtMs = Date.now();
+      batch.webhook = target.webhook;
+      batch.command = target.command;
+      writeJsonAtomic(file2, batch);
+    });
+  } catch (err) {
+    const detail = scrub(err.message, secretValues(target.webhook));
+    logFailure(target.webhook?.url ? "webhook" : "command", target.webhook?.url ? hostOf(target.webhook.url) : "command", `failed: ${detail}`, secretValues(target.webhook));
+    return { ok: false, how: target.webhook?.url ? "webhook" : "command", detail };
+  }
+  scheduleFlush();
+  return { ok: true, how: target.webhook?.url ? "webhook" : "command", scheduled: true };
+}
+function cancelWake(peerId2, messageId) {
+  let result = "absent";
+  for (const file2 of listBatches()) {
+    withLockSync(() => {
+      const batch = readJson(file2);
+      if (!batch) return;
+      const next = batch.items.filter((item) => !(item.id === messageId && item.peerId === peerId2));
+      if (next.length === batch.items.length) return;
+      result = "cancelled";
+      if (!next.length) {
+        try {
+          fs7.unlinkSync(file2);
+        } catch {
+        }
+        return;
+      }
+      writeJsonAtomic(file2, { ...batch, items: next });
+    });
+  }
+  return result;
+}
+
+// src/core/confirm.ts
+function confirmWaitEnabled() {
+  const v = process.env.TELEPATHY_CONFIRM_WAIT;
+  return v !== "0" && v !== "false";
+}
+function confirmAbortMs() {
+  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 11e4);
+}
+function confirmGraceMs() {
+  return envMs("TELEPATHY_CONFIRM_GRACE_MS", 1e4);
+}
+function confirmPollMs() {
+  return Math.max(15, envMs("TELEPATHY_CONFIRM_POLL_MS", 200));
+}
+function envMs(name, fallback) {
+  const n = Number(process.env[name]);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+var FULL_READ = 32 * 1024 * 1024;
+var TAIL_READ = 4 * 1024 * 1024;
+function transcriptHasMarker(peer, marker) {
+  return !!peer && inspectTranscript(peer, marker).found;
+}
+function inspectTranscript(peer, marker) {
+  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
+  if (override) {
+    if (!fs8.existsSync(override)) return { located: false, found: false };
+    return { located: true, found: treeHas(override, marker, 4) };
+  }
+  if (peer.agent === "claude") return claudeTranscript(peer, marker);
+  if (peer.agent === "codex") return codexTranscript(peer, marker);
+  if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
+  if (peer.agent === "gemini") return geminiTranscript(marker);
+  if (peer.agent === "copilot" && peer.sessionId) {
+    const file2 = path9.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
+    if (!fs8.existsSync(file2)) return { located: false, found: false };
+    return { located: true, found: fileHas(file2, marker) };
+  }
+  return { located: false, found: false };
+}
+function claudeTranscript(peer, marker) {
+  if (!peer.sessionId) return { located: false, found: false };
+  const projects = path9.join(claudeConfigDir(), "projects");
+  const name = `${peer.sessionId}.jsonl`;
+  const files = /* @__PURE__ */ new Set();
+  if (peer.cwd) {
+    const slug = peer.cwd.replace(/[^A-Za-z0-9]/g, "-").slice(0, 200);
+    files.add(path9.join(projects, slug, name));
+  }
+  if (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CODE_PROJECT_DIR_NAME) {
+    files.add(path9.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
+  }
+  try {
+    for (const dir of fs8.readdirSync(projects).slice(0, 80)) {
+      files.add(path9.join(projects, dir, name));
     }
   } catch {
   }
+  const existing = [...files].filter((file2) => fs8.existsSync(file2));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
+}
+function codexTranscript(peer, marker) {
+  if (!peer.sessionId) return { located: false, found: false };
+  const home = peer.codexHome || process.env.CODEX_HOME || path9.join(os4.homedir(), ".codex");
+  const file2 = findRollout(home, peer.sessionId);
+  if (!file2) return { located: false, found: false };
+  return { located: true, found: fileHas(file2, marker) };
+}
+function opencodeTranscript(marker) {
+  const xdg = process.env.XDG_DATA_HOME || path9.join(os4.homedir(), ".local", "share");
+  const db = process.env.OPENCODE_DB || path9.join(xdg, "opencode", "opencode.db");
+  const files = [db, `${db}-wal`];
+  const legacy = path9.join(xdg, "opencode", "storage");
+  const existing = files.filter((file2) => fs8.existsSync(file2));
+  const inDb = existing.some((file2) => fileHas(file2, marker));
+  if (inDb) return { located: true, found: true };
+  if (fs8.existsSync(legacy) && treeHas(legacy, marker, 5)) return { located: true, found: true };
+  if (existing.length || fs8.existsSync(legacy)) return { located: true, found: false };
+  return { located: false, found: false };
+}
+function geminiTranscript(marker) {
+  const home = process.env.GEMINI_CLI_HOME || path9.join(os4.homedir(), ".gemini");
+  const tmp = path9.join(home, "tmp");
+  if (!fs8.existsSync(tmp)) return { located: false, found: false };
+  return { located: true, found: treeHas(tmp, marker, 4) };
+}
+function treeHas(dir, marker, depth) {
+  if (depth < 0) return false;
+  let names;
+  try {
+    names = fs8.readdirSync(dir);
+  } catch {
+    return false;
+  }
+  for (const name of names) {
+    if (name === "node_modules") continue;
+    const file2 = path9.join(dir, name);
+    let st;
+    try {
+      st = fs8.statSync(file2);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) {
+      if (treeHas(file2, marker, depth - 1)) return true;
+    } else if (st.isFile() && fileHas(file2, marker)) return true;
+  }
+  return false;
+}
+function fileHas(file2, marker) {
+  let fd;
+  try {
+    const st = fs8.statSync(file2);
+    if (!st.isFile() || st.size === 0) return false;
+    fd = fs8.openSync(file2, "r");
+    const start = st.size <= FULL_READ ? 0 : Math.max(0, st.size - TAIL_READ);
+    const buf = Buffer.alloc(st.size - start);
+    fs8.readSync(fd, buf, 0, buf.length, start);
+    return buf.includes(marker);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== void 0) fs8.closeSync(fd);
+  }
+}
+function withdrawPending(peerId2, messageId) {
+  const src = path9.join(inboxDir(peerId2), `${messageId}.json`);
+  const dest = path9.join(ensureDir(withdrawnDir(peerId2)), `${messageId}.json`);
+  try {
+    fs8.renameSync(src, dest);
+    return "withdrawn";
+  } catch {
+    if (fs8.existsSync(path9.join(archiveDir(peerId2), `${messageId}.json`))) return "claimed";
+    return "missing";
+  }
+}
+function storedMessage(peerId2, messageId) {
+  for (const dir of [inboxDir(peerId2), archiveDir(peerId2), withdrawnDir(peerId2)]) {
+    const msg = readJson(path9.join(dir, `${messageId}.json`));
+    if (msg) return msg;
+  }
   return void 0;
+}
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function untilMarker(peer, marker, budgetMs) {
+  const deadline = Date.now() + budgetMs;
+  const step = confirmPollMs();
+  for (; ; ) {
+    if (transcriptHasMarker(peer, marker)) return true;
+    const left = deadline - Date.now();
+    if (left <= 0) return false;
+    await sleep(Math.min(step, left));
+  }
+}
+var UNRECALLABLE = /cannot be recalled/i;
+function signalAfterWithdraw(routeStatus, withdrawn) {
+  if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
+  const signal = routeStatus.replace(
+    "It stays in the inbox for the next prompt, or until the session calls read_messages.",
+    "The inbox copy was withdrawn, so the next prompt will not see it."
+  ).replace(
+    "It stays in the inbox until the session calls read_messages.",
+    "The inbox copy was withdrawn, so a later read will not see it."
+  ).replace("The inbox copy can still be withdrawn.", "The inbox copy was withdrawn.");
+  return { signal, noted: signal !== routeStatus };
+}
+async function confirmDelivery(peer, message, routeStatus) {
+  const marker = messageMarker(message.id);
+  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
+  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
+    return {
+      confirmed: false,
+      kept: true,
+      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
+    };
+  }
+  if (await untilMarker(peer, marker, confirmAbortMs())) {
+    archiveSettled(peer.id, message.id);
+    return { confirmed: true, status: delivered };
+  }
+  const stored2 = storedMessage(peer.id, message.id);
+  const withdrawn = withdrawPending(peer.id, message.id);
+  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
+  const notes = [];
+  if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
+    notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
+  }
+  if (withdrawn === "claimed") notes.push("The inbox copy was already claimed, which is not proof the model saw it.");
+  const queueId = stored2?.codexQueueId;
+  const thread = stored2?.codexThreadId ?? peer.sessionId;
+  if (peer.agent === "codex" && queueId && thread) {
+    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome);
+    if (!removed) notes.push("The Codex queue item could not be removed because the app-server was unreachable.");
+    else if (removed.get(queueId) === false) notes.push("Codex had already taken the queue item, so it could not be removed.");
+    else notes.push("The Codex queue item was removed.");
+  }
+  const wake = cancelWake(peer.id, message.id);
+  if (/webhook|delivery command/i.test(routeStatus)) {
+    notes.push(
+      wake === "cancelled" ? "The pending wake was cancelled before it was sent." : "A wake that already left cannot be recalled; its body has no message text."
+    );
+  }
+  if (await untilMarker(peer, marker, confirmGraceMs())) {
+    archiveSettled(peer.id, message.id);
+    return { confirmed: true, status: delivered };
+  }
+  const look = inspectTranscript(peer, marker);
+  const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
+  const extra = notes.length ? ` ${notes.join(" ")}` : "";
+  if (UNRECALLABLE.test(routeStatus)) {
+    return {
+      confirmed: false,
+      status: `${routeStatus} ${where}${extra}`
+    };
+  }
+  return {
+    confirmed: false,
+    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${signal}${extra}`
+  };
+}
+
+// src/core/claude-socket.ts
+var SOCKET_LINE_MAX = 1024 * 1024;
+var INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
+var socketFile = (id) => path10.join(peerDir(id), "socket.json");
+var listenerFile = (id) => path10.join(peerDir(id), "socket-listener.json");
+function readClaudeSocket(id) {
+  const record2 = readJson(socketFile(id));
+  if (!record2?.path) return void 0;
+  if (typeof record2.ownerPid === "number") {
+    const owners = sessionOwners(id);
+    if (owners.length > 0 && owners[0]?.pid !== record2.ownerPid) return void 0;
+  }
+  return { path: record2.path, ...record2.token ? { token: record2.token } : {} };
+}
+function claudeSocketArmed(id) {
+  const record2 = readJson(listenerFile(id));
+  return !!record2 && isSameProcess(record2.pid, record2.procStart);
+}
+function readInbound(file2) {
+  const value = readJson(file2)?.crossSessionInbound;
+  if (value === "accept" || value === "hold" || value === "refuse") return value;
+  return void 0;
+}
+function managedSettingsDir() {
+  if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
+  if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
+  if (process.platform === "win32") return path10.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  return "/etc/claude-code";
+}
+function managedInbound() {
+  const dir = managedSettingsDir();
+  let found = readInbound(path10.join(dir, "managed-settings.json"));
+  let names = [];
+  try {
+    names = fs9.readdirSync(path10.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+  } catch {
+  }
+  for (const name of names) {
+    const value = readInbound(path10.join(dir, "managed-settings.d", name));
+    if (value) found = value;
+  }
+  return found;
+}
+function crossSessionInbound(peer) {
+  const managed = managedInbound();
+  const user = readInbound(path10.join(claudeConfigDir(), "settings.json"));
+  const higher = managed ?? user;
+  const project = peer?.cwd ? readInbound(path10.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path10.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  let effective = higher;
+  for (const value of [project, local]) {
+    if (!value) continue;
+    if (higher === void 0 || INBOUND_RANK[value] > INBOUND_RANK[higher]) effective = value;
+  }
+  return effective;
+}
+var flushImpl;
+async function flushClaudeSocket(id) {
+  if (flushImpl) return flushImpl(id);
+  return "idle";
 }
 
 // src/core/status.ts
+import path11 from "node:path";
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path6.join(peerDir(id), "status.json");
+var statusFile = (id) => path11.join(peerDir(id), "status.json");
 function writeStatus(id, status, now = Date.now()) {
   writeJsonAtomic(statusFile(id), { status, at: new Date(now).toISOString() });
 }
@@ -20347,7 +21210,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record2 = readJson(path6.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path11.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   let status = record2.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -20446,16 +21309,22 @@ function formatAgo(ms) {
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
   return `${Math.floor(s / 86400)}d ago`;
 }
+function deliveryHint(peer) {
+  if (peer.agent === "codex" || peer.hasListener) return void 0;
+  if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
+    const inbound = crossSessionInbound(peer);
+    if (inbound !== "hold" && inbound !== "refuse") return "sees messages through its inbox socket";
+  }
+  if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return "sees messages at its next turn";
+  return "no listener: it reads messages only via read_messages";
+}
 function describePeer(peer) {
   const notes = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   const status = statusText(peerStatus(peer));
   if (status) notes.push(status);
-  if (peer.agent !== "codex" && !peer.hasListener) {
-    notes.push(
-      agentSpec(peer.agent).nextTurnHook && peer.hookRan ? "sees messages at its next turn" : "no listener: it reads messages only via read_messages"
-    );
-  }
+  const delivery = deliveryHint(peer);
+  if (delivery) notes.push(delivery);
   return [`- ${peerRef(peer)}`, ...notes].join(" \xB7 ");
 }
 function formatPeerList(self, peers) {
@@ -20495,9 +21364,9 @@ function shellPaths(command, cwd) {
   for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
     const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
-    if (!path7.isAbsolute(word) && !cwd) continue;
-    const resolved = path7.resolve(cwd ?? "/", word);
-    if (resolved === cwd || !fs6.existsSync(resolved)) continue;
+    if (!path12.isAbsolute(word) && !cwd) continue;
+    const resolved = path12.resolve(cwd ?? "/", word);
+    if (resolved === cwd || !fs10.existsSync(resolved)) continue;
     found.push(resolved);
     if (found.length >= 8) break;
   }
@@ -20523,8 +21392,8 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
 function ignored(file2) {
-  const parts = file2.split(path7.sep);
-  return parts.includes("node_modules") || parts.includes(".git") || file2.startsWith(stateDir() + path7.sep);
+  const parts = file2.split(path12.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file2.startsWith(stateDir() + path12.sep);
 }
 function touchedFiles(toolName, toolInput, cwd) {
   const none = { edited: [], read: [] };
@@ -20537,23 +21406,23 @@ function touchedFiles(toolName, toolInput, cwd) {
   const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input2) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
   const files = [
     ...new Set(
-      raw.map((f) => f.trim()).filter((f) => path7.isAbsolute(f) || cwd).map((f) => path7.resolve(cwd ?? "/", f))
+      raw.map((f) => f.trim()).filter((f) => path12.isAbsolute(f) || cwd).map((f) => path12.resolve(cwd ?? "/", f))
     )
   ].filter((f) => !ignored(f));
   return { ...none, [kind]: files };
 }
 var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
-var editsDir = (id) => path7.join(peerDir(id), "edits");
+var editsDir = (id) => path12.join(peerDir(id), "edits");
 function recordEdits(selfId, files, now = Date.now()) {
   for (const file2 of files) {
-    writeJsonAtomic(path7.join(editsDir(selfId), `${keyOf(file2)}.json`), { file: file2, at: new Date(now).toISOString() });
+    writeJsonAtomic(path12.join(editsDir(selfId), `${keyOf(file2)}.json`), { file: file2, at: new Date(now).toISOString() });
   }
 }
 function othersRecentEdits(selfId, now) {
   const found = [];
   let ids = [];
   try {
-    ids = fs6.readdirSync(peersDir());
+    ids = fs10.readdirSync(peersDir());
   } catch {
     return found;
   }
@@ -20561,12 +21430,12 @@ function othersRecentEdits(selfId, now) {
     if (id === selfId) continue;
     let files = [];
     try {
-      files = fs6.readdirSync(editsDir(id));
+      files = fs10.readdirSync(editsDir(id));
     } catch {
       continue;
     }
     for (const name of files) {
-      const edit = readJson(path7.join(editsDir(id), name));
+      const edit = readJson(path12.join(editsDir(id), name));
       const at = edit ? Date.parse(edit.at) : Number.NaN;
       if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
     }
@@ -20580,7 +21449,7 @@ var SEND_HINT = {
 };
 var isDirectory = (p) => {
   try {
-    return fs6.statSync(p).isDirectory();
+    return fs10.statSync(p).isDirectory();
   } catch {
     return false;
   }
@@ -20589,29 +21458,29 @@ function overlapNote(self, files, cwd, now = Date.now()) {
   if (!files.length) return void 0;
   const recent = othersRecentEdits(self.id, now);
   if (!recent.length) return void 0;
-  const shownDir = path7.join(peerDir(self.id), "overlaps");
+  const shownDir = path12.join(peerDir(self.id), "overlaps");
   const alive = /* @__PURE__ */ new Map();
   const lines = [];
   for (const file2 of files) {
-    const dir = isDirectory(file2) ? file2 : path7.dirname(file2);
+    const dir = isDirectory(file2) ? file2 : path12.dirname(file2);
     const byPeer = /* @__PURE__ */ new Map();
     for (const r of recent) {
       const same = r.edit.file === file2;
-      if (!same && path7.dirname(r.edit.file) !== dir) continue;
+      if (!same && path12.dirname(r.edit.file) !== dir) continue;
       const best = byPeer.get(r.id);
       if (!best || same && best.edit.file !== file2 || same === (best.edit.file === file2) && r.at > best.at) byPeer.set(r.id, r);
     }
     for (const [id, r] of byPeer) {
-      const marker = path7.join(shownDir, `${keyOf(`${id}
+      const marker = path12.join(shownDir, `${keyOf(`${id}
 ${dir}`)}.json`);
-      if (fs6.existsSync(marker)) continue;
+      if (fs10.existsSync(marker)) continue;
       if (!alive.has(id)) {
         const peer2 = readPeer(id);
         alive.set(id, isPeerAlive(peer2) ? peer2 : void 0);
       }
       const peer = alive.get(id);
       if (!peer) continue;
-      const shown = cwd && r.edit.file.startsWith(cwd + path7.sep) ? path7.relative(cwd, r.edit.file) : r.edit.file;
+      const shown = cwd && r.edit.file.startsWith(cwd + path12.sep) ? path12.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
         `[telepathy note] Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? "send_message"}.`
       );
@@ -20651,854 +21520,10 @@ function guideLines(agent, opts = {}) {
 }
 var guideText = (agent, opts = {}) => guideLines(agent, opts).join("\n");
 
-// src/core/messages.ts
-import crypto from "node:crypto";
-import fs7 from "node:fs";
-import path8 from "node:path";
-var MAX_MESSAGE_CHARS = 1e5;
-var ARCHIVE_KEEP = 200;
-var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
-var partyOf = (peer) => ({ id: peer.id, agent: peer.agent, name: peer.name, address: peer.address });
-function newMessageId() {
-  return `m-${Date.now().toString(36).padStart(9, "0")}-${crypto.randomBytes(3).toString("hex")}`;
-}
-function writeToInbox(msg) {
-  writeJsonAtomic(path8.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
-}
-function archiveMessage(msg) {
-  writeJsonAtomic(path8.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
-  pruneArchive(msg.to.id);
-}
-function claimInbox(peerId2) {
-  let files;
-  try {
-    files = fs7.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
-  } catch {
-    return [];
-  }
-  const claimed = [];
-  for (const file2 of files) {
-    const target = path8.join(ensureDir(archiveDir(peerId2)), file2);
-    try {
-      fs7.renameSync(path8.join(inboxDir(peerId2), file2), target);
-    } catch {
-      continue;
-    }
-    const msg = readJson(target);
-    if (msg) claimed.push(msg);
-  }
-  if (claimed.length) pruneArchive(peerId2);
-  return claimed;
-}
-function archiveSettled(peerId2, id) {
-  const dest = path8.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
-  for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
-    try {
-      fs7.renameSync(path8.join(dir, `${id}.json`), dest);
-      return;
-    } catch {
-    }
-  }
-}
-function readArchived(peerId2, id) {
-  if (!/^m-[0-9a-z]+-[0-9a-f]+$/.test(id)) return void 0;
-  return readJson(path8.join(archiveDir(peerId2), `${id}.json`));
-}
-function recentArchived(peerId2, limit) {
-  let files;
-  try {
-    files = fs7.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
-  } catch {
-    return [];
-  }
-  return files.slice(-limit).map((f) => readJson(path8.join(archiveDir(peerId2), f))).filter((m) => !!m);
-}
-function pruneArchive(peerId2) {
-  try {
-    const files = fs7.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
-    for (const f of files.slice(0, Math.max(0, files.length - ARCHIVE_KEEP))) {
-      fs7.rmSync(path8.join(archiveDir(peerId2), f), { force: true });
-    }
-  } catch {
-  }
-}
-var describeSender = (from) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
-var messageMarker = (id) => `telepathy-id:${id}`;
-function formatAsUserTurn(msg) {
-  return [
-    `[telepathy] Message from ${describeSender(msg.from)}.`,
-    messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. To reply, call the telepathy send_message tool with to: "${msg.from.address}".`,
-    "",
-    msg.body
-  ].join("\n");
-}
-function formatForContext(messages, { lead: withLead = true, inlineLimit = 4e3 } = {}) {
-  const lead = `[telepathy] ${messages.length === 1 ? "A new message" : `${messages.length} new messages`} from another AI agent session (not your user). Deal with it alongside your current work: reply with send_message if it asks for something.`;
-  const bodies = messages.map((msg) => {
-    if (msg.body.length <= inlineLimit) return formatAsUserTurn(msg);
-    const preview = {
-      ...msg,
-      body: `${msg.body.slice(0, 1500)}\u2026
-
-(First 1500 of ${msg.body.length} characters. Call read_messages with id "${msg.id}" for the full text.)`
-    };
-    return formatAsUserTurn(preview);
-  }).join("\n\n");
-  return withLead ? `${lead}
-
-${bodies}` : bodies;
-}
-function formatForReading(msg) {
-  return [
-    `--- ${msg.id} \xB7 from ${describeSender(msg.from)} \xB7 ${msg.sentAt}`,
-    messageMarker(msg.id),
-    `(reply with send_message to: "${msg.from.address}")`,
-    msg.body
-  ].join("\n");
-}
-
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
 import fs11 from "node:fs";
-import path14 from "node:path";
-
-// src/core/claude-socket.ts
-import path12 from "node:path";
-
-// src/core/confirm.ts
-import fs9 from "node:fs";
-import os4 from "node:os";
-import path11 from "node:path";
-
-// src/core/codex-queue.ts
-import { execFile, spawn } from "node:child_process";
-import os3 from "node:os";
-import path9 from "node:path";
-import readline from "node:readline";
-import { promisify } from "node:util";
-var execFileAsync = promisify(execFile);
-function codexCandidates() {
-  const configured = process.env.TELEPATHY_CODEX_BIN;
-  if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path9.join(os3.homedir(), ".local", "bin", "codex")];
-}
-var codexEnv = (codexHome) => ({ ...process.env, ...codexHome ? { CODEX_HOME: codexHome } : {} });
-async function queueIntoCodex(threadId, text, codexHome) {
-  const args = ["queue", `--thread=${threadId}`, `--message=${text}`];
-  let lastError;
-  for (const bin of codexCandidates()) {
-    try {
-      const { stdout } = await execFileAsync(bin, args, { env: codexEnv(codexHome), timeout: 3e4, maxBuffer: 1024 * 1024 });
-      return /Queued message (\S+) for thread/.exec(stdout)?.[1];
-    } catch (err) {
-      lastError = err;
-      if (err.code !== "ENOENT") break;
-    }
-  }
-  const e = lastError;
-  if (e?.code === "ENOENT") {
-    throw new Error("The codex CLI was not found on PATH; set TELEPATHY_CODEX_BIN to its path.");
-  }
-  throw new Error(`codex queue failed: ${(e?.stderr || e?.message || String(e)).trim()}`);
-}
-async function deleteFromCodexQueue(threadId, queueIds, codexHome) {
-  if (!queueIds.length) return /* @__PURE__ */ new Map();
-  for (const bin of codexCandidates()) {
-    try {
-      return await appServerDeletes(bin, threadId, queueIds, codexHome);
-    } catch (err) {
-      if (err.code !== "ENOENT") return void 0;
-    }
-  }
-  return void 0;
-}
-function appServerDeletes(bin, threadId, queueIds, codexHome) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(bin, ["app-server"], { env: codexEnv(codexHome), stdio: ["pipe", "pipe", "ignore"] });
-    const results = /* @__PURE__ */ new Map();
-    const finish = (err) => {
-      clearTimeout(timer2);
-      child.kill();
-      if (err) reject(err);
-      else resolve(results);
-    };
-    const timer2 = setTimeout(() => finish(new Error("codex app-server timed out")), 1e4);
-    child.on("error", (err) => finish(err));
-    const send = (msg) => child.stdin.write(JSON.stringify({ jsonrpc: "2.0", ...msg }) + "\n");
-    readline.createInterface({ input: child.stdout }).on("line", (line) => {
-      let msg;
-      try {
-        msg = JSON.parse(line);
-      } catch {
-        return;
-      }
-      if (msg.id === 0) {
-        if (msg.error) return finish(new Error(msg.error.message ?? "initialize failed"));
-        send({ method: "initialized" });
-        queueIds.forEach(
-          (queuedSubmissionId, i) => send({ id: i + 1, method: "thread/queue/delete", params: { threadId, queuedSubmissionId } })
-        );
-      } else if (typeof msg.id === "number" && msg.id >= 1 && msg.id <= queueIds.length) {
-        if (msg.error) return finish(new Error(msg.error.message ?? "thread/queue/delete failed"));
-        results.set(queueIds[msg.id - 1], msg.result?.deleted === true);
-        if (results.size === queueIds.length) finish();
-      }
-    });
-    send({
-      id: 0,
-      method: "initialize",
-      params: { clientInfo: { name: "telepathy", version: VERSION }, capabilities: { experimentalApi: true } }
-    });
-  });
-}
-
-// src/core/wake.ts
-import { spawn as spawn2 } from "node:child_process";
-import crypto2 from "node:crypto";
-import fs8 from "node:fs";
-import path10 from "node:path";
-var WAKE_DEBOUNCE_MS = 400;
-var WAKE_DEBOUNCE_MAX_MS = 1500;
-var DEFAULT_TIMEOUT_MS = 8e3;
-var DEFAULT_AUTH_HEADERS = ["Authorization", "X-Automation-Key"];
-var deliveryConfigPath = () => path10.join(stateDir(), "delivery.json");
-var wakeLogPath = () => path10.join(stateDir(), "wake.log");
-function wakeDebounceMs() {
-  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MS);
-  if (Number.isFinite(n) && n >= 0) return n;
-  return WAKE_DEBOUNCE_MS;
-}
-function wakeDebounceMaxMs() {
-  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MAX_MS);
-  const configured = Number.isFinite(n) && n >= 0 ? n : WAKE_DEBOUNCE_MAX_MS;
-  return Math.max(configured, wakeDebounceMs());
-}
-var wakeDir = () => path10.join(stateDir(), "wake");
-var batchPath = (key) => path10.join(wakeDir(), `${key}.json`);
-function batchKey(target) {
-  const material = JSON.stringify({ url: target.webhook?.url ?? "", command: target.command ?? [] });
-  return crypto2.createHash("sha256").update(material).digest("hex").slice(0, 32);
-}
-function readDeliveryConfig() {
-  const file2 = deliveryConfigPath();
-  let mode;
-  try {
-    mode = fs8.statSync(file2).mode & 511;
-  } catch {
-    return void 0;
-  }
-  if ((mode & 63) !== 0) {
-    debugLog("wake", `delivery.json is mode ${mode.toString(8)}, not 600; webhook config was not loaded`);
-    return void 0;
-  }
-  return readJson(file2);
-}
-function wakeForPeer(peer, config2 = readDeliveryConfig()) {
-  if (!config2) return void 0;
-  const keys = [peer.address, peer.stableName, peer.id].filter((k) => !!k);
-  for (const key of keys) {
-    const hit = config2.peers?.[key];
-    if (hit?.webhook?.url || hit?.command?.length) return hit;
-  }
-  if (!config2.webhook?.url && !config2.command?.length) return void 0;
-  const name = config2.name?.trim().toLowerCase();
-  if (!name) return void 0;
-  if (peer.stableName === name || peer.address.toLowerCase() === `${peer.agent}:${name}`) {
-    return { webhook: config2.webhook, command: config2.command };
-  }
-  return void 0;
-}
-function webhookHeaders(target) {
-  const headers = { "content-type": "application/json" };
-  const key = target.key?.trim();
-  if (key) {
-    const names = target.authHeaders?.length ? target.authHeaders : DEFAULT_AUTH_HEADERS;
-    for (const name of names) {
-      headers[name] = name.toLowerCase() === "authorization" ? `Bearer ${key}` : key;
-    }
-  }
-  for (const [name, value] of Object.entries(target.headers ?? {})) headers[name] = value;
-  return headers;
-}
-function headerSecrets(headers) {
-  return Object.values(headers ?? {}).filter((v) => v.length >= 4);
-}
-function secretValues(target) {
-  const values = headerSecrets(webhookHeaders(target ?? { url: "" }));
-  const key = target?.key?.trim();
-  if (key && key.length >= 4) values.push(key);
-  if (target?.url) {
-    try {
-      for (const value of new URL(target.url).searchParams.values()) {
-        if (value.length >= 4) values.push(value);
-      }
-    } catch {
-    }
-  }
-  return values;
-}
-var scrub = (text, secrets) => {
-  let out2 = text;
-  for (const secret of secrets) {
-    if (secret.length < 4) continue;
-    out2 = out2.split(secret).join("[redacted]");
-  }
-  return out2.slice(0, 200);
-};
-function hostOf(url2) {
-  try {
-    return new URL(url2).host || "webhook";
-  } catch {
-    return "webhook";
-  }
-}
-function logFailure(kind, target, detail, secrets, url2) {
-  let text = `${kind} ${target} ${detail}`;
-  if (url2) text = text.split(url2).join(target);
-  const safe = scrub(text, secrets);
-  try {
-    ensureDir(stateDir());
-    fs8.appendFileSync(wakeLogPath(), `${(/* @__PURE__ */ new Date()).toISOString()} ${safe}
-`);
-    fs8.chmodSync(wakeLogPath(), 384);
-  } catch {
-  }
-  debugLog("wake", safe);
-}
-function sleepSync(ms) {
-  const until = Date.now() + ms;
-  try {
-    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-  } catch {
-    while (Date.now() < until) {
-    }
-  }
-}
-function withLockSync(fn) {
-  ensureDir(wakeDir());
-  const lock = path10.join(wakeDir(), ".lock");
-  const start = Date.now();
-  for (; ; ) {
-    try {
-      const fd = fs8.openSync(lock, "wx");
-      try {
-        return fn();
-      } finally {
-        fs8.closeSync(fd);
-        try {
-          fs8.unlinkSync(lock);
-        } catch {
-        }
-      }
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      try {
-        if (Date.now() - fs8.statSync(lock).mtimeMs > 5e3) fs8.unlinkSync(lock);
-      } catch {
-      }
-      if (Date.now() - start > 2e3) throw new Error("wake lock timed out");
-      sleepSync(10);
-    }
-  }
-}
-function pendingItems(items) {
-  return items.filter((item) => {
-    try {
-      return fs8.existsSync(path10.join(inboxDir(item.peerId), `${item.id}.json`));
-    } catch {
-      return false;
-    }
-  });
-}
-function wakePayload(items) {
-  const last = items[items.length - 1];
-  return {
-    id: last?.id ?? "",
-    ids: items.map((item) => item.id),
-    from: last?.from ?? "",
-    count: items.length,
-    at: last?.at ?? ""
-  };
-}
-var refTimers = true;
-var timer;
-var flushing;
-var flusherStarted = false;
-function armTimer(ms) {
-  if (timer) clearTimeout(timer);
-  timer = setTimeout(() => {
-    timer = void 0;
-    void kick();
-  }, ms);
-  if (!refTimers) timer.unref();
-}
-function scheduleFlush() {
-  armTimer(wakeDebounceMs());
-}
-async function kick() {
-  if (flushing) {
-    await flushing;
-    return;
-  }
-  flushing = flushDue().finally(() => {
-    flushing = void 0;
-  });
-  await flushing;
-}
-function startWakeFlusher() {
-  if (flusherStarted) return;
-  flusherStarted = true;
-  refTimers = true;
-  ensureDir(wakeDir());
-  const tick = () => {
-    void kick();
-  };
-  setInterval(tick, 200).unref();
-  try {
-    const watcher = fs8.watch(wakeDir(), tick);
-    watcher.unref();
-  } catch {
-  }
-}
-function listBatches() {
-  try {
-    return fs8.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path10.join(wakeDir(), name));
-  } catch {
-    return [];
-  }
-}
-function dueIn(file2) {
-  const batch = readJson(file2);
-  if (!batch) return 0;
-  const due = Math.min(batch.lastAtMs + wakeDebounceMs(), batch.firstAtMs + wakeDebounceMaxMs());
-  return Math.max(0, due - Date.now());
-}
-async function flushDue() {
-  for (const file2 of listBatches()) {
-    const peek = readJson(file2);
-    if (!peek || dueIn(file2) > 0) continue;
-    let taken;
-    withLockSync(() => {
-      const cur = readJson(file2);
-      if (!cur) return;
-      const due = Math.min(cur.lastAtMs + wakeDebounceMs(), cur.firstAtMs + wakeDebounceMaxMs());
-      if (Date.now() < due) return;
-      taken = cur;
-      try {
-        fs8.unlinkSync(file2);
-      } catch {
-        taken = void 0;
-      }
-    });
-    if (taken) await deliverBatch(taken);
-  }
-}
-async function deliverBatch(batch) {
-  const items = pendingItems(batch.items);
-  if (!items.length) return;
-  const payload = wakePayload(items);
-  const target = { webhook: batch.webhook, command: batch.command };
-  await deliver(target, payload);
-}
-async function deliver(target, payload) {
-  if (target.webhook?.url) {
-    const posted = await postWebhook(target.webhook, payload);
-    if (posted.ok || !target.command?.length) return posted;
-    const ran = await runCommand(target.command, payload, target.webhook.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    if (ran.ok) return ran;
-    return { ok: false, how: "webhook", detail: `${posted.detail}; command failed (${ran.detail})` };
-  }
-  if (target.command?.length) return runCommand(target.command, payload, DEFAULT_TIMEOUT_MS);
-  return { ok: false, how: "webhook", detail: "webhook url is invalid" };
-}
-async function postWebhook(target, payload) {
-  const timeoutMs = target.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const secrets = secretValues(target);
-  let host = "webhook";
-  try {
-    host = new URL(target.url).host || host;
-  } catch {
-    logFailure("webhook", host, "failed: url is invalid", secrets);
-    return { ok: false, how: "webhook", detail: "webhook url is invalid" };
-  }
-  try {
-    const res = await fetch(target.url, {
-      method: "POST",
-      headers: webhookHeaders(target),
-      body: JSON.stringify(payload),
-      redirect: "error",
-      signal: AbortSignal.timeout(timeoutMs)
-    });
-    if (!res.ok) {
-      logFailure("webhook", host, `HTTP ${res.status}`, secrets, target.url);
-      return { ok: false, how: "webhook", detail: `HTTP ${res.status}`, status: res.status };
-    }
-    debugLog("wake", `webhook ${host} HTTP ${res.status}`);
-    return { ok: true, how: "webhook", status: res.status };
-  } catch (err) {
-    const detail = scrub(err.name === "TimeoutError" ? "timed out" : err.message, secrets);
-    logFailure("webhook", host, `failed: ${detail}`, secrets, target.url);
-    return { ok: false, how: "webhook", detail };
-  }
-}
-function runCommand(argv, payload, timeoutMs) {
-  const bin = argv[0];
-  const name = bin ? path10.basename(bin) : "command";
-  if (!bin) {
-    logFailure("command", name, "failed: command is empty", []);
-    return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
-  }
-  return new Promise((resolve) => {
-    const child = spawn2(bin, argv.slice(1), { stdio: ["pipe", "ignore", "ignore"] });
-    const timerId = setTimeout(() => {
-      child.kill("SIGKILL");
-    }, timeoutMs);
-    child.on("error", (err) => {
-      clearTimeout(timerId);
-      const detail = scrub(err.message, []);
-      logFailure("command", name, `failed: ${detail}`, []);
-      resolve({ ok: false, how: "command", detail });
-    });
-    child.on("close", (code) => {
-      clearTimeout(timerId);
-      if (code === 0) {
-        debugLog("wake", `command ${name} exited 0`);
-        resolve({ ok: true, how: "command", status: 0 });
-        return;
-      }
-      logFailure("command", name, `exited ${code ?? "signal"}`, []);
-      resolve({ ok: false, how: "command", detail: `exit ${code ?? "signal"}`, status: code ?? void 0 });
-    });
-    child.stdin.end(JSON.stringify(payload));
-  });
-}
-function notifyWake(peer, message) {
-  const target = wakeForPeer(peer);
-  if (!target) return void 0;
-  if (target.webhook?.url) {
-    try {
-      void new URL(target.webhook.url);
-    } catch {
-      return { ok: false, how: "webhook", detail: "webhook url is invalid" };
-    }
-  }
-  const key = batchKey(target);
-  const file2 = batchPath(key);
-  try {
-    withLockSync(() => {
-      const batch = readJson(file2) ?? {
-        items: [],
-        firstAtMs: Date.now(),
-        lastAtMs: Date.now(),
-        webhook: target.webhook,
-        command: target.command
-      };
-      if (!batch.items.some((item) => item.id === message.id)) {
-        batch.items.push({ id: message.id, peerId: message.to.id, from: message.from.address, at: message.sentAt });
-      }
-      batch.lastAtMs = Date.now();
-      batch.webhook = target.webhook;
-      batch.command = target.command;
-      writeJsonAtomic(file2, batch);
-    });
-  } catch (err) {
-    const detail = scrub(err.message, secretValues(target.webhook));
-    logFailure(target.webhook?.url ? "webhook" : "command", target.webhook?.url ? hostOf(target.webhook.url) : "command", `failed: ${detail}`, secretValues(target.webhook));
-    return { ok: false, how: target.webhook?.url ? "webhook" : "command", detail };
-  }
-  scheduleFlush();
-  return { ok: true, how: target.webhook?.url ? "webhook" : "command", scheduled: true };
-}
-function cancelWake(peerId2, messageId) {
-  let result = "absent";
-  for (const file2 of listBatches()) {
-    withLockSync(() => {
-      const batch = readJson(file2);
-      if (!batch) return;
-      const next = batch.items.filter((item) => !(item.id === messageId && item.peerId === peerId2));
-      if (next.length === batch.items.length) return;
-      result = "cancelled";
-      if (!next.length) {
-        try {
-          fs8.unlinkSync(file2);
-        } catch {
-        }
-        return;
-      }
-      writeJsonAtomic(file2, { ...batch, items: next });
-    });
-  }
-  return result;
-}
-
-// src/core/confirm.ts
-function confirmWaitEnabled() {
-  const v = process.env.TELEPATHY_CONFIRM_WAIT;
-  return v !== "0" && v !== "false";
-}
-function confirmAbortMs() {
-  return envMs("TELEPATHY_CONFIRM_ABORT_MS", 11e4);
-}
-function confirmGraceMs() {
-  return envMs("TELEPATHY_CONFIRM_GRACE_MS", 1e4);
-}
-function confirmPollMs() {
-  return Math.max(15, envMs("TELEPATHY_CONFIRM_POLL_MS", 200));
-}
-function envMs(name, fallback) {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
-}
-var FULL_READ = 32 * 1024 * 1024;
-var TAIL_READ = 4 * 1024 * 1024;
-function transcriptHasMarker(peer, marker) {
-  return !!peer && inspectTranscript(peer, marker).found;
-}
-function inspectTranscript(peer, marker) {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs9.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
-  if (peer.agent === "claude") return claudeTranscript(peer, marker);
-  if (peer.agent === "codex") return codexTranscript(peer, marker);
-  if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
-  if (peer.agent === "gemini") return geminiTranscript(marker);
-  if (peer.agent === "copilot" && peer.sessionId) {
-    const file2 = path11.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
-    if (!fs9.existsSync(file2)) return { located: false, found: false };
-    return { located: true, found: fileHas(file2, marker) };
-  }
-  return { located: false, found: false };
-}
-function claudeTranscript(peer, marker) {
-  if (!peer.sessionId) return { located: false, found: false };
-  const projects = path11.join(claudeConfigDir(), "projects");
-  const name = `${peer.sessionId}.jsonl`;
-  const files = /* @__PURE__ */ new Set();
-  if (peer.cwd) {
-    const slug = peer.cwd.replace(/[^A-Za-z0-9]/g, "-").slice(0, 200);
-    files.add(path11.join(projects, slug, name));
-  }
-  if (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CODE_PROJECT_DIR_NAME) {
-    files.add(path11.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
-  }
-  try {
-    for (const dir of fs9.readdirSync(projects).slice(0, 80)) {
-      files.add(path11.join(projects, dir, name));
-    }
-  } catch {
-  }
-  const existing = [...files].filter((file2) => fs9.existsSync(file2));
-  if (!existing.length) return { located: false, found: false };
-  return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
-}
-function codexTranscript(peer, marker) {
-  if (!peer.sessionId) return { located: false, found: false };
-  const home = peer.codexHome || process.env.CODEX_HOME || path11.join(os4.homedir(), ".codex");
-  const file2 = findRollout(home, peer.sessionId);
-  if (!file2) return { located: false, found: false };
-  return { located: true, found: fileHas(file2, marker) };
-}
-function opencodeTranscript(marker) {
-  const xdg = process.env.XDG_DATA_HOME || path11.join(os4.homedir(), ".local", "share");
-  const db = process.env.OPENCODE_DB || path11.join(xdg, "opencode", "opencode.db");
-  const files = [db, `${db}-wal`];
-  const legacy = path11.join(xdg, "opencode", "storage");
-  const existing = files.filter((file2) => fs9.existsSync(file2));
-  const inDb = existing.some((file2) => fileHas(file2, marker));
-  if (inDb) return { located: true, found: true };
-  if (fs9.existsSync(legacy) && treeHas(legacy, marker, 5)) return { located: true, found: true };
-  if (existing.length || fs9.existsSync(legacy)) return { located: true, found: false };
-  return { located: false, found: false };
-}
-function geminiTranscript(marker) {
-  const home = process.env.GEMINI_CLI_HOME || path11.join(os4.homedir(), ".gemini");
-  const tmp = path11.join(home, "tmp");
-  if (!fs9.existsSync(tmp)) return { located: false, found: false };
-  return { located: true, found: treeHas(tmp, marker, 4) };
-}
-function treeHas(dir, marker, depth) {
-  if (depth < 0) return false;
-  let names;
-  try {
-    names = fs9.readdirSync(dir);
-  } catch {
-    return false;
-  }
-  for (const name of names) {
-    if (name === "node_modules") continue;
-    const file2 = path11.join(dir, name);
-    let st;
-    try {
-      st = fs9.statSync(file2);
-    } catch {
-      continue;
-    }
-    if (st.isDirectory()) {
-      if (treeHas(file2, marker, depth - 1)) return true;
-    } else if (st.isFile() && fileHas(file2, marker)) return true;
-  }
-  return false;
-}
-function fileHas(file2, marker) {
-  let fd;
-  try {
-    const st = fs9.statSync(file2);
-    if (!st.isFile() || st.size === 0) return false;
-    fd = fs9.openSync(file2, "r");
-    const start = st.size <= FULL_READ ? 0 : Math.max(0, st.size - TAIL_READ);
-    const buf = Buffer.alloc(st.size - start);
-    fs9.readSync(fd, buf, 0, buf.length, start);
-    return buf.includes(marker);
-  } catch {
-    return false;
-  } finally {
-    if (fd !== void 0) fs9.closeSync(fd);
-  }
-}
-function withdrawPending(peerId2, messageId) {
-  const src = path11.join(inboxDir(peerId2), `${messageId}.json`);
-  const dest = path11.join(ensureDir(withdrawnDir(peerId2)), `${messageId}.json`);
-  try {
-    fs9.renameSync(src, dest);
-    return "withdrawn";
-  } catch {
-    if (fs9.existsSync(path11.join(archiveDir(peerId2), `${messageId}.json`))) return "claimed";
-    return "missing";
-  }
-}
-function storedMessage(peerId2, messageId) {
-  for (const dir of [inboxDir(peerId2), archiveDir(peerId2), withdrawnDir(peerId2)]) {
-    const msg = readJson(path11.join(dir, `${messageId}.json`));
-    if (msg) return msg;
-  }
-  return void 0;
-}
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-async function untilMarker(peer, marker, budgetMs) {
-  const deadline = Date.now() + budgetMs;
-  const step = confirmPollMs();
-  for (; ; ) {
-    if (transcriptHasMarker(peer, marker)) return true;
-    const left = deadline - Date.now();
-    if (left <= 0) return false;
-    await sleep(Math.min(step, left));
-  }
-}
-var UNRECALLABLE = /cannot be recalled/i;
-function signalAfterWithdraw(routeStatus, withdrawn) {
-  if (withdrawn !== "withdrawn") return { signal: routeStatus, noted: false };
-  const signal = routeStatus.replace(
-    "It stays in the inbox for the next prompt, or until the session calls read_messages.",
-    "The inbox copy was withdrawn, so the next prompt will not see it."
-  ).replace(
-    "It stays in the inbox until the session calls read_messages.",
-    "The inbox copy was withdrawn, so a later read will not see it."
-  );
-  return { signal, noted: signal !== routeStatus };
-}
-async function confirmDelivery(peer, message, routeStatus) {
-  const marker = messageMarker(message.id);
-  const delivered = `Message delivered to ${peerRef(peer)}. The transcript shows ${marker}.`;
-  if (!UNRECALLABLE.test(routeStatus) && !isPeerAlive(peer)) {
-    return {
-      confirmed: false,
-      kept: true,
-      status: `Message stored for ${peerRef(peer)}. The session is not running, so this stays in its inbox until that session resumes.`
-    };
-  }
-  if (await untilMarker(peer, marker, confirmAbortMs())) {
-    archiveSettled(peer.id, message.id);
-    return { confirmed: true, status: delivered };
-  }
-  const stored2 = storedMessage(peer.id, message.id);
-  const withdrawn = withdrawPending(peer.id, message.id);
-  const { signal, noted } = signalAfterWithdraw(routeStatus, withdrawn);
-  const notes = [];
-  if (withdrawn === "withdrawn" && !noted && !UNRECALLABLE.test(routeStatus)) {
-    notes.push("The inbox copy was withdrawn so a later turn cannot pick it up.");
-  }
-  if (withdrawn === "claimed") notes.push("The inbox copy was already claimed, which is not proof the model saw it.");
-  const queueId = stored2?.codexQueueId;
-  const thread = stored2?.codexThreadId ?? peer.sessionId;
-  if (peer.agent === "codex" && queueId && thread) {
-    const removed = await deleteFromCodexQueue(thread, [queueId], peer.codexHome);
-    if (!removed) notes.push("The Codex queue item could not be removed because the app-server was unreachable.");
-    else if (removed.get(queueId) === false) notes.push("Codex had already taken the queue item, so it could not be removed.");
-    else notes.push("The Codex queue item was removed.");
-  }
-  const wake = cancelWake(peer.id, message.id);
-  if (/webhook|delivery command/i.test(routeStatus)) {
-    notes.push(
-      wake === "cancelled" ? "The pending wake was cancelled before it was sent." : "A wake that already left cannot be recalled; its body has no message text."
-    );
-  }
-  if (await untilMarker(peer, marker, confirmGraceMs())) {
-    archiveSettled(peer.id, message.id);
-    return { confirmed: true, status: delivered };
-  }
-  const look = inspectTranscript(peer, marker);
-  const where = look.located ? "A transcript file was found and does not contain the marker, so delivery is unconfirmed." : "No transcript file was found for this session, so delivery is unconfirmed.";
-  const extra = notes.length ? ` ${notes.join(" ")}` : "";
-  if (UNRECALLABLE.test(routeStatus)) {
-    return {
-      confirmed: false,
-      status: `${routeStatus} ${where}${extra}`
-    };
-  }
-  return {
-    confirmed: false,
-    status: `Message failed: ${peerRef(peer)} did not show ${marker} in its transcript before the wait ended. ${where} Strongest signal: ${signal}${extra}`
-  };
-}
-
-// src/core/claude-socket.ts
-var SOCKET_LINE_MAX = 1024 * 1024;
-var socketFile = (id) => path12.join(peerDir(id), "socket.json");
-var listenerFile = (id) => path12.join(peerDir(id), "socket-listener.json");
-function readClaudeSocket(id) {
-  const record2 = readJson(socketFile(id));
-  if (!record2?.path) return void 0;
-  if (typeof record2.ownerPid === "number") {
-    const owners = sessionOwners(id);
-    if (owners.length > 0 && owners[0]?.pid !== record2.ownerPid) return void 0;
-  }
-  return { path: record2.path, ...record2.token ? { token: record2.token } : {} };
-}
-function claudeSocketArmed(id) {
-  const record2 = readJson(listenerFile(id));
-  return !!record2 && isSameProcess(record2.pid, record2.procStart);
-}
-var flushImpl;
-async function flushClaudeSocket(id) {
-  if (flushImpl) return flushImpl(id);
-  return "idle";
-}
-
-// src/core/setup.ts
-import fs10 from "node:fs";
 import path13 from "node:path";
-var CODEX_HOOKS = {
-  session_start: "SessionStart",
-  post_tool_use: "PostToolUse",
-  user_prompt_submit: "UserPromptSubmit"
-};
-function unapprovedCodexHooks(codexHome) {
-  let config2;
-  try {
-    config2 = fs10.readFileSync(path13.join(codexHome, "config.toml"), "utf8");
-  } catch {
-    return void 0;
-  }
-  const approved = new Set(
-    [...config2.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
-  );
-  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
-}
-
-// src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
@@ -21506,7 +21531,7 @@ var SOCKET_WAIT_MS = () => {
   const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
   return Number.isFinite(n) && n >= 0 ? n : 1500;
 };
-var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path13.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -21526,7 +21551,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs11.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs11.existsSync(path13.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -21620,8 +21645,17 @@ async function routeCodex(recipient, message) {
 async function routeInbox(recipient, message) {
   const attempts = [];
   writeToInbox(message);
+  const inbound = recipient.agent === "claude" ? crossSessionInbound(recipient) : void 0;
+  const inboundBlocks = inbound === "hold" || inbound === "refuse";
   let socketOutcome;
-  if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+  if (inboundBlocks) {
+    attempts.push({
+      id: "claude-socket",
+      result: "unsupported",
+      when: "immediate",
+      detail: `crossSessionInbound is ${inbound}`
+    });
+  } else if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
     if (socketOutcome !== "blocked" && !stillPending(recipient.id, message.id)) {
@@ -21654,7 +21688,7 @@ async function routeInbox(recipient, message) {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
   const socketPosted = socketOutcome !== void 0 && socketOutcome !== "blocked";
-  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
+  if (!inboundBlocks && recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: "listener", result: "armed", when: "immediate" });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -21670,12 +21704,12 @@ async function routeInbox(recipient, message) {
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
+  if (inbound === "hold" || inbound === "refuse") {
+    return { status: claudeInboundBlockedStatus(recipient, inbound), report: { confirmed: false, attempts } };
+  }
   const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
   if (socketOutcome === "blocked") {
-    return {
-      status: `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. The inbox copy can still be withdrawn.`,
-      report: { confirmed: false, attempts }
-    };
+    return { status: claudeInboundBlockedStatus(recipient, "hold"), report: { confirmed: false, attempts } };
   }
   return { status, report: { confirmed: false, attempts } };
 }
@@ -21702,6 +21736,11 @@ async function waitForSocket(peerId2, messageId) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+function claudeInboundBlockedStatus(recipient, inbound) {
+  const ref = peerRef(recipient);
+  const why = inbound === "hold" ? "is holding peer messages (crossSessionInbound is hold)" : "is refusing peer messages (crossSessionInbound is refuse)";
+  return `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+}
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
 }
@@ -21716,13 +21755,11 @@ function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = peerStatus(recipient)?.status;
   if (activity === "waiting") return waitingNote(ref, "queued for");
-  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
     if (recipient.toolHookRan) {
       return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
     }
-    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
-    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -21830,10 +21867,10 @@ function statusOf(event, isPrimary) {
   if (event.type === "session.status") return event.properties?.status?.type === "idle" ? "idle" : "busy";
   return void 0;
 }
-var skillsDir = path15.join(path15.dirname(path15.dirname(fileURLToPath(import.meta.url))), "skills");
+var skillsDir = path14.join(path14.dirname(path14.dirname(fileURLToPath(import.meta.url))), "skills");
 var out = (r) => r.isError ? `Error: ${r.text}` : r.text;
 var TelepathyPlugin = async ({ client, directory }) => {
-  const agent = /kilo/i.test(path15.basename(process.execPath)) ? "kilo" : "opencode";
+  const agent = /kilo/i.test(path14.basename(process.execPath)) ? "kilo" : "opencode";
   const pid = process.pid;
   let id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
@@ -21907,12 +21944,16 @@ var TelepathyPlugin = async ({ client, directory }) => {
   const argvSession = opencodeSessionFromArgv();
   if (argvSession) bind(argvSession);
   else if (client.session.list) {
-    try {
-      const primary = listedSessions(await client.session.list()).filter((row) => !row.parentID);
-      if (primary.length === 1 && primary[0]) bind(primary[0].id);
-    } catch (err) {
-      debugLog("opencode", `session list failed: ${err.message}`);
-    }
+    const list = client.session.list.bind(client.session);
+    const timer2 = setTimeout(() => {
+      if (id !== peerId(agent, pid)) return;
+      void Promise.resolve().then(() => list()).then((value) => {
+        if (id !== peerId(agent, pid)) return;
+        const primary = listedSessions(value).filter((row) => !row.parentID);
+        if (primary.length === 1 && primary[0]) bind(primary[0].id);
+      }).catch((err) => debugLog("opencode", `session list failed: ${err.message}`));
+    }, 0);
+    timer2.unref();
   }
   const self = () => selfPeer(agent, pid, id);
   const toolArgs = /* @__PURE__ */ new Map();
@@ -21931,7 +21972,7 @@ var TelepathyPlugin = async ({ client, directory }) => {
     },
     event: async ({ event }) => {
       const p = event.properties ?? {};
-      if (event.type === "session.created" || event.type === "session.updated") {
+      if (event.type === "session.created" || event.type === "session.updated" || event.type.startsWith("tui.")) {
         const sessionID = p.info?.id ?? p.sessionID;
         if (sessionID && p.info?.parentID) children.add(sessionID);
         else if (sessionID) bind(sessionID);
@@ -21987,7 +22028,7 @@ ${note}`;
   };
 };
 function readSkill() {
-  const file2 = path15.join(skillsDir, "using-telepathy", "SKILL.md");
+  const file2 = path14.join(skillsDir, "using-telepathy", "SKILL.md");
   try {
     const content = fs12.readFileSync(file2, "utf8");
     const description = /^description:\s*(.+)$/m.exec(content)?.[1]?.trim();

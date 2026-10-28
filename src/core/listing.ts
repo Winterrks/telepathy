@@ -1,4 +1,5 @@
 import { agentSpec } from './agents.ts';
+import { crossSessionInbound, readClaudeSocket } from './claude-socket.ts';
 import { type Peer, peerRef, sameStableName } from './peers.ts';
 import { peerStatus, statusText } from './status.ts';
 
@@ -24,18 +25,27 @@ export function listAgentsRow(peer: Peer, now = Date.now()): string {
   return `  ${columns.join('  ·  ')}`;
 }
 
+/**
+ * How a listed session receives messages. A Claude session with an inbox socket and no hold/refuse gets them
+ * as they are posted. The next-turn hint is for a session whose hooks are the path.
+ */
+function deliveryHint(peer: Peer): string | undefined {
+  if (peer.agent === 'codex' || peer.hasListener) return undefined;
+  if (peer.agent === 'claude' && readClaudeSocket(peer.id)) {
+    const inbound = crossSessionInbound(peer);
+    if (inbound !== 'hold' && inbound !== 'refuse') return 'sees messages through its inbox socket';
+  }
+  if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return 'sees messages at its next turn';
+  return 'no listener: it reads messages only via read_messages';
+}
+
 export function describePeer(peer: Peer): string {
   const notes: string[] = [];
   if (peer.cwd) notes.push(`cwd ${peer.cwd}`);
   const status = statusText(peerStatus(peer));
   if (status) notes.push(status);
-  if (peer.agent !== 'codex' && !peer.hasListener) {
-    notes.push(
-      agentSpec(peer.agent).nextTurnHook && peer.hookRan
-        ? 'sees messages at its next turn'
-        : 'no listener: it reads messages only via read_messages',
-    );
-  }
+  const delivery = deliveryHint(peer);
+  if (delivery) notes.push(delivery);
   return [`- ${peerRef(peer)}`, ...notes].join(' · ');
 }
 

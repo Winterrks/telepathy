@@ -11,8 +11,8 @@ import { crossSessionInbound, readClaudeSocket, recordClaudeSocket, startClaudeS
 import { inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { deliveryConfigPath, flushPendingWakes, probeDelivery, wakeLogPath } from '../src/core/wake.ts';
 import { runDeliveryCli } from '../src/delivery.ts';
-import { codexBridgeTimeoutSec, setupNotes } from '../src/core/setup.ts';
-import { formatPeerList } from '../src/core/listing.ts';
+import { codexBridgeTimeoutFromCommandLine, codexBridgeTimeoutSec, setupNotes, unseenSetupNotes } from '../src/core/setup.ts';
+import { describePeer, formatPeerList } from '../src/core/listing.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
 
 const saved = {
@@ -294,7 +294,9 @@ describe('Claude inbox socket', () => {
       assert.equal(blocked.ok, true);
       if (!blocked.ok) return;
       assert.equal(blocked.delivery.confirmed, false);
-      assert.match(blocked.status, /Nothing was written to Claude's inbox socket/);
+      assert.match(blocked.status, /holding peer messages \(crossSessionInbound is hold\)/);
+      assert.match(blocked.status, /nothing was posted to its inbox socket/);
+      assert.doesNotMatch(blocked.status, /no listener/);
       assert.match(blocked.status, /can still be withdrawn/);
       assert.equal(posts, before);
       assert.equal(fs.existsSync(path.join(inboxDir(held.id), `${blocked.message.id}.json`)), true);
@@ -325,8 +327,16 @@ describe('Claude inbox socket', () => {
       const held = await sendMessage(peer.from, peer.address, 'do not repeat');
       assert.equal(held.ok, true);
       if (!held.ok) return;
-      assert.match(held.status, /Nothing was written to Claude's inbox socket/);
+      assert.match(held.status, /holding peer messages \(crossSessionInbound is hold\)/);
+      assert.match(held.status, /nothing was posted/);
+      const log = path.join(sb.home, 'debug.log');
+      const holdLines = () =>
+        (fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').split('\n').filter((line) => line.includes(`${peer.id} crossSessionInbound is hold; not posting`)).length;
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const logged = holdLines();
+      assert.equal(logged, 1);
       await new Promise((resolve) => setTimeout(resolve, 1200));
+      assert.equal(holdLines(), logged, 'hold is logged once per state, not on every flush');
       assert.equal(posts, 0);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
@@ -791,14 +801,60 @@ describe('stable name and duplicate sessions', () => {
     const key = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
     fs.writeFileSync(config, 'model = "m"\n');
     assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), undefined);
+    assert.match(setupNotes(self).join('\n'), /Could not verify/);
     assert.match(setupNotes(self).join('\n'), new RegExp(key.replace(/[.]/g, '\\.')));
+    assert.doesNotMatch(setupNotes(self).join('\n'), /unset/);
     fs.writeFileSync(config, `[plugins."telepathy@telepathy".mcp_servers.bridge]\ntool_timeout_sec = 60\n`);
     assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), 60);
     assert.match(setupNotes(self).join('\n'), /60s/);
     fs.appendFileSync(config, `\n${key} = 180\n`);
     assert.equal(codexBridgeTimeoutSec(fs.readFileSync(config, 'utf8')), 180);
     assert.doesNotMatch(setupNotes(self).join('\n'), /tool_timeout_sec/);
+    const argv = `codex -c '${key}=150'`;
+    assert.equal(codexBridgeTimeoutFromCommandLine(argv), 150);
+    assert.equal(codexBridgeTimeoutFromCommandLine(`${argv} -c '${key}=90'`), 90);
     fs.rmSync(config, { force: true });
+  });
+
+  test('a Codex session whose hooks have fired is not warned that they are unapproved', () => {
+    const ran = fakeAgent();
+    const quiet = fakeAgent();
+    agents.push(ran, quiet);
+    registerPresence('codex', ran.pid, { cwd: '/work/ran', codexHome: sb.codexHome });
+    registerSession('codex', ran.pid, { sessionId: 'thread-ran', cwd: '/work/ran', source: 'hook', codexHome: sb.codexHome });
+    registerPresence('codex', quiet.pid, { cwd: '/work/quiet', codexHome: sb.codexHome });
+    registerSession('codex', quiet.pid, { sessionId: 'thread-quiet', cwd: '/work/quiet', source: 'meta', codexHome: sb.codexHome });
+    const hooked = readPeer('codex-thread-ran');
+    const unhooked = readPeer('codex-thread-quiet');
+    assert.ok(hooked && unhooked);
+    fs.writeFileSync(path.join(sb.codexHome, 'config.toml'), 'model = "m"\n');
+    assert.doesNotMatch(setupNotes(hooked).join('\n'), /hook/);
+    assert.match(setupNotes(unhooked).join('\n'), /No telepathy hook has fired/);
+    const first = unseenSetupNotes(unhooked);
+    assert.match(first.join('\n'), /No telepathy hook has fired/);
+    assert.deepEqual(unseenSetupNotes(unhooked), []);
+    fs.rmSync(path.join(sb.codexHome, 'config.toml'), { force: true });
+  });
+
+  test('an idle Claude with an inbox socket is listed as seeing messages through it', () => {
+    const claude = fakeAgent();
+    agents.push(claude);
+    const cwd = path.join(sb.home, 'sockhint');
+    fs.mkdirSync(cwd, { recursive: true });
+    registerPresence('claude', claude.pid, { cwd }, 'claude-sockhint');
+    registerSession('claude', claude.pid, { sessionId: 'sockhint', cwd, source: 'hook' });
+    recordClaudeSocket('claude-sockhint', { CLAUDE_CODE_MESSAGING_SOCKET: path.join(sb.home, 'hint.sock') });
+    const listed = readPeer('claude-sockhint');
+    assert.ok(listed);
+    assert.match(describePeer(listed), /sees messages through its inbox socket/);
+    assert.doesNotMatch(describePeer(listed), /next turn/);
+    const local = path.join(cwd, '.claude');
+    fs.mkdirSync(local, { recursive: true });
+    fs.writeFileSync(path.join(local, 'settings.local.json'), JSON.stringify({ crossSessionInbound: 'hold' }));
+    const held = readPeer('claude-sockhint');
+    assert.ok(held);
+    assert.match(describePeer(held), /sees messages at its next turn/);
+    assert.doesNotMatch(describePeer(held), /inbox socket/);
   });
 
   test('read_messages with nothing waiting is an empty array, not a message', () => {

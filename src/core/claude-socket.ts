@@ -291,6 +291,7 @@ export function startClaudeSocketWatcher(id: string, ownerPid?: number): () => v
   // "Held peer message" notice (Claude caps those at 100). Retry only when the socket path changes, the
   // crossSessionInbound value changes, or a failed connect is 10s old. A failed connect never reached Claude.
   const posted = new Map<string, { socketPath: string; inbound: string; outcome: SocketOutcome; at: number; changeKey?: string; changeAt?: number }>();
+  let blockedLog: string | undefined;
   const FAILED_RETRY_MS = 10_000;
   // After crossSessionInbound or the socket path changes, wait before posting again. Claude's own "Released"
   // can land in the transcript in that gap; a second post is what shows "(2 held)" and "Dropped a peer message".
@@ -324,9 +325,13 @@ export function startClaudeSocketWatcher(id: string, ownerPid?: number): () => v
     // hold and refuse both keep the bytes where a later failure can still withdraw them. A post Claude has
     // queued as held is delivered when the user clears the hold, after the sender was already told it failed.
     if (inbound === 'hold' || inbound === 'refuse') {
-      debugLog('claude-socket', `${id} crossSessionInbound is ${inbound}; not posting ${pending.length} message(s)`);
+      if (blockedLog !== inbound) {
+        debugLog('claude-socket', `${id} crossSessionInbound is ${inbound}; not posting`);
+        blockedLog = inbound;
+      }
       return 'blocked';
     }
+    blockedLog = undefined;
     const inboundKey = inbound ?? '';
     const pendingIds = new Set(pending.map((msg) => msg.id));
     for (const seen of posted.keys()) if (!pendingIds.has(seen)) posted.delete(seen);

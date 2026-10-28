@@ -184,4 +184,30 @@ describe('transcript confirmation', () => {
     assert.match(interrupted.status, /The inbox copy was withdrawn, so the next prompt will not see it/);
     assert.doesNotMatch(interrupted.status, /It stays in the inbox/);
   });
+
+  test('a hold that posts nothing fails by saying the receiver is holding, not that it has no listener', async () => {
+    arm('80', '40');
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-hold');
+    registerSession('codex', fromProc.pid, { sessionId: 'thread-hold', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
+    registerPresence('claude', toProc.pid, { cwd: '/w/held' }, 'claude-held');
+    registerSession('claude', toProc.pid, { sessionId: 'held', cwd: '/w/held', source: 'hook' });
+    fs.mkdirSync(sb.env.CLAUDE_CONFIG_DIR, { recursive: true });
+    const settings = path.join(sb.env.CLAUDE_CONFIG_DIR, 'settings.json');
+    fs.writeFileSync(settings, JSON.stringify({ crossSessionInbound: 'hold' }));
+    const from = readPeer('codex-thread-hold');
+    const to = readPeer('claude-held');
+    assert.ok(from && to);
+    const result = await sendMessage(from, to.id, 'while you hold');
+    fs.rmSync(settings, { force: true });
+    assert.equal(result.ok, false);
+    if (result.ok) return;
+    assert.match(result.error, /holding peer messages \(crossSessionInbound is hold\)/);
+    assert.match(result.error, /nothing was posted to its inbox socket/);
+    assert.match(result.error, /The inbox copy was withdrawn/);
+    assert.doesNotMatch(result.error, /no listener/);
+    assert.doesNotMatch(result.error, /It has no listener/);
+  });
 });

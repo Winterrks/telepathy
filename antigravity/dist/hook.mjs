@@ -1,7 +1,7 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/hook.ts
-import path16 from "node:path";
+import path15 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/core/claude-socket.ts
@@ -1479,7 +1479,7 @@ function signalAfterWithdraw(routeStatus, withdrawn) {
   ).replace(
     "It stays in the inbox until the session calls read_messages.",
     "The inbox copy was withdrawn, so a later read will not see it."
-  );
+  ).replace("The inbox copy can still be withdrawn.", "The inbox copy was withdrawn.");
   return { signal, noted: signal !== routeStatus };
 }
 async function confirmDelivery(peer, message, routeStatus) {
@@ -1893,31 +1893,8 @@ function trackTouchedFiles(self, toolName, toolInput, cwd) {
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
-import fs12 from "node:fs";
-import path15 from "node:path";
-
-// src/core/setup.ts
 import fs11 from "node:fs";
 import path14 from "node:path";
-var CODEX_HOOKS = {
-  session_start: "SessionStart",
-  post_tool_use: "PostToolUse",
-  user_prompt_submit: "UserPromptSubmit"
-};
-function unapprovedCodexHooks(codexHome) {
-  let config;
-  try {
-    config = fs11.readFileSync(path14.join(codexHome, "config.toml"), "utf8");
-  } catch {
-    return void 0;
-  }
-  const approved = new Set(
-    [...config.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1])
-  );
-  return Object.keys(CODEX_HOOKS).filter((key) => !approved.has(key)).map((key) => CODEX_HOOKS[key]);
-}
-
-// src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
@@ -1925,7 +1902,7 @@ var SOCKET_WAIT_MS = () => {
   const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
   return Number.isFinite(n) && n >= 0 ? n : 1500;
 };
-var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -1945,7 +1922,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs12.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs11.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self, to, body) {
   if (!body.trim()) return { ok: false, error: "Message is empty." };
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -2039,8 +2016,17 @@ async function routeCodex(recipient, message) {
 async function routeInbox(recipient, message) {
   const attempts = [];
   writeToInbox(message);
+  const inbound = recipient.agent === "claude" ? crossSessionInbound(recipient) : void 0;
+  const inboundBlocks = inbound === "hold" || inbound === "refuse";
   let socketOutcome;
-  if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
+  if (inboundBlocks) {
+    attempts.push({
+      id: "claude-socket",
+      result: "unsupported",
+      when: "immediate",
+      detail: `crossSessionInbound is ${inbound}`
+    });
+  } else if (recipient.agent === "claude" && (readClaudeSocket(recipient.id) || claudeSocketArmed(recipient.id))) {
     socketOutcome = await flushClaudeSocket(recipient.id);
     if (socketOutcome === "idle") await waitForSocket(recipient.id, message.id);
     if (socketOutcome !== "blocked" && !stillPending(recipient.id, message.id)) {
@@ -2073,7 +2059,7 @@ async function routeInbox(recipient, message) {
     attempts.push({ id: "claude-socket", result: "unsupported", when: "immediate" });
   }
   const socketPosted = socketOutcome !== void 0 && socketOutcome !== "blocked";
-  if (recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
+  if (!inboundBlocks && recipient.hasListener && !socketPosted && !claudeSocketArmed(recipient.id)) {
     attempts.push({ id: "listener", result: "armed", when: "immediate" });
     return { status: inboxStatus(recipient), report: { confirmed: false, attempts } };
   }
@@ -2089,12 +2075,12 @@ async function routeInbox(recipient, message) {
   const fallbackPeer = socketBlockingHooks ? { ...recipient, hasListener: false, hookRan: false } : recipient;
   const fallback = inboxRung(fallbackPeer);
   attempts.push(fallback);
+  if (inbound === "hold" || inbound === "refuse") {
+    return { status: claudeInboundBlockedStatus(recipient, inbound), report: { confirmed: false, attempts } };
+  }
   const status = wakeStatus(recipient, inboxStatus(fallbackPeer), wake);
   if (socketOutcome === "blocked") {
-    return {
-      status: `${status} Nothing was written to Claude's inbox socket, because crossSessionInbound would hold or refuse it. The inbox copy can still be withdrawn.`,
-      report: { confirmed: false, attempts }
-    };
+    return { status: claudeInboundBlockedStatus(recipient, "hold"), report: { confirmed: false, attempts } };
   }
   return { status, report: { confirmed: false, attempts } };
 }
@@ -2121,6 +2107,11 @@ async function waitForSocket(peerId2, messageId) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+function claudeInboundBlockedStatus(recipient, inbound) {
+  const ref = peerRef(recipient);
+  const why = inbound === "hold" ? "is holding peer messages (crossSessionInbound is hold)" : "is refusing peer messages (crossSessionInbound is refuse)";
+  return `Message stored for ${ref}. ${ref} ${why}, and nothing was posted to its inbox socket. The inbox copy can still be withdrawn.`;
+}
 function claudeSocketHeldStatus(recipient) {
   return `Message not confirmed for ${peerRef(recipient)}. Claude reported the inbox-socket post as held. That copy cannot be recalled and may still be delivered if the hold is released. The inbox copy was withdrawn so a later turn does not also show it.`;
 }
@@ -2135,13 +2126,11 @@ function codexQueueStatus(recipient) {
   const ref = peerRef(recipient);
   const activity = peerStatus(recipient)?.status;
   if (activity === "waiting") return waitingNote(ref, "queued for");
-  const unapproved = recipient.codexHome ? unapprovedCodexHooks(recipient.codexHome) : void 0;
   if (activity === "busy") {
     if (recipient.toolHookRan) {
       return `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.`;
     }
-    const why = unapproved?.includes("PostToolUse") ? " (telepathy's PostToolUse hook isn't approved there; its user can trust it with /hooks in that session)" : "";
-    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends${why}.`;
+    return `Message queued for ${ref}. It's in the middle of a turn, so the message is delivered only after that turn ends.`;
   }
   return `Message queued for delivery to ${ref}.`;
 }
@@ -2265,7 +2254,14 @@ function sessionStart(agent, agentPid, input) {
   registerStableName(agent, id);
   if (agent === "claude" && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
   if (statusFromHooks(agent)) writeStatus(id, "idle");
-  reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
+  const monitor = claudeMonitorNote(agent, agentPid);
+  if (monitor) reply(hookSpecificContext(monitor, "SessionStart"));
+  else reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
+}
+function claudeMonitorNote(agent, agentPid) {
+  if (agent !== "claude" || process.env.CLAUDE_CODE_MESSAGING_SOCKET || isStreamJsonClaude(agentPid)) return void 0;
+  const cmd = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude`;
+  return `[telepathy] This session has no inbox socket, so no background monitor was started. Start this with the Monitor tool (persistent: true, description "telepathy inbox") so messages can wake you while idle: ${cmd}`;
 }
 function refreshSession(agent, agentPid, input) {
   const { sessionId, cwd } = sessionOf(agent, input);
@@ -2291,7 +2287,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid)) return void 0;
-  const waiter = `node "${path16.join(path16.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path15.join(path15.dirname(fileURLToPath(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return `[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`;
 }
 function touchedFilesNote(agent, agentPid, input) {
