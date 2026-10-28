@@ -4,7 +4,7 @@ import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message } from './messages.ts';
-import { archiveDir, ensureDir, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
+import { archiveDir, configuredEnv, ensureDir, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
 import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
@@ -91,9 +91,8 @@ function hostedTranscript(peer: Peer, marker: string): TranscriptLook | undefine
 
 /**
  * Searches the recipient's transcript for the marker.
- * `TELEPATHY_TRANSCRIPT_DIR`, when set, is the whole search: a directory that exists counts as located even
- * when the marker is absent. Otherwise each harness has its own files (see the design note).
- * A hosted peer's delivery transcript counts too.
+ * `TELEPATHY_TRANSCRIPT_DIR`, when set to a real directory, is searched in addition to the harness files.
+ * It never replaces them: an unexpanded `${...}` token is ignored. A hosted peer's delivery transcript counts too.
  */
 export function inspectTranscript(peer: Peer, marker: string): TranscriptLook {
   const hosted = hostedTranscript(peer, marker);
@@ -104,11 +103,16 @@ export function inspectTranscript(peer: Peer, marker: string): TranscriptLook {
 }
 
 function inspectHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
+  const harness = searchHarnessTranscript(peer, marker);
+  const extra = configuredEnv('TELEPATHY_TRANSCRIPT_DIR');
+  if (!extra) return harness;
+  const extraFound = fs.existsSync(extra) && treeHas(extra, marker, 4);
+  if (extraFound) return { located: true, found: true };
+  if (harness.found) return harness;
+  return { located: harness.located || fs.existsSync(extra), found: false };
+}
+
+function searchHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
   if (peer.agent === 'claude') return claudeTranscript(peer, marker);
   if (peer.agent === 'codex') return codexTranscript(peer, marker);
   if (peer.agent === 'opencode' || peer.agent === 'kilo') return opencodeTranscript(marker);
@@ -172,20 +176,21 @@ function opencodeTranscript(marker: string): TranscriptLook {
  * The hook's `transcriptPath` wins. Otherwise each surface's brain directory is tried.
  */
 function antigravityTranscript(peer: Peer, marker: string): TranscriptLook {
+  const files: string[] = [];
   const recorded = readSession(peer.id)?.transcriptPath;
-  if (recorded) {
-    if (!fs.existsSync(recorded)) return { located: false, found: false };
-    return { located: true, found: fileHas(recorded, marker) };
+  if (recorded && !UNEXPANDED_PATH.test(recorded)) files.push(recorded);
+  if (peer.sessionId) {
+    const root = path.join(os.homedir(), '.gemini');
+    for (const dir of ['antigravity-cli', 'antigravity-ide', 'antigravity'] as const) {
+      files.push(path.join(root, dir, 'brain', peer.sessionId, '.system_generated', 'logs', 'transcript.jsonl'));
+    }
   }
-  if (!peer.sessionId) return { located: false, found: false };
-  const root = path.join(os.homedir(), '.gemini');
-  const files = (['antigravity', 'antigravity-cli', 'antigravity-ide'] as const).map((dir) =>
-    path.join(root, dir, 'brain', peer.sessionId as string, '.system_generated', 'logs', 'transcript.jsonl'),
-  );
-  const existing = files.filter((file) => fs.existsSync(file));
+  const existing = [...new Set(files)].filter((file) => fs.existsSync(file));
   if (!existing.length) return { located: false, found: false };
   return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
+
+const UNEXPANDED_PATH = /^\$\{[^}]+\}$/;
 
 function treeHas(dir: string, marker: string, depth: number): boolean {
   if (depth < 0) return false;

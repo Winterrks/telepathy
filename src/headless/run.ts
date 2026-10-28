@@ -14,6 +14,7 @@ import {
   recallHarnessSession,
   registerHostedPeer,
   rememberHarnessSession,
+  pluginInboxPeerId,
   startInboxPump,
   writeHeadlessRecord,
   type HeadlessRecord,
@@ -145,7 +146,10 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   };
   memory.changed = persist;
   persist();
-  const stopPump = pluginPeer ? () => {} : startInboxPump(hosted.peerId, (text, stillPending) => plane.inject(text, stillPending));
+  const stopPump = startInboxPump(
+    pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
+    (text, stillPending) => plane.inject(text, stillPending),
+  );
   let stopping = false;
   const shutdown = () => {
     stopping = true;

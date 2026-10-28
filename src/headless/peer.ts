@@ -2,11 +2,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import { archiveSettled, formatAsUserTurn, pendingMessages } from '../core/messages.ts';
-import { ensureDir, inboxDir, peerDir, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
+import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
 import { isAlive, procStart } from '../core/proc.ts';
 import {
   notePeerExit,
   readPeer,
+  readSession,
   registerListener,
   registerSession,
   registerStableName,
@@ -160,19 +161,51 @@ function appendTranscript(peerId: string, text: string): void {
  * after `inject` accepts, and only if the inbox file is still there: `fail()` withdraws that file, and a
  * withdrawn send must not become a success or stay queued.
  */
+/**
+ * The plugin's peer, when the host did not register one of its own. A stable name matches `identity.json`.
+ * A harness session id matches `session.json`. Either is the inbox the host pumps.
+ */
+export function pluginInboxPeerId(agent: Agent, name?: string, sessionId?: string): string | undefined {
+  const slug = name ? slugify(name) : undefined;
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    return undefined;
+  }
+  let byName: string | undefined;
+  let bySession: string | undefined;
+  for (const id of names) {
+    if (!id.startsWith(`${agent}-`)) continue;
+    const session = readSession(id);
+    if (session?.agent !== agent) continue;
+    if (slug) {
+      const ident = readJson<{ name?: string }>(path.join(peerDir(id), 'identity.json'));
+      if (ident?.name === slug) byName = id;
+    }
+    if (sessionId && session.sessionId === sessionId) bySession = id;
+  }
+  return byName ?? bySession;
+}
+
 export function startInboxPump(
-  peerId: string,
+  peerId: string | (() => string | undefined),
   inject: (text: string, stillPending: () => boolean) => Promise<boolean>,
 ): () => void {
+  const resolve = typeof peerId === 'function' ? peerId : () => peerId;
   const done = new Set<string>();
   let running = false;
+  let lastId: string | undefined;
   const tick = async () => {
     if (running) return;
+    const id = resolve();
+    if (!id) return;
+    lastId = id;
     running = true;
     try {
-      for (const msg of pendingMessages(peerId)) {
+      for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
-        const file = path.join(inboxDir(peerId), `${msg.id}.json`);
+        const file = path.join(inboxDir(id), `${msg.id}.json`);
         if (!fs.existsSync(file)) {
           done.add(msg.id);
           continue;
@@ -184,8 +217,8 @@ export function startInboxPump(
           continue;
         }
         if (!ok) return;
-        appendTranscript(peerId, text);
-        archiveSettled(peerId, msg.id);
+        appendTranscript(id, text);
+        archiveSettled(id, msg.id);
         done.add(msg.id);
       }
     } catch {
@@ -197,6 +230,6 @@ export function startInboxPump(
   const timer = setInterval(() => void tick(), 40);
   return () => {
     clearInterval(timer);
-    notePeerExit(peerId);
+    if (lastId) notePeerExit(lastId);
   };
 }

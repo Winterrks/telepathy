@@ -111,47 +111,51 @@ var init_agents = __esm({
   }
 });
 
-// src/core/antigravity.ts
+// src/core/paths.ts
 import fs from "node:fs";
 import os from "node:os";
 import path2 from "node:path";
-function geminiConfigFile() {
-  return path2.join(os.homedir(), ".gemini", "config", "config.json");
-}
-function leftoverGeminiExtension() {
-  const dir = path2.join(os.homedir(), ".gemini", "extensions", "telepathy");
-  return fs.existsSync(path2.join(dir, "gemini-extension.json")) ? dir : void 0;
-}
-function removeLeftoverGeminiExtension() {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return void 0;
-  fs.rmSync(dir, { recursive: true, force: true });
-  return dir;
-}
-function readGeminiConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(geminiConfigFile(), "utf8"));
-  } catch {
-    return {};
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
   }
 }
-function antigravitySidecarEnabled() {
-  return readGeminiConfig().sidecars?.[ANTIGRAVITY_SIDECAR_ID]?.enabled === true;
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
 }
-function enableAntigravitySidecar() {
-  const file2 = geminiConfigFile();
-  const json2 = readGeminiConfig();
-  const current = json2.sidecars?.[ANTIGRAVITY_SIDECAR_ID] ?? {};
-  json2.sidecars = { ...json2.sidecars, [ANTIGRAVITY_SIDECAR_ID]: { ...current, enabled: true } };
-  fs.mkdirSync(path2.dirname(file2), { recursive: true });
-  fs.writeFileSync(file2, JSON.stringify(json2, null, 2) + "\n");
+function stateDir() {
+  return configuredEnv("TELEPATHY_HOME") || path2.join(os.homedir(), ".telepathy");
 }
-var ANTIGRAVITY_SIDECAR_ID, LEFTOVER_GEMINI_NOTE;
-var init_antigravity = __esm({
-  "src/core/antigravity.ts"() {
+function ensureDir(dir) {
+  fs.mkdirSync(dir, { recursive: true, mode: 448 });
+  return dir;
+}
+function writeJsonAtomic(file2, value) {
+  ensureDir(path2.dirname(file2));
+  const tmp = `${file2}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 384 });
+  fs.renameSync(tmp, file2);
+}
+function readJson(file2) {
+  try {
+    return JSON.parse(fs.readFileSync(file2, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+var UNEXPANDED, peersDir, peerDir, inboxDir, archiveDir, withdrawnDir;
+var init_paths = __esm({
+  "src/core/paths.ts"() {
     "use strict";
-    ANTIGRAVITY_SIDECAR_ID = "telepathy/telepathy-wake";
-    LEFTOVER_GEMINI_NOTE = "Gemini CLI is deprecated. Remove this directory so `agy plugin import gemini` does not install telepathy a second time.";
+    UNEXPANDED = /^\$\{[^}]+\}$/;
+    scrubPlaceholderEnv();
+    peersDir = () => path2.join(stateDir(), "peers");
+    peerDir = (id) => path2.join(peersDir(), id);
+    inboxDir = (id) => path2.join(peerDir(id), "inbox");
+    archiveDir = (id) => path2.join(peerDir(id), "archive");
+    withdrawnDir = (id) => path2.join(peerDir(id), "withdrawn");
   }
 });
 
@@ -180,7 +184,7 @@ function genericDir(dir) {
   return false;
 }
 function isolatedStateRoots() {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv("TELEPATHY_HOME");
   if (!explicit) return void 0;
   const state = resolveReal(explicit);
   let passwd = path3.resolve(os2.userInfo().homedir);
@@ -203,6 +207,11 @@ function isolatedStateRoots() {
 function inRoots(dir, roots) {
   const resolved = resolveReal(dir);
   return roots.some((root) => resolved === root || resolved.startsWith(root + path3.sep));
+}
+function outsideIsolatedHome(dir) {
+  const roots = isolatedStateRoots();
+  if (!roots) return false;
+  return !inRoots(dir, roots);
 }
 function readVersion(file2) {
   try {
@@ -334,6 +343,7 @@ var home, cacheHome, dataHome, list, versionParts, isOpencodeNpmInstall;
 var init_installs = __esm({
   "src/core/installs.ts"() {
     "use strict";
+    init_paths();
     home = () => os2.homedir();
     cacheHome = () => process.env.XDG_CACHE_HOME || path3.join(home(), ".cache");
     dataHome = () => process.env.XDG_DATA_HOME || path3.join(home(), ".local", "share");
@@ -349,44 +359,8 @@ var init_installs = __esm({
   }
 });
 
-// src/core/paths.ts
-import fs3 from "node:fs";
-import os3 from "node:os";
-import path4 from "node:path";
-function stateDir() {
-  return process.env.TELEPATHY_HOME || path4.join(os3.homedir(), ".telepathy");
-}
-function ensureDir(dir) {
-  fs3.mkdirSync(dir, { recursive: true, mode: 448 });
-  return dir;
-}
-function writeJsonAtomic(file2, value) {
-  ensureDir(path4.dirname(file2));
-  const tmp = `${file2}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-  fs3.writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 384 });
-  fs3.renameSync(tmp, file2);
-}
-function readJson(file2) {
-  try {
-    return JSON.parse(fs3.readFileSync(file2, "utf8"));
-  } catch {
-    return void 0;
-  }
-}
-var peersDir, peerDir, inboxDir, archiveDir, withdrawnDir;
-var init_paths = __esm({
-  "src/core/paths.ts"() {
-    "use strict";
-    peersDir = () => path4.join(stateDir(), "peers");
-    peerDir = (id) => path4.join(peersDir(), id);
-    inboxDir = (id) => path4.join(peerDir(id), "inbox");
-    archiveDir = (id) => path4.join(peerDir(id), "archive");
-    withdrawnDir = (id) => path4.join(peerDir(id), "withdrawn");
-  }
-});
-
 // src/version-check.ts
-import path5 from "node:path";
+import path4 from "node:path";
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -413,15 +387,15 @@ var init_version_check = __esm({
     "use strict";
     init_paths();
     DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path5.join(stateDir(), "github-version.json");
+    cacheFile = () => path4.join(stateDir(), "github-version.json");
   }
 });
 
 // src/update-all.ts
 import { spawn } from "node:child_process";
-import fs4 from "node:fs";
-import os4 from "node:os";
-import path6 from "node:path";
+import fs3 from "node:fs";
+import os3 from "node:os";
+import path5 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -446,7 +420,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os4.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os3.homedir()) {
   return new Promise((resolve) => {
     let output2 = "";
     const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -469,19 +443,19 @@ function runHarnessCommand({ cmd, args }, cwd = os4.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path6.join(process.env.XDG_CACHE_HOME || path6.join(os4.homedir(), ".cache"), install.agent, "packages");
-  const relative = path6.relative(packages, install.dir).split(path6.sep);
-  const entry = path6.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path6.join(path6.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs4.renameSync(entry, aside);
+  const packages = path5.join(process.env.XDG_CACHE_HOME || path5.join(os3.homedir(), ".cache"), install.agent, "packages");
+  const relative = path5.relative(packages, install.dir).split(path5.sep);
+  const entry = path5.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path5.join(path5.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs3.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs4.rmSync(aside, { recursive: true, force: true });
+    fs3.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs4.rmSync(entry, { recursive: true, force: true });
-  fs4.renameSync(aside, entry);
+  fs3.rmSync(entry, { recursive: true, force: true });
+  fs3.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function latestKnown() {
@@ -497,15 +471,12 @@ async function updateAll(options = {}) {
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
   const before = installsInScope();
-  if (before.some((install) => install.agent === "antigravity") && !dryRun) enableAntigravitySidecar();
   if (!before.length) {
-    mentionLeftoverGemini(dryRun, say);
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
-  mentionLeftoverGemini(dryRun, say);
   if (dryRun) {
     for (const install of before) {
       if (alreadyCurrent(install, latest)) {
@@ -556,16 +527,6 @@ Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
   }
   return 0;
 }
-function mentionLeftoverGemini(dryRun, say) {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return;
-  if (dryRun) {
-    say(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
-    return;
-  }
-  removeLeftoverGeminiExtension();
-  say(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
-}
 function invokedAsUpdateAll() {
   const entry = process.argv[1] ?? "";
   return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
@@ -575,7 +536,6 @@ var init_update_all = __esm({
   async "src/update-all.ts"() {
     "use strict";
     init_agents();
-    init_antigravity();
     init_installs();
     init_version_check();
     REPO = "https://github.com/Winterrks/telepathy";
@@ -723,19 +683,19 @@ __export(auto_update_exports, {
   setAutoUpdate: () => setAutoUpdate
 });
 import { spawn as spawn2 } from "node:child_process";
-import fs5 from "node:fs";
-import path7 from "node:path";
+import fs4 from "node:fs";
+import path6 from "node:path";
 import { fileURLToPath } from "node:url";
 function autoUpdateEnabled() {
-  const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
+  const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path7.join(stateDir(), "config.json"));
+  const cfg = readJson(path6.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 function setAutoUpdate(on) {
-  const file2 = path7.join(stateDir(), "config.json");
+  const file2 = path6.join(stateDir(), "config.json");
   const cfg = readJson(file2) ?? {};
   cfg.autoUpdate = on;
   writeJsonAtomic(file2, cfg);
@@ -750,7 +710,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs5.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs4.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -758,10 +718,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path7.dirname(fileURLToPath(import.meta.url));
+  const dir = path6.dirname(fileURLToPath(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path7.join(dir, name);
-    if (fs5.existsSync(candidate)) return candidate;
+    const candidate = path6.join(dir, name);
+    if (fs4.existsSync(candidate)) return candidate;
   }
   return fileURLToPath(import.meta.url);
 }
@@ -784,9 +744,9 @@ function scheduleAutoUpdate(reason) {
 function acquireLock() {
   ensureDir(stateDir());
   try {
-    const fd = fs5.openSync(lockFile(), "wx", 384);
-    fs5.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
-    fs5.closeSync(fd);
+    const fd = fs4.openSync(lockFile(), "wx", 384);
+    fs4.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs4.closeSync(fd);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") return false;
@@ -795,7 +755,7 @@ function acquireLock() {
     const alive = typeof info?.pid === "number" && isAlive(info.pid);
     if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
     try {
-      fs5.rmSync(lockFile(), { force: true });
+      fs4.rmSync(lockFile(), { force: true });
     } catch {
       return false;
     }
@@ -804,7 +764,7 @@ function acquireLock() {
 }
 function releaseLock() {
   const info = readJson(lockFile());
-  if (info?.pid === process.pid) fs5.rmSync(lockFile(), { force: true });
+  if (info?.pid === process.pid) fs4.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
   if (!autoUpdateEnabled()) {
@@ -856,9 +816,9 @@ var init_auto_update = __esm({
     await init_update_all();
     init_version_check();
     DAY_MS = 24 * 60 * 60 * 1e3;
-    stampFile = () => path7.join(stateDir(), "auto-update.json");
-    lockFile = () => path7.join(stateDir(), "auto-update.lock");
-    logFile = () => path7.join(stateDir(), "auto-update.log");
+    stampFile = () => path6.join(stateDir(), "auto-update.json");
+    lockFile = () => path6.join(stateDir(), "auto-update.lock");
+    logFile = () => path6.join(stateDir(), "auto-update.log");
   }
 });
 
@@ -1192,8 +1152,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
   writeJsonAtomic(file2, record2);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId);
-    const firstSeen = !previous || previous.sessionId !== fields.sessionId;
-    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId, fields.cwd ?? previous?.cwd, firstSeen) : void 0;
+    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId) : void 0;
     rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
     if (peerId(agent, pid) !== id) {
       writeJsonAtomic(linkFile(agent, pid), { id });
@@ -1297,7 +1256,7 @@ function registerListener(agent, pid, id = peerId(agent, pid)) {
   writeJsonAtomic(path12.join(peerDir(id), "listener.json"), record2);
 }
 function configuredStableName(explicit) {
-  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  const raw = explicit?.trim() || configuredEnv("TELEPATHY_NAME");
   if (!raw) return void 0;
   return slugify(raw) || void 0;
 }
@@ -1491,16 +1450,8 @@ function launchedTuis() {
 function codexTuiNamesThread(threadId) {
   return launchedTuis().some((tui) => tui.threadId === threadId);
 }
-function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
-  const tuis = launchedTuis();
-  const named = tuis.find((tui) => tui.threadId === sessionId);
-  let chosen = named;
-  if (!chosen && firstSeen) {
-    const fresh = tuis.filter((tui) => !tui.threadId && !linkedElsewhere(tui.pid, sessionId));
-    const sameDir = cwd ? fresh.filter((tui) => tui.cwd && tui.cwd === cwd) : [];
-    if (sameDir.length === 1) chosen = sameDir[0];
-    else if (fresh.length === 1 && (!cwd || !fresh[0]?.cwd)) chosen = fresh[0];
-  }
+function carryLaunchedCodexName(sessionId) {
+  const chosen = launchedTuis().find((tui) => tui.threadId === sessionId);
   if (!chosen) return void 0;
   const threadPeer = sessionPeerId("codex", chosen.pid, sessionId);
   const pidKey = peerId("codex", chosen.pid);
@@ -1510,10 +1461,6 @@ function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
   }
   const placeholder = readPeer(pidKey);
   return placeholder && !placeholder.sessionId ? placeholder.name : void 0;
-}
-function linkedElsewhere(pid, sessionId) {
-  const link = linkedPeerId("codex", pid);
-  return !!link && link !== sessionPeerId("codex", pid, sessionId);
 }
 function observeLaunchedCodex() {
   for (const proc of codexTuiProcesses()) {
@@ -1636,7 +1583,7 @@ var init_peers = __esm({
     PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
     AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
     REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-    defaultCodexHome = () => process.env.CODEX_HOME || path12.join(os7.homedir(), ".codex");
+    defaultCodexHome = () => configuredEnv("CODEX_HOME") || path12.join(os7.homedir(), ".codex");
     claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path12.join(os7.homedir(), ".claude");
     HOLD_MS = 60 * 6e4;
     SESSION_KEEP_MS = 24 * 60 * 6e4;
@@ -30864,11 +30811,15 @@ function inspectTranscript(peer, marker) {
   return hosted;
 }
 function inspectHarnessTranscript(peer, marker) {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs19.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
+  const harness = searchHarnessTranscript(peer, marker);
+  const extra = configuredEnv("TELEPATHY_TRANSCRIPT_DIR");
+  if (!extra) return harness;
+  const extraFound = fs19.existsSync(extra) && treeHas(extra, marker, 4);
+  if (extraFound) return { located: true, found: true };
+  if (harness.found) return harness;
+  return { located: harness.located || fs19.existsSync(extra), found: false };
+}
+function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "claude") return claudeTranscript(peer, marker);
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
@@ -30922,17 +30873,16 @@ function opencodeTranscript(marker) {
   return { located: false, found: false };
 }
 function antigravityTranscript(peer, marker) {
+  const files = [];
   const recorded2 = readSession(peer.id)?.transcriptPath;
-  if (recorded2) {
-    if (!fs19.existsSync(recorded2)) return { located: false, found: false };
-    return { located: true, found: fileHas(recorded2, marker) };
+  if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files.push(recorded2);
+  if (peer.sessionId) {
+    const root = path22.join(os10.homedir(), ".gemini");
+    for (const dir of ["antigravity-cli", "antigravity-ide", "antigravity"]) {
+      files.push(path22.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl"));
+    }
   }
-  if (!peer.sessionId) return { located: false, found: false };
-  const root = path22.join(os10.homedir(), ".gemini");
-  const files = ["antigravity", "antigravity-cli", "antigravity-ide"].map(
-    (dir) => path22.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl")
-  );
-  const existing = files.filter((file2) => fs19.existsSync(file2));
+  const existing = [...new Set(files)].filter((file2) => fs19.existsSync(file2));
   if (!existing.length) return { located: false, found: false };
   return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
 }
@@ -31113,7 +31063,7 @@ async function confirmDelivery(peer, message, routeStatus) {
   if (second.kind === "offline") return fail("offline");
   return fail("unconfirmed", second.located);
 }
-var toolCallStartedAt, FULL_READ, TAIL_READ, sleep2, CONFIRM_QUEUE_DELETE_MS, UNRECALLABLE;
+var toolCallStartedAt, FULL_READ, TAIL_READ, UNEXPANDED_PATH, sleep2, CONFIRM_QUEUE_DELETE_MS, UNRECALLABLE;
 var init_confirm = __esm({
   "src/core/confirm.ts"() {
     "use strict";
@@ -31125,6 +31075,7 @@ var init_confirm = __esm({
     init_wake();
     FULL_READ = 32 * 1024 * 1024;
     TAIL_READ = 4 * 1024 * 1024;
+    UNEXPANDED_PATH = /^\$\{[^}]+\}$/;
     sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     CONFIRM_QUEUE_DELETE_MS = 2e3;
     UNRECALLABLE = /cannot be recalled/i;
@@ -32327,12 +32278,51 @@ function configCommand(args) {
 
 // src/cli/install.ts
 init_agents();
-init_antigravity();
-init_installs();
-await init_update_all();
 import fs6 from "node:fs";
 import os5 from "node:os";
 import path8 from "node:path";
+
+// src/core/antigravity.ts
+import fs5 from "node:fs";
+import os4 from "node:os";
+import path7 from "node:path";
+var ANTIGRAVITY_SIDECAR_ID = "telepathy/telepathy-wake";
+function geminiConfigFile() {
+  return path7.join(os4.homedir(), ".gemini", "config", "config.json");
+}
+function leftoverGeminiExtension() {
+  const dir = path7.join(os4.homedir(), ".gemini", "extensions", "telepathy");
+  return fs5.existsSync(path7.join(dir, "gemini-extension.json")) ? dir : void 0;
+}
+function removeLeftoverGeminiExtension() {
+  const dir = leftoverGeminiExtension();
+  if (!dir) return void 0;
+  fs5.rmSync(dir, { recursive: true, force: true });
+  return dir;
+}
+function readGeminiConfig() {
+  try {
+    return JSON.parse(fs5.readFileSync(geminiConfigFile(), "utf8"));
+  } catch {
+    return {};
+  }
+}
+function antigravitySidecarEnabled() {
+  return readGeminiConfig().sidecars?.[ANTIGRAVITY_SIDECAR_ID]?.enabled === true;
+}
+function enableAntigravitySidecar() {
+  const file2 = geminiConfigFile();
+  const json2 = readGeminiConfig();
+  const current = json2.sidecars?.[ANTIGRAVITY_SIDECAR_ID] ?? {};
+  json2.sidecars = { ...json2.sidecars, [ANTIGRAVITY_SIDECAR_ID]: { ...current, enabled: true } };
+  fs5.mkdirSync(path7.dirname(file2), { recursive: true });
+  fs5.writeFileSync(file2, JSON.stringify(json2, null, 2) + "\n");
+}
+var LEFTOVER_GEMINI_NOTE = "Gemini CLI is deprecated. Remove this directory so `agy plugin import gemini` does not install telepathy a second time.";
+
+// src/cli/install.ts
+init_installs();
+await init_update_all();
 
 // src/cli/harnesses.ts
 init_agents();
@@ -32593,13 +32583,14 @@ function describe(harness) {
 }
 async function installAll(options = {}) {
   const log = options.log ?? ((line) => console.log(line));
-  const chosen = (options.only ? options.only.map((id) => harnessByAgent(id)).filter((h) => !!h) : detectedHarnesses()).filter(
-    (harness) => !options.only || options.only.includes(harness.agent)
-  );
-  const present = options.only ? chosen : detectedHarnesses().filter((harness) => !options.only || options.only.includes(harness.agent));
+  const requested = options.only?.length ? options.only.flatMap((id) => {
+    const harness = harnessByAgent(id);
+    return harness ? [harness] : [];
+  }) : void 0;
+  const present = requested ?? detectedHarnesses();
   if (!present.length) {
     log(options.only ? `No harness in --only was recognized.` : "No supported agent CLI is on PATH.");
-    reportLeftoverGemini(options.dryRun === true, log);
+    removeLegacyGemini(options, log);
     return options.only ? 1 : 0;
   }
   let failed = false;
@@ -32611,7 +32602,7 @@ async function installAll(options = {}) {
       continue;
     }
     if (alreadyInstalled(harness.agent) && harness.install.kind !== "manual") {
-      if (harness.agent === "antigravity" && !options.dryRun) enableAntigravitySidecar();
+      if (harness.agent === "antigravity" && !options.dryRun) enableSidecarIfInScope(log);
       log(`- ${label}: already installed${options.dryRun ? `; would run ${how}` : ""}`);
       continue;
     }
@@ -32635,7 +32626,7 @@ async function installAll(options = {}) {
     }
     const result = await runSteps(harness.install.steps);
     if (result.ok) {
-      if (harness.agent === "antigravity" && !options.dryRun) enableAntigravitySidecar();
+      if (harness.agent === "antigravity") enableSidecarIfInScope(log);
       log(`- ${label}: installed. ${harness.install.note ?? ""}`.trim());
     } else {
       const tail = result.output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "failed";
@@ -32643,29 +32634,33 @@ async function installAll(options = {}) {
       failed = true;
     }
   }
-  reportLeftoverGemini(options.dryRun === true, log);
+  removeLegacyGemini(options, log);
   return failed ? 1 : 0;
 }
-function reportLeftoverGemini(dryRun, log) {
+function enableSidecarIfInScope(log) {
+  const file2 = geminiConfigFile();
+  if (outsideIsolatedHome(path8.dirname(file2))) {
+    log(`- Antigravity sidecar: left unchanged. ${file2} is outside this TELEPATHY_HOME.`);
+    return;
+  }
+  enableAntigravitySidecar();
+}
+function removeLegacyGemini(options, log) {
+  if (!options.removeLegacy) return;
   const dir = leftoverGeminiExtension();
-  if (!dir) return;
-  if (dryRun) {
-    log(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
+  if (!dir) {
+    log("No leftover Gemini CLI extension.");
+    return;
+  }
+  if (options.dryRun) {
+    log(`Would remove leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
     return;
   }
   removeLeftoverGeminiExtension();
   log(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 async function ensureInstalled(agent) {
-  if (alreadyInstalled(agent)) {
-    if (agent === "antigravity") {
-      enableAntigravitySidecar();
-      const removed = removeLeftoverGeminiExtension();
-      if (removed) process.stderr.write(`telepathy: removed leftover Gemini CLI extension at ${removed}. ${LEFTOVER_GEMINI_NOTE}
-`);
-    }
-    return { ok: true };
-  }
+  if (alreadyInstalled(agent)) return { ok: true };
   const harness = harnessByAgent(agent);
   if (!harness) return { ok: false, note: `Unknown harness ${agent}.` };
   if (harness.install.kind === "manual" || harness.install.kind === "none") {
@@ -32682,12 +32677,8 @@ async function ensureInstalled(agent) {
     const tail = result.output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "install failed";
     return { ok: false, note: tail };
   }
-  if (agent === "antigravity") {
-    enableAntigravitySidecar();
-    const removed = removeLeftoverGeminiExtension();
-    if (removed) process.stderr.write(`telepathy: removed leftover Gemini CLI extension at ${removed}. ${LEFTOVER_GEMINI_NOTE}
-`);
-  }
+  if (agent === "antigravity") enableSidecarIfInScope((line) => process.stderr.write(`telepathy: ${line}
+`));
   if (harness.install.note) process.stderr.write(`telepathy: ${harness.install.note}
 `);
   if (!alreadyInstalled(agent) && harness.install.kind === "commands") {
@@ -32868,18 +32859,34 @@ async function startAcpSession(options) {
   const child = spawn3(options.bin, options.args, {
     cwd: options.cwd,
     env: options.env ?? process.env,
-    stdio: ["pipe", "pipe", "pipe"]
+    stdio: ["pipe", "pipe", "pipe"],
+    detached: process.platform !== "win32"
   });
+  const stopChild = (signal) => {
+    const pid = child.pid;
+    if (pid && process.platform !== "win32") {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+      }
+    }
+    if (child.exitCode === null && !child.killed) child.kill(signal);
+  };
   let stderrTail = "";
   let sessionReady = false;
   let failure2;
+  let authReported = false;
   const noteStderr = (text) => {
     options.trace?.(text);
     stderrTail = (stderrTail + text).slice(-4e3);
-    if (!sessionReady && AUTH_FAILURE.test(stderrTail)) {
-      failure2 = 1;
-      if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+    if (!AUTH_FAILURE.test(stderrTail)) return;
+    failure2 = 1;
+    if (sessionReady && !authReported) {
+      authReported = true;
+      options.emit(authMessage(options.bin, stderrTail));
     }
+    stopChild("SIGTERM");
   };
   child.stderr?.on("data", (chunk) => noteStderr(chunk.toString()));
   let userStop = false;
@@ -32933,9 +32940,23 @@ async function startAcpSession(options) {
     if (endedWithNl) return;
     writeText("\n");
   };
+  let lastUpdate;
+  const updateIdentity = (params) => {
+    const root = params ?? {};
+    const update = root.update ?? root;
+    return {
+      kind: typeof update.sessionUpdate === "string" ? update.sessionUpdate : "text",
+      messageId: typeof update.messageId === "string" ? update.messageId : void 0
+    };
+  };
   let acceptDelivery;
   let onUpdate = (params) => {
-    writeText(textOf(params));
+    const text = textOf(params);
+    const identity = updateIdentity(params);
+    const newMessage = !!lastUpdate && !!text && (lastUpdate.kind !== identity.kind || !!identity.messageId && !!lastUpdate.messageId && identity.messageId !== lastUpdate.messageId);
+    if (newMessage && !endedWithNl) writeText("\n");
+    if (text) lastUpdate = identity;
+    writeText(text);
   };
   const rpc = new LineRpc(
     child,
@@ -32981,7 +33002,7 @@ async function startAcpSession(options) {
       if (!cancelTurn()) {
         userStop = true;
         releaseStdin();
-        if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+        stopChild("SIGTERM");
       }
     } finally {
       handlingSigint = false;
@@ -33005,7 +33026,7 @@ async function startAcpSession(options) {
   }
   try {
     if (failure2 !== void 0) {
-      if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+      stopChild("SIGTERM");
       throw new Error(authMessage(options.bin, stderrTail));
     }
     await rpc.request("initialize", {
@@ -33029,7 +33050,7 @@ async function startAcpSession(options) {
       sessionId = sessionIdOf(created);
     }
     if (!sessionId) {
-      child.kill("SIGTERM");
+      stopChild("SIGTERM");
       throw new Error(`${options.bin} did not return a session id`);
     }
     sessionReady = true;
@@ -33091,7 +33112,17 @@ async function startAcpSession(options) {
               cancel();
               finish(false);
             }
-          } catch {
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const closed = message === "agent exited" || message === "agent stdin is closed";
+            if (!closed) {
+              const auth = AUTH_FAILURE.test(message) || AUTH_FAILURE.test(stderrTail);
+              options.emit(auth ? authMessage(options.bin, stderrTail || message) : message);
+              if (auth) {
+                failure2 = 1;
+                stopChild("SIGTERM");
+              }
+            }
             finish(false);
           } finally {
             clearInterval(watch);
@@ -33111,7 +33142,7 @@ async function startAcpSession(options) {
         return accepted;
       },
       close() {
-        if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+        stopChild("SIGTERM");
         releaseStdin();
       },
       exited
@@ -33120,7 +33151,7 @@ async function startAcpSession(options) {
   } catch (err) {
     if (!options.headless) process.off("SIGINT", onSigint);
     releaseStdin();
-    if (child.exitCode === null && !child.killed) child.kill("SIGTERM");
+    stopChild("SIGTERM");
     const message = err instanceof Error ? err.message : String(err);
     const detail = stderrTail.trim().split("\n").filter(Boolean).at(-1);
     if (detail && !message.includes(detail)) throw new Error(`${message}: ${detail}`);
@@ -33142,24 +33173,30 @@ var AGY_CONSUMER_LOGIN_WARNING = [
   'Set GEMINI_API_KEY and "modelProvider": "gemini" in ~/.gemini/antigravity-cli/settings.json, then try again.',
   "An interactive `telepathy run antigravity` (the TUI) is unchanged."
 ].join("\n");
+var AGY_API_KEY_MISSING = [
+  'telepathy: Antigravity settings use "modelProvider": "gemini", but GEMINI_API_KEY is not set.',
+  "Export GEMINI_API_KEY, or remove modelProvider to go back to an interactive account login.",
+  "Headless and ACP are not started."
+].join("\n");
 function agySettingsFile(env = process.env) {
   const home2 = env.HOME?.trim() || os6.homedir();
   return path10.join(home2, ".gemini", "antigravity-cli", "settings.json");
 }
-function ensureAgyApiKey(env = process.env) {
-  if (!env.GEMINI_API_KEY?.trim()) return { ok: false, warning: AGY_CONSUMER_LOGIN_WARNING };
-  const file2 = agySettingsFile(env);
+function agyLoginType(env = process.env) {
   let json2 = {};
   try {
-    json2 = JSON.parse(fs9.readFileSync(file2, "utf8"));
+    json2 = JSON.parse(fs9.readFileSync(agySettingsFile(env), "utf8"));
   } catch {
     json2 = {};
   }
-  if (json2.modelProvider !== "gemini" && (json2.modelProvider === void 0 || json2.modelProvider === "")) {
-    json2.modelProvider = "gemini";
-    fs9.mkdirSync(path10.dirname(file2), { recursive: true });
-    fs9.writeFileSync(file2, JSON.stringify(json2, null, 2) + "\n");
-  }
+  const modelProvider = typeof json2.modelProvider === "string" ? json2.modelProvider : void 0;
+  if (modelProvider === "gemini") return { type: "gemini-api", modelProvider };
+  return { type: "consumer", modelProvider };
+}
+function ensureAgyApiKey(env = process.env) {
+  const login = agyLoginType(env);
+  if (login.type !== "gemini-api") return { ok: false, warning: AGY_CONSUMER_LOGIN_WARNING };
+  if (!env.GEMINI_API_KEY?.trim()) return { ok: false, warning: AGY_API_KEY_MISSING };
   return { ok: true };
 }
 
@@ -33272,16 +33309,43 @@ function appendTranscript(peerId2, text) {
   const file2 = path14.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
   fs14.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
+function pluginInboxPeerId(agent, name, sessionId) {
+  const slug = name ? slugify(name) : void 0;
+  let names = [];
+  try {
+    names = fs14.readdirSync(peersDir());
+  } catch {
+    return void 0;
+  }
+  let byName;
+  let bySession;
+  for (const id of names) {
+    if (!id.startsWith(`${agent}-`)) continue;
+    const session = readSession(id);
+    if (session?.agent !== agent) continue;
+    if (slug) {
+      const ident = readJson(path14.join(peerDir(id), "identity.json"));
+      if (ident?.name === slug) byName = id;
+    }
+    if (sessionId && session.sessionId === sessionId) bySession = id;
+  }
+  return byName ?? bySession;
+}
 function startInboxPump(peerId2, inject) {
+  const resolve = typeof peerId2 === "function" ? peerId2 : () => peerId2;
   const done = /* @__PURE__ */ new Set();
   let running = false;
+  let lastId;
   const tick = async () => {
     if (running) return;
+    const id = resolve();
+    if (!id) return;
+    lastId = id;
     running = true;
     try {
-      for (const msg of pendingMessages(peerId2)) {
+      for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
-        const file2 = path14.join(inboxDir(peerId2), `${msg.id}.json`);
+        const file2 = path14.join(inboxDir(id), `${msg.id}.json`);
         if (!fs14.existsSync(file2)) {
           done.add(msg.id);
           continue;
@@ -33293,8 +33357,8 @@ function startInboxPump(peerId2, inject) {
           continue;
         }
         if (!ok) return;
-        appendTranscript(peerId2, text);
-        archiveSettled(peerId2, msg.id);
+        appendTranscript(id, text);
+        archiveSettled(id, msg.id);
         done.add(msg.id);
       }
     } catch {
@@ -33305,7 +33369,7 @@ function startInboxPump(peerId2, inject) {
   const timer2 = setInterval(() => void tick(), 40);
   return () => {
     clearInterval(timer2);
-    notePeerExit(peerId2);
+    if (lastId) notePeerExit(lastId);
   };
 }
 
@@ -33396,8 +33460,10 @@ async function runHeadless(options) {
   };
   memory.changed = persist;
   persist();
-  const stopPump = pluginPeer ? () => {
-  } : startInboxPump(hosted.peerId, (text, stillPending2) => plane.inject(text, stillPending2));
+  const stopPump = startInboxPump(
+    pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
+    (text, stillPending2) => plane.inject(text, stillPending2)
+  );
   let stopping = false;
   const shutdown = () => {
     stopping = true;
@@ -33780,7 +33846,6 @@ function launchEnv(agent, name) {
 }
 function pointClaudeAtScopedPlugin(env) {
   if (!isolatedStateRoots()) return;
-  if (!env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = path16.join(path16.dirname(stateDir()), "claude-config");
   const install = installsInScope().find((item) => item.agent === "claude");
   if (!install) return;
   const dirs = (env.CLAUDE_CODE_PLUGIN_DIRS ?? "").split(path16.delimiter).filter(Boolean);
@@ -33792,6 +33857,7 @@ function parseRunArgs(argv) {
   let acp = false;
   let headless = false;
   let list2 = false;
+  let install = false;
   let name;
   let cwd;
   const positionals = [];
@@ -33812,6 +33878,10 @@ function parseRunArgs(argv) {
       list2 = true;
       continue;
     }
+    if (beforeAgent && arg === "--install") {
+      install = true;
+      continue;
+    }
     if (nameStillOpen && (arg === "--name" || arg === "--cwd")) {
       const value = argv[++i];
       if (!value || value.startsWith("--")) throw new Error(`${arg} needs a value`);
@@ -33821,18 +33891,19 @@ function parseRunArgs(argv) {
     }
     positionals.push(arg);
   }
-  return { acp, headless, list: list2, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
+  return { acp, headless, list: list2, install, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
 }
-async function prepare(agent) {
+async function prepare(agent, install) {
   const latest = cachedGithubVersion();
-  const install = findInstalls().find((item) => item.agent === agent);
-  if (latest && install && isNewer(latest, install.version)) {
+  const found = findInstalls().find((item) => item.agent === agent);
+  if (latest && found && isNewer(latest, found.version)) {
     process.stderr.write(
-      `telepathy: ${agentLabel(agent)} has telepathy ${install.version}, older than GitHub ${latest}. An update will run in the background.
+      `telepathy: ${agentLabel(agent)} has telepathy ${found.version}, older than GitHub ${latest}. An update will run in the background.
 `
     );
     scheduleAutoUpdate("run");
   }
+  if (!install) return true;
   const ensured = await ensureInstalled(agent);
   if (ensured.note) process.stderr.write(`telepathy: ${ensured.note}
 `);
@@ -33866,7 +33937,7 @@ Run \`telepathy run --list\` to see how each one starts.`
       return 1;
     }
   }
-  if (!await prepare(harness.agent)) return 1;
+  if (!await prepare(harness.agent, parsed.install)) return 1;
   const cwd = parsed.cwd ? path17.resolve(parsed.cwd) : process.cwd();
   const name = parsed.name;
   if (parsed.headless) {
@@ -33951,8 +34022,10 @@ async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
   });
   const hosted = pluginPeer ? void 0 : registerHostedPeer(harness.agent, cwd, name);
   if (hosted) rememberHarnessSession(hosted.peerId, session.sessionId);
-  const stopPump = hosted ? startInboxPump(hosted.peerId, (text, stillPending2) => session.prompt(text, stillPending2)) : () => {
-  };
+  const stopPump = startInboxPump(
+    hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
+    (text, stillPending2) => session.prompt(text, stillPending2)
+  );
   const shutdown = () => session.close();
   process.on("SIGTERM", shutdown);
   try {
@@ -33998,7 +34071,6 @@ function execPassthrough(bin, args, cwd, env) {
 
 // src/cli/status.ts
 init_agents();
-init_antigravity();
 init_installs();
 init_paths();
 init_version();
@@ -34022,7 +34094,7 @@ async function statusReport(options = {}) {
       latest = latest ?? cachedGithubVersion();
     }
   }
-  const installs = installsInScope();
+  const installs = findInstalls();
   const lines = [];
   lines.push(`telepathy CLI ${VERSION}`);
   lines.push(`state: ${stateDir()}`);
@@ -34059,7 +34131,7 @@ async function statusReport(options = {}) {
       `Antigravity App sidecar (${ANTIGRAVITY_SIDECAR_ID}): ${antigravitySidecarEnabled() ? "enabled" : "not enabled in ~/.gemini/config/config.json"}`
     );
     const leftover = leftoverGeminiExtension();
-    if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy update\` removes it.`);
+    if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy install --remove-legacy\` removes it.`);
   }
   return { text: lines.join("\n"), code: 0 };
 }
@@ -34071,9 +34143,9 @@ Usage:
   telepathy update [--dry-run]
   telepathy status
   telepathy doctor
-  telepathy install [--dry-run] [--only a,b]
+  telepathy install [--dry-run] [--only a,b] [--remove-legacy]
   telepathy config [auto-update on|off]
-  telepathy run [--list] [--acp | --headless] [--name X] [--cwd D] <agent> [args...]
+  telepathy run [--list] [--acp | --headless] [--install] [--name X] [--cwd D] <agent> [args...]
   telepathy ps
   telepathy stop <name>
   telepathy mcp --agent <agent>
@@ -34111,9 +34183,11 @@ async function main(argv) {
   }
   if (cmd === "install") {
     const dryRun = rest.includes("--dry-run");
+    const removeLegacy = rest.includes("--remove-legacy");
+    const onlyEq = rest.find((arg) => arg.startsWith("--only="));
     const onlyFlag = rest.indexOf("--only");
-    const only = onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : void 0;
-    return installAll({ dryRun, only });
+    const only = onlyEq ? parseOnly(onlyEq.slice("--only=".length)) : onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : void 0;
+    return installAll({ dryRun, only, removeLegacy });
   }
   if (cmd === "config") return configCommand(rest);
   if (cmd === "run") return runCommand(rest);

@@ -12,8 +12,8 @@ export function pluginInstalled(agent: Agent): boolean {
 /**
  * Environment for a process telepathy spawned.
  * When the plugin is already installed, `TELEPATHY_NAME` is the only identity: the host does not
- * register a second peer. An isolated `TELEPATHY_HOME` points Claude at the plugin inside that tree
- * instead of the copy under the real `~/.claude`.
+ * register a second peer. Isolation is `TELEPATHY_HOME` only. `CLAUDE_CONFIG_DIR` stays as the user
+ * set it: on macOS the Keychain login is keyed by that directory.
  */
 export function launchEnv(agent: Agent, name?: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, TELEPATHY_HOME: stateDir() };
@@ -27,7 +27,6 @@ export function launchEnv(agent: Agent, name?: string): NodeJS.ProcessEnv {
 
 function pointClaudeAtScopedPlugin(env: NodeJS.ProcessEnv): void {
   if (!isolatedStateRoots()) return;
-  if (!env.CLAUDE_CONFIG_DIR) env.CLAUDE_CONFIG_DIR = path.join(path.dirname(stateDir()), 'claude-config');
   const install = installsInScope().find((item) => item.agent === 'claude');
   if (!install) return;
   const dirs = (env.CLAUDE_CODE_PLUGIN_DIRS ?? '').split(path.delimiter).filter(Boolean);

@@ -3,12 +3,6 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
-import {
-  enableAntigravitySidecar,
-  leftoverGeminiExtension,
-  LEFTOVER_GEMINI_NOTE,
-  removeLeftoverGeminiExtension,
-} from './core/antigravity.ts';
 import { installsInScope, isNewer, type Install, isOpencodeNpmInstall } from './core/installs.ts';
 import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
 
@@ -133,15 +127,12 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   const log = options.log;
   const say = (line: string) => (log ? log(line) : console.log(line));
   const before = installsInScope();
-  if (before.some((install) => install.agent === 'antigravity') && !dryRun) enableAntigravitySidecar();
   if (!before.length) {
-    mentionLeftoverGemini(dryRun, say);
     say('No agent on this machine has telepathy installed.');
     return 0;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
-  mentionLeftoverGemini(dryRun, say);
   if (dryRun) {
     for (const install of before) {
       if (alreadyCurrent(install, latest)) {
@@ -197,17 +188,6 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
     return 1;
   }
   return 0;
-}
-
-function mentionLeftoverGemini(dryRun: boolean, say: (line: string) => void): void {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return;
-  if (dryRun) {
-    say(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
-    return;
-  }
-  removeLeftoverGeminiExtension();
-  say(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 
 /** True when this file is the process entry (`node update-all.mjs`), not a bundled import. */

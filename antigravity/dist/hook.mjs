@@ -18,8 +18,18 @@ var __export = (target, all) => {
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
 function stateDir() {
-  return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 448 });
@@ -38,10 +48,12 @@ function readJson(file) {
     return void 0;
   }
 }
-var peersDir, peerDir, inboxDir, archiveDir, withdrawnDir;
+var UNEXPANDED, peersDir, peerDir, inboxDir, archiveDir, withdrawnDir;
 var init_paths = __esm({
   "src/core/paths.ts"() {
     "use strict";
+    UNEXPANDED = /^\$\{[^}]+\}$/;
+    scrubPlaceholderEnv();
     peersDir = () => path.join(stateDir(), "peers");
     peerDir = (id) => path.join(peersDir(), id);
     inboxDir = (id) => path.join(peerDir(id), "inbox");
@@ -285,7 +297,7 @@ function genericDir(dir) {
   return false;
 }
 function isolatedStateRoots() {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv("TELEPATHY_HOME");
   if (!explicit) return void 0;
   const state = resolveReal(explicit);
   let passwd = path15.resolve(os5.userInfo().homedir);
@@ -439,6 +451,7 @@ var home, cacheHome, dataHome, list, versionParts, isOpencodeNpmInstall;
 var init_installs = __esm({
   "src/core/installs.ts"() {
     "use strict";
+    init_paths();
     home = () => os5.homedir();
     cacheHome = () => process.env.XDG_CACHE_HOME || path15.join(home(), ".cache");
     dataHome = () => process.env.XDG_DATA_HOME || path15.join(home(), ".local", "share");
@@ -454,62 +467,8 @@ var init_installs = __esm({
   }
 });
 
-// src/core/antigravity.ts
-import fs14 from "node:fs";
-import os6 from "node:os";
-import path16 from "node:path";
-function antigravitySurface(transcriptPath) {
-  if (!transcriptPath) return void 0;
-  const norm = transcriptPath.replace(/\\/g, "/");
-  if (norm.includes("/antigravity-cli/")) return "cli";
-  if (norm.includes("/antigravity-ide/")) return "ide";
-  if (norm.includes("/antigravity/")) return "app";
-  return void 0;
-}
-function expandHomePath(file) {
-  if (file === "~") return os6.homedir();
-  if (file.startsWith("~/") || file.startsWith("~\\")) return path16.join(os6.homedir(), file.slice(2));
-  return file;
-}
-function geminiConfigFile() {
-  return path16.join(os6.homedir(), ".gemini", "config", "config.json");
-}
-function leftoverGeminiExtension() {
-  const dir = path16.join(os6.homedir(), ".gemini", "extensions", "telepathy");
-  return fs14.existsSync(path16.join(dir, "gemini-extension.json")) ? dir : void 0;
-}
-function removeLeftoverGeminiExtension() {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return void 0;
-  fs14.rmSync(dir, { recursive: true, force: true });
-  return dir;
-}
-function readGeminiConfig() {
-  try {
-    return JSON.parse(fs14.readFileSync(geminiConfigFile(), "utf8"));
-  } catch {
-    return {};
-  }
-}
-function enableAntigravitySidecar() {
-  const file = geminiConfigFile();
-  const json2 = readGeminiConfig();
-  const current = json2.sidecars?.[ANTIGRAVITY_SIDECAR_ID] ?? {};
-  json2.sidecars = { ...json2.sidecars, [ANTIGRAVITY_SIDECAR_ID]: { ...current, enabled: true } };
-  fs14.mkdirSync(path16.dirname(file), { recursive: true });
-  fs14.writeFileSync(file, JSON.stringify(json2, null, 2) + "\n");
-}
-var ANTIGRAVITY_SIDECAR_ID, LEFTOVER_GEMINI_NOTE;
-var init_antigravity = __esm({
-  "src/core/antigravity.ts"() {
-    "use strict";
-    ANTIGRAVITY_SIDECAR_ID = "telepathy/telepathy-wake";
-    LEFTOVER_GEMINI_NOTE = "Gemini CLI is deprecated. Remove this directory so `agy plugin import gemini` does not install telepathy a second time.";
-  }
-});
-
 // src/version-check.ts
-import path17 from "node:path";
+import path16 from "node:path";
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -536,15 +495,15 @@ var init_version_check = __esm({
     "use strict";
     init_paths();
     DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path17.join(stateDir(), "github-version.json");
+    cacheFile = () => path16.join(stateDir(), "github-version.json");
   }
 });
 
 // src/update-all.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs15 from "node:fs";
-import os7 from "node:os";
-import path18 from "node:path";
+import fs14 from "node:fs";
+import os6 from "node:os";
+import path17 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -569,7 +528,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os7.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
   return new Promise((resolve) => {
     let output = "";
     const child = spawn3(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -592,19 +551,19 @@ function runHarnessCommand({ cmd, args }, cwd = os7.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path18.join(process.env.XDG_CACHE_HOME || path18.join(os7.homedir(), ".cache"), install.agent, "packages");
-  const relative = path18.relative(packages, install.dir).split(path18.sep);
-  const entry = path18.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path18.join(path18.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs15.renameSync(entry, aside);
+  const packages = path17.join(process.env.XDG_CACHE_HOME || path17.join(os6.homedir(), ".cache"), install.agent, "packages");
+  const relative = path17.relative(packages, install.dir).split(path17.sep);
+  const entry = path17.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path17.join(path17.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs14.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs15.rmSync(aside, { recursive: true, force: true });
+    fs14.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs15.rmSync(entry, { recursive: true, force: true });
-  fs15.renameSync(aside, entry);
+  fs14.rmSync(entry, { recursive: true, force: true });
+  fs14.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function latestKnown() {
@@ -620,15 +579,12 @@ async function updateAll(options = {}) {
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
   const before = installsInScope();
-  if (before.some((install) => install.agent === "antigravity") && !dryRun) enableAntigravitySidecar();
   if (!before.length) {
-    mentionLeftoverGemini(dryRun, say);
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
-  mentionLeftoverGemini(dryRun, say);
   if (dryRun) {
     for (const install of before) {
       if (alreadyCurrent(install, latest)) {
@@ -679,16 +635,6 @@ Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
   }
   return 0;
 }
-function mentionLeftoverGemini(dryRun, say) {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return;
-  if (dryRun) {
-    say(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
-    return;
-  }
-  removeLeftoverGeminiExtension();
-  say(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
-}
 function invokedAsUpdateAll() {
   const entry = process.argv[1] ?? "";
   return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
@@ -698,7 +644,6 @@ var init_update_all = __esm({
   async "src/update-all.ts"() {
     "use strict";
     init_agents();
-    init_antigravity();
     init_installs();
     init_version_check();
     REPO = "https://github.com/Winterrks/telepathy";
@@ -723,19 +668,19 @@ __export(auto_update_exports, {
   setAutoUpdate: () => setAutoUpdate
 });
 import { spawn as spawn4 } from "node:child_process";
-import fs16 from "node:fs";
-import path19 from "node:path";
+import fs15 from "node:fs";
+import path18 from "node:path";
 import { fileURLToPath } from "node:url";
 function autoUpdateEnabled() {
-  const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
+  const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path19.join(stateDir(), "config.json"));
+  const cfg = readJson(path18.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 function setAutoUpdate(on) {
-  const file = path19.join(stateDir(), "config.json");
+  const file = path18.join(stateDir(), "config.json");
   const cfg = readJson(file) ?? {};
   cfg.autoUpdate = on;
   writeJsonAtomic(file, cfg);
@@ -750,7 +695,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs16.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs15.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -758,10 +703,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path19.dirname(fileURLToPath(import.meta.url));
+  const dir = path18.dirname(fileURLToPath(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path19.join(dir, name);
-    if (fs16.existsSync(candidate)) return candidate;
+    const candidate = path18.join(dir, name);
+    if (fs15.existsSync(candidate)) return candidate;
   }
   return fileURLToPath(import.meta.url);
 }
@@ -784,9 +729,9 @@ function scheduleAutoUpdate(reason) {
 function acquireLock() {
   ensureDir(stateDir());
   try {
-    const fd = fs16.openSync(lockFile(), "wx", 384);
-    fs16.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
-    fs16.closeSync(fd);
+    const fd = fs15.openSync(lockFile(), "wx", 384);
+    fs15.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs15.closeSync(fd);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") return false;
@@ -795,7 +740,7 @@ function acquireLock() {
     const alive = typeof info?.pid === "number" && isAlive(info.pid);
     if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
     try {
-      fs16.rmSync(lockFile(), { force: true });
+      fs15.rmSync(lockFile(), { force: true });
     } catch {
       return false;
     }
@@ -804,7 +749,7 @@ function acquireLock() {
 }
 function releaseLock() {
   const info = readJson(lockFile());
-  if (info?.pid === process.pid) fs16.rmSync(lockFile(), { force: true });
+  if (info?.pid === process.pid) fs15.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
   if (!autoUpdateEnabled()) {
@@ -856,9 +801,9 @@ var init_auto_update = __esm({
     await init_update_all();
     init_version_check();
     DAY_MS = 24 * 60 * 60 * 1e3;
-    stampFile = () => path19.join(stateDir(), "auto-update.json");
-    lockFile = () => path19.join(stateDir(), "auto-update.lock");
-    logFile = () => path19.join(stateDir(), "auto-update.log");
+    stampFile = () => path18.join(stateDir(), "auto-update.json");
+    lockFile = () => path18.join(stateDir(), "auto-update.lock");
+    logFile = () => path18.join(stateDir(), "auto-update.log");
   }
 });
 
@@ -1309,7 +1254,7 @@ function markToolHook(id) {
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-var defaultCodexHome = () => process.env.CODEX_HOME || path6.join(os2.homedir(), ".codex");
+var defaultCodexHome = () => configuredEnv("CODEX_HOME") || path6.join(os2.homedir(), ".codex");
 var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path6.join(os2.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
   const file = path6.join(peerDir(id), "session.json");
@@ -1331,8 +1276,7 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
   writeJsonAtomic(file, record);
   if (fields.sessionId && sessionToken(fields.sessionId)) {
     const key = sessionToken(fields.sessionId);
-    const firstSeen = !previous || previous.sessionId !== fields.sessionId;
-    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId, fields.cwd ?? previous?.cwd, firstSeen) : void 0;
+    const carried = agent === "codex" ? carryLaunchedCodexName(fields.sessionId) : void 0;
     rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
     if (peerId(agent, pid) !== id) {
       writeJsonAtomic(linkFile(agent, pid), { id });
@@ -1424,7 +1368,7 @@ function adoptHeldMessages(agent, selfId, sessionId) {
   }
 }
 function configuredStableName(explicit) {
-  const raw = (explicit ?? process.env.TELEPATHY_NAME)?.trim();
+  const raw = explicit?.trim() || configuredEnv("TELEPATHY_NAME");
   if (!raw) return void 0;
   return slugify(raw) || void 0;
 }
@@ -1624,16 +1568,8 @@ function launchedTuis() {
 function codexTuiNamesThread(threadId) {
   return launchedTuis().some((tui) => tui.threadId === threadId);
 }
-function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
-  const tuis = launchedTuis();
-  const named = tuis.find((tui) => tui.threadId === sessionId);
-  let chosen = named;
-  if (!chosen && firstSeen) {
-    const fresh = tuis.filter((tui) => !tui.threadId && !linkedElsewhere(tui.pid, sessionId));
-    const sameDir = cwd ? fresh.filter((tui) => tui.cwd && tui.cwd === cwd) : [];
-    if (sameDir.length === 1) chosen = sameDir[0];
-    else if (fresh.length === 1 && (!cwd || !fresh[0]?.cwd)) chosen = fresh[0];
-  }
+function carryLaunchedCodexName(sessionId) {
+  const chosen = launchedTuis().find((tui) => tui.threadId === sessionId);
   if (!chosen) return void 0;
   const threadPeer = sessionPeerId("codex", chosen.pid, sessionId);
   const pidKey = peerId("codex", chosen.pid);
@@ -1643,10 +1579,6 @@ function carryLaunchedCodexName(sessionId, cwd, firstSeen) {
   }
   const placeholder = readPeer(pidKey);
   return placeholder && !placeholder.sessionId ? placeholder.name : void 0;
-}
-function linkedElsewhere(pid, sessionId) {
-  const link = linkedPeerId("codex", pid);
-  return !!link && link !== sessionPeerId("codex", pid, sessionId);
 }
 function observeLaunchedCodex() {
   for (const proc of codexTuiProcesses()) {
@@ -2362,11 +2294,15 @@ function inspectTranscript(peer, marker) {
   return hosted;
 }
 function inspectHarnessTranscript(peer, marker) {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs9.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
+  const harness = searchHarnessTranscript(peer, marker);
+  const extra = configuredEnv("TELEPATHY_TRANSCRIPT_DIR");
+  if (!extra) return harness;
+  const extraFound = fs9.existsSync(extra) && treeHas(extra, marker, 4);
+  if (extraFound) return { located: true, found: true };
+  if (harness.found) return harness;
+  return { located: harness.located || fs9.existsSync(extra), found: false };
+}
+function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "claude") return claudeTranscript(peer, marker);
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
@@ -2420,20 +2356,20 @@ function opencodeTranscript(marker) {
   return { located: false, found: false };
 }
 function antigravityTranscript(peer, marker) {
+  const files2 = [];
   const recorded2 = readSession(peer.id)?.transcriptPath;
-  if (recorded2) {
-    if (!fs9.existsSync(recorded2)) return { located: false, found: false };
-    return { located: true, found: fileHas(recorded2, marker) };
+  if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files2.push(recorded2);
+  if (peer.sessionId) {
+    const root = path10.join(os4.homedir(), ".gemini");
+    for (const dir of ["antigravity-cli", "antigravity-ide", "antigravity"]) {
+      files2.push(path10.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl"));
+    }
   }
-  if (!peer.sessionId) return { located: false, found: false };
-  const root = path10.join(os4.homedir(), ".gemini");
-  const files2 = ["antigravity", "antigravity-cli", "antigravity-ide"].map(
-    (dir) => path10.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl")
-  );
-  const existing = files2.filter((file) => fs9.existsSync(file));
+  const existing = [...new Set(files2)].filter((file) => fs9.existsSync(file));
   if (!existing.length) return { located: false, found: false };
   return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
+var UNEXPANDED_PATH = /^\$\{[^}]+\}$/;
 function treeHas(dir, marker, depth) {
   if (depth < 0) return false;
   let names;
@@ -3294,7 +3230,25 @@ var guideText = (agent, opts = {}) => guideLines(agent, opts).join("\n");
 init_agents();
 init_proc();
 await init_auto_update();
-init_antigravity();
+
+// src/core/antigravity.ts
+import os7 from "node:os";
+import path19 from "node:path";
+function antigravitySurface(transcriptPath) {
+  if (!transcriptPath) return void 0;
+  const norm = transcriptPath.replace(/\\/g, "/");
+  if (norm.includes("/antigravity-cli/")) return "cli";
+  if (norm.includes("/antigravity-ide/")) return "ide";
+  if (norm.includes("/antigravity/")) return "app";
+  return void 0;
+}
+function expandHomePath(file) {
+  if (file === "~") return os7.homedir();
+  if (file.startsWith("~/") || file.startsWith("~\\")) return path19.join(os7.homedir(), file.slice(2));
+  return file;
+}
+
+// src/hook.ts
 var firstString = (input, fields) => fields.map((f) => input[f]).find((v) => typeof v === "string" && v.length > 0);
 var SESSION_ENV = {
   // Copilot CLI exports this for the running session. See agents.ts.

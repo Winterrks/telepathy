@@ -13,9 +13,9 @@ Usage:
   telepathy update [--dry-run]
   telepathy status
   telepathy doctor
-  telepathy install [--dry-run] [--only a,b]
+  telepathy install [--dry-run] [--only a,b] [--remove-legacy]
   telepathy config [auto-update on|off]
-  telepathy run [--list] [--acp | --headless] [--name X] [--cwd D] <agent> [args...]
+  telepathy run [--list] [--acp | --headless] [--install] [--name X] [--cwd D] <agent> [args...]
   telepathy ps
   telepathy stop <name>
   telepathy mcp --agent <agent>
@@ -55,9 +55,11 @@ async function main(argv: string[]): Promise<number> {
   }
   if (cmd === 'install') {
     const dryRun = rest.includes('--dry-run');
+    const removeLegacy = rest.includes('--remove-legacy');
+    const onlyEq = rest.find((arg) => arg.startsWith('--only='));
     const onlyFlag = rest.indexOf('--only');
-    const only = onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
-    return installAll({ dryRun, only });
+    const only = onlyEq ? parseOnly(onlyEq.slice('--only='.length)) : onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
+    return installAll({ dryRun, only, removeLegacy });
   }
   if (cmd === 'config') return configCommand(rest);
   if (cmd === 'run') return runCommand(rest);

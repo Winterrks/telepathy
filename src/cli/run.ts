@@ -8,7 +8,7 @@ import { agentLabel } from '../core/agents.ts';
 import { findInstalls, isNewer } from '../core/installs.ts';
 import { cachedGithubVersion } from '../version-check.ts';
 import { runHeadless } from '../headless/run.ts';
-import { clearHosted, namedPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump } from '../headless/peer.ts';
+import { clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
 import { acpCommand, canonicalRunAgent, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
@@ -17,6 +17,8 @@ export interface RunArgs {
   acp: boolean;
   headless: boolean;
   list: boolean;
+  /** Install or repair the plugin before starting. Unset, `run` does not touch global configs. */
+  install: boolean;
   name?: string;
   cwd?: string;
   agent?: string;
@@ -28,6 +30,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
   let acp = false;
   let headless = false;
   let list = false;
+  let install = false;
   let name: string | undefined;
   let cwd: string | undefined;
   const positionals: string[] = [];
@@ -48,6 +51,10 @@ export function parseRunArgs(argv: string[]): RunArgs {
       list = true;
       continue;
     }
+    if (beforeAgent && arg === '--install') {
+      install = true;
+      continue;
+    }
     if (nameStillOpen && (arg === '--name' || arg === '--cwd')) {
       const value = argv[++i];
       if (!value || value.startsWith('--')) throw new Error(`${arg} needs a value`);
@@ -57,18 +64,19 @@ export function parseRunArgs(argv: string[]): RunArgs {
     }
     positionals.push(arg);
   }
-  return { acp, headless, list, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
+  return { acp, headless, list, install, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
 }
 
-async function prepare(agent: Harness['agent']): Promise<boolean> {
+async function prepare(agent: Harness['agent'], install: boolean): Promise<boolean> {
   const latest = cachedGithubVersion();
-  const install = findInstalls().find((item) => item.agent === agent);
-  if (latest && install && isNewer(latest, install.version)) {
+  const found = findInstalls().find((item) => item.agent === agent);
+  if (latest && found && isNewer(latest, found.version)) {
     process.stderr.write(
-      `telepathy: ${agentLabel(agent)} has telepathy ${install.version}, older than GitHub ${latest}. An update will run in the background.\n`,
+      `telepathy: ${agentLabel(agent)} has telepathy ${found.version}, older than GitHub ${latest}. An update will run in the background.\n`,
     );
     scheduleAutoUpdate('run');
   }
+  if (!install) return true;
   const ensured = await ensureInstalled(agent);
   if (ensured.note) process.stderr.write(`telepathy: ${ensured.note}\n`);
   if (!ensured.ok) return false;
@@ -107,7 +115,7 @@ export async function runCommand(argv: string[]): Promise<number> {
       return 1;
     }
   }
-  if (!(await prepare(harness.agent))) return 1;
+  if (!(await prepare(harness.agent, parsed.install))) return 1;
   const cwd = parsed.cwd ? path.resolve(parsed.cwd) : process.cwd();
   const name = parsed.name;
 
@@ -198,9 +206,13 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
     stream: (text) => process.stdout.write(text),
   });
   // The installed plugin is the named peer. A second host registration shows up beside it.
+  // The host still pumps that peer's inbox: an idle ACP session has no other delivery path.
   const hosted = pluginPeer ? undefined : registerHostedPeer(harness.agent, cwd, name);
   if (hosted) rememberHarnessSession(hosted.peerId, session.sessionId);
-  const stopPump = hosted ? startInboxPump(hosted.peerId, (text, stillPending) => session.prompt(text, stillPending)) : () => {};
+  const stopPump = startInboxPump(
+    hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
+    (text, stillPending) => session.prompt(text, stillPending),
+  );
   const shutdown = () => session.close();
   process.on('SIGTERM', shutdown);
   try {

@@ -1,6 +1,6 @@
 import { agentLabel, type Agent } from '../core/agents.ts';
 import { ANTIGRAVITY_SIDECAR_ID, antigravitySidecarEnabled, leftoverGeminiExtension, LEFTOVER_GEMINI_NOTE } from '../core/antigravity.ts';
-import { installsInScope, isNewer, type Install } from '../core/installs.ts';
+import { findInstalls, isNewer, type Install } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { VERSION } from '../core/version.ts';
 import { autoUpdateCheckedAt, autoUpdateEnabled } from '../auto-update.ts';
@@ -30,7 +30,7 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
       latest = latest ?? cachedGithubVersion();
     }
   }
-  const installs = installsInScope();
+  const installs = findInstalls();
   const lines: string[] = [];
   lines.push(`telepathy CLI ${VERSION}`);
   lines.push(`state: ${stateDir()}`);
@@ -67,7 +67,7 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
       `Antigravity App sidecar (${ANTIGRAVITY_SIDECAR_ID}): ${antigravitySidecarEnabled() ? 'enabled' : 'not enabled in ~/.gemini/config/config.json'}`,
     );
     const leftover = leftoverGeminiExtension();
-    if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy update\` removes it.`);
+    if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy install --remove-legacy\` removes it.`);
   }
   return { text: lines.join('\n'), code: 0 };
 }

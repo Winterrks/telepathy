@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isNewer, installsInScope } from './core/installs.ts';
-import { ensureDir, readJson, stateDir, writeJsonAtomic } from './core/paths.ts';
+import { configuredEnv, ensureDir, readJson, stateDir, writeJsonAtomic } from './core/paths.ts';
 import { isAlive } from './core/proc.ts';
 import { updateAll } from './update-all.ts';
 import { latestGithubVersion, rememberGithubVersion } from './version-check.ts';
@@ -13,7 +13,7 @@ import { latestGithubVersion, rememberGithubVersion } from './version-check.ts';
  * `0` / `off` / `false` / `no`. The env var wins, so a test sandbox can force it off without a config file.
  */
 export function autoUpdateEnabled(): boolean {
-  const env = process.env.TELEPATHY_AUTO_UPDATE?.trim().toLowerCase();
+  const env = configuredEnv('TELEPATHY_AUTO_UPDATE')?.toLowerCase();
   if (env === '0' || env === 'off' || env === 'false' || env === 'no') return false;
   if (env === '1' || env === 'on' || env === 'true' || env === 'yes') return true;
   const cfg = readJson<{ autoUpdate?: unknown }>(path.join(stateDir(), 'config.json'));

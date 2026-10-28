@@ -8,8 +8,8 @@ import { test } from 'node:test';
 import { autoUpdateEnabled, runAutoUpdate, scheduleAutoUpdate } from '../src/auto-update.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { installsInScope } from '../src/core/installs.ts';
-import { inboxDir } from '../src/core/paths.ts';
-import { readPeer, registerSession } from '../src/core/peers.ts';
+import { configuredEnv, inboxDir, stateDir } from '../src/core/paths.ts';
+import { configuredStableName, readPeer, registerSession } from '../src/core/peers.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
 import { readHeadlessRecord } from '../src/headless/peer.ts';
 import { parseRunArgs } from '../src/cli/run.ts';
@@ -257,7 +257,11 @@ test('install --dry-run prints official commands and does not run them', () => {
     assert.match(result.stdout, /claude plugin marketplace add Winterrks\/telepathy/);
     assert.match(result.stdout, /plugin install telepathy@telepathy/);
     assert.match(result.stdout, /\/plugins install/);
+    assert.doesNotMatch(result.stdout, /OpenCode|Antigravity|Copilot/);
     assert.equal(w.readLog().length, 0);
+    const equals = run(['install', '--dry-run', '--only=kilo'], w.env);
+    assert.match(equals.stdout, /kilo\.json/);
+    assert.doesNotMatch(equals.stdout, /claude plugin/);
     const bad = run(['install', '--only', 'nope'], w.env);
     assert.equal(bad.status, 1);
   } finally {
@@ -552,6 +556,43 @@ test('a tool call confirms an ACP turn before the turn finishes', async () => {
   }
 });
 
+test('ACP messages are separated by a newline', async () => {
+  const w = world({ FAKE_ACP_TWO: '1' });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'lines', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const sent = await sendMessage(self, 'copilot:lines', 'hi');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    await waitFor(() => (launched.out().includes('one\ntwo') ? true : undefined));
+  } finally {
+    await stop(w.env, 'lines', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an ACP auth failure after the prompt exits', async () => {
+  const w = world({ FAKE_ACP_AUTH_LATE: '1' });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'late', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const pending = sendMessage(self, 'copilot:late', 'hi');
+    const result = await Promise.race([
+      launched.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`auth hang: ${launched.err()}\n${launched.out()}`)), 8000)),
+    ]);
+    assert.notEqual(result.code, 0);
+    assert.match(`${launched.out()}\n${launched.err()}`, /authenticat/i);
+    await pending.catch(() => undefined);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
 test('ACP text chunks are one stream, not one line each', async () => {
   const w = world({ FAKE_ACP_SPLIT: '1' });
   confirmEnv();
@@ -765,6 +806,8 @@ test('an isolated TELEPATHY_HOME does not see installs outside it', async () => 
     const installs = installsInScope();
     assert.ok(installs.some((install) => install.agent === 'claude'));
     assert.equal(installs.some((install) => install.dir.startsWith(outside)), false);
+    const status = run(['status'], { ...w.env, CODEX_HOME: outside });
+    assert.match(status.stdout, /Codex 0\.0\.1/);
     await runAutoUpdate();
     assert.equal(fs.existsSync(versionDir), true);
     assert.equal(fs.existsSync(path.join(w.sb.home, 'github-version.json')), false);
@@ -776,28 +819,24 @@ test('an isolated TELEPATHY_HOME does not see installs outside it', async () => 
   }
 });
 
-test('every harness MCP config forwards TELEPATHY_AUTO_UPDATE and TELEPATHY_NAME', () => {
-  const files = [
-    'plugin/codex.mcp.json',
-    'plugin/claude.mcp.json',
-    'plugin/copilot.mcp.json',
-    'plugin/cursor.mcp.json',
-    'plugin/grok.mcp.json',
-    'plugin/devin.mcp.json',
-    'antigravity/mcp_config.json',
-    'qwen-extension.json',
-    '.kimi-plugin/plugin.json',
-  ];
-  for (const file of files) {
-    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
-    for (const name of FORWARDED_ENV) assert.ok(text.includes(name), `${file} does not forward ${name}`);
-  }
+test('MCP configs use only the placeholder syntax that harness expands', () => {
+  const claude = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/claude.mcp.json'), 'utf8')) as {
+    mcpServers: { bridge: { env: Record<string, string> } };
+  };
+  for (const name of FORWARDED_ENV) assert.equal(claude.mcpServers.bridge.env[name], `\${${name}:-}`);
+  const cursor = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/cursor.mcp.json'), 'utf8')) as {
+    mcpServers: { telepathy: { env: Record<string, string> } };
+  };
+  for (const name of FORWARDED_ENV) assert.equal(cursor.mcpServers.telepathy.env[name], `\${env:${name}}`);
   const codex = JSON.parse(fs.readFileSync(path.join(ROOT, 'plugin/codex.mcp.json'), 'utf8')) as {
     mcpServers: { bridge: { env_vars: string[] } };
   };
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_AUTO_UPDATE'));
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_HOME'));
-  assert.ok(codex.mcpServers.bridge.env_vars.includes('TELEPATHY_NAME'));
+  for (const name of FORWARDED_ENV) assert.ok(codex.mcpServers.bridge.env_vars.includes(name));
+  for (const file of ['plugin/copilot.mcp.json', 'plugin/devin.mcp.json', 'plugin/grok.mcp.json', 'qwen-extension.json', '.kimi-plugin/plugin.json', 'antigravity/mcp_config.json']) {
+    const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    assert.doesNotMatch(text, /\$\{TELEPATHY_/, `${file} still assigns a \${TELEPATHY_} placeholder`);
+    assert.doesNotMatch(text, /"CODEX_HOME"/, `${file} still assigns CODEX_HOME`);
+  }
 });
 
 test('agy is the antigravity alias, and headless refuses a consumer login', () => {
@@ -817,6 +856,9 @@ test('agy is the antigravity alias, and headless refuses a consumer login', () =
 
 test('headless agy uses stream-json and an API key, not agy -p', async () => {
   const w = world({ GEMINI_API_KEY: 'test-key' });
+  const settings = path.join(w.env.HOME as string, '.gemini', 'antigravity-cli', 'settings.json');
+  fs.mkdirSync(path.dirname(settings), { recursive: true });
+  fs.writeFileSync(settings, JSON.stringify({ modelProvider: 'gemini' }));
   const launched = spawnCli(['run', '--headless', '--name', 'box', 'antigravity', '--conversation', 'conv-kept'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
@@ -826,7 +868,6 @@ test('headless agy uses stream-json and an API key, not agy -p', async () => {
     assert.equal(started?.args?.includes('-p'), false);
     assert.ok(started?.args?.includes('--conversation'));
     assert.ok(started?.args?.includes('conv-kept'));
-    const settings = path.join(w.env.HOME as string, '.gemini', 'antigravity-cli', 'settings.json');
     assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).modelProvider, 'gemini');
     const self = sender();
     const sent = await sendMessage(self, 'antigravity:box', 'hello agy');
@@ -834,6 +875,41 @@ test('headless agy uses stream-json and an API key, not agy -p', async () => {
     await waitFor(() => (w.readLog().some((entry) => entry.event === 'stdin' && entry.line?.includes('telepathy-id:')) ? true : undefined));
   } finally {
     await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an unexpanded placeholder is not a home, a name, or a transcript dir', () => {
+  const saved = {
+    TELEPATHY_HOME: process.env.TELEPATHY_HOME,
+    TELEPATHY_NAME: process.env.TELEPATHY_NAME,
+  };
+  process.env.TELEPATHY_HOME = '${TELEPATHY_HOME}';
+  process.env.TELEPATHY_NAME = '${TELEPATHY_NAME}';
+  try {
+    assert.equal(configuredEnv('TELEPATHY_HOME'), undefined);
+    assert.equal(stateDir().includes('${'), false);
+    assert.equal(configuredStableName(), undefined);
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('run does not install or edit the Gemini config', async () => {
+  const w = world();
+  const launched = spawnCli(['run', 'agy'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.event === 'start' && entry.cmd === 'agy') ? true : undefined));
+    assert.equal(
+      w.readLog().some((entry) => entry.args?.includes('plugin')),
+      false,
+    );
+    assert.equal(fs.existsSync(path.join(w.env.HOME as string, '.gemini', 'config', 'config.json')), false);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
     w.restore();
   }
 });

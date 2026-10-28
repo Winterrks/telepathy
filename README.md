@@ -104,8 +104,9 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
 Not supported yet: the Cursor and Kilo Code IDE extensions; the Antigravity IDE (hooks may load, idle wake is not
 wired); Claude Cowork (it runs in a VM, which can't see the other sessions); Hermes Agent, OpenClaw and Pi. The
 ChatGPT app's Codex threads get addresses of their own like the CLI's, but delivery to them is untested. Gemini CLI
-is deprecated. Its successor is Antigravity (`agy`). A leftover `~/.gemini/extensions/telepathy` is removed by
-`telepathy install` and `telepathy update` so `agy plugin import gemini` does not install telepathy twice.
+is deprecated. Its successor is Antigravity (`agy`). `telepathy doctor` reports a leftover
+`~/.gemini/extensions/telepathy`. `telepathy install --remove-legacy` removes it so `agy plugin import gemini`
+does not install telepathy twice.
 
 ## Quick start
 

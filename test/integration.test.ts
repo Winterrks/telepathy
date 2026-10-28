@@ -498,7 +498,7 @@ describe('telepathy plugin', () => {
       assert.equal(dry.status, 0, dry.stderr);
       assert.match(dry.stdout, /^telepathy is installed in: Devin CLI 0\.4\.1, Antigravity 0\.4\.4, OpenCode 0\.2\.0, Kilo Code 0\.1\.0\.\n/);
       assert.match(dry.stdout, /- Antigravity: `agy plugin install https:\/\/github.com\/Winterrks\/telepathy\/tree\/main\/antigravity`\n/);
-      assert.match(dry.stdout, /Leftover Gemini CLI extension/);
+      assert.doesNotMatch(dry.stdout, /Would remove/);
       assert.match(dry.stdout, /- OpenCode: clear its package cache and run `opencode debug config` to reinstall\n/);
       assert.equal(fs.existsSync(leftover), true, 'a dry run leaves the Gemini extension');
       assert.match(fs.readFileSync(agyBundle, 'utf8'), /0\.4\.4/);
@@ -506,8 +506,8 @@ describe('telepathy plugin', () => {
       const res = spawnSync(process.execPath, [path.join(DIST, 'update-all.mjs')], { env, encoding: 'utf8' });
       assert.equal(res.status, 1, 'Kilo and Devin were not updated');
       assert.match(res.stdout, /Updating Antigravity… done\n/);
-      assert.match(res.stdout, /Removed leftover Gemini CLI extension/);
-      assert.equal(fs.existsSync(leftover), false);
+      assert.doesNotMatch(res.stdout, /Removed leftover/);
+      assert.equal(fs.existsSync(leftover), true);
       assert.match(res.stdout, /Updating Devin CLI… failed: `devin` is not on PATH\n/);
       assert.match(res.stdout, /Updating Kilo Code… failed: it didn't reinstall telepathy, so the old copy was kept\./);
       assert.match(res.stdout, /Installed versions:\n- Devin CLI: 0\.4\.1\n- Antigravity: 0\.4\.4 → 0\.6\.0\n- OpenCode: 0\.2\.0 → 0\.6\.0\n- Kilo Code: 0\.1\.0\n/);

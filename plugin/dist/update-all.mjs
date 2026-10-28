@@ -2,9 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/update-all.ts
 import { spawn } from "node:child_process";
-import fs4 from "node:fs";
-import os4 from "node:os";
-import path5 from "node:path";
+import fs3 from "node:fs";
+import os3 from "node:os";
+import path4 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -73,45 +73,39 @@ var SPECS = {
 var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
-// src/core/antigravity.ts
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
-var ANTIGRAVITY_SIDECAR_ID = "telepathy/telepathy-wake";
-function geminiConfigFile() {
-  return path.join(os.homedir(), ".gemini", "config", "config.json");
-}
-function leftoverGeminiExtension() {
-  const dir = path.join(os.homedir(), ".gemini", "extensions", "telepathy");
-  return fs.existsSync(path.join(dir, "gemini-extension.json")) ? dir : void 0;
-}
-function removeLeftoverGeminiExtension() {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return void 0;
-  fs.rmSync(dir, { recursive: true, force: true });
-  return dir;
-}
-function readGeminiConfig() {
-  try {
-    return JSON.parse(fs.readFileSync(geminiConfigFile(), "utf8"));
-  } catch {
-    return {};
-  }
-}
-function enableAntigravitySidecar() {
-  const file = geminiConfigFile();
-  const json = readGeminiConfig();
-  const current = json.sidecars?.[ANTIGRAVITY_SIDECAR_ID] ?? {};
-  json.sidecars = { ...json.sidecars, [ANTIGRAVITY_SIDECAR_ID]: { ...current, enabled: true } };
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(json, null, 2) + "\n");
-}
-var LEFTOVER_GEMINI_NOTE = "Gemini CLI is deprecated. Remove this directory so `agy plugin import gemini` does not install telepathy a second time.";
-
 // src/core/installs.ts
 import fs2 from "node:fs";
 import os2 from "node:os";
 import path2 from "node:path";
+
+// src/core/paths.ts
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
+function stateDir() {
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
+}
+function readJson(file) {
+  try {
+    return JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch {
+    return void 0;
+  }
+}
+
+// src/core/installs.ts
 var home = () => os2.homedir();
 var cacheHome = () => process.env.XDG_CACHE_HOME || path2.join(home(), ".cache");
 var dataHome = () => process.env.XDG_DATA_HOME || path2.join(home(), ".local", "share");
@@ -136,7 +130,7 @@ function genericDir(dir) {
   return false;
 }
 function isolatedStateRoots() {
-  const explicit = process.env.TELEPATHY_HOME?.trim();
+  const explicit = configuredEnv("TELEPATHY_HOME");
   if (!explicit) return void 0;
   const state = resolveReal(explicit);
   let passwd = path2.resolve(os2.userInfo().homedir);
@@ -296,25 +290,10 @@ function installsInScope(installs = findInstalls()) {
   return installs.filter((install) => inRoots(install.dir, roots));
 }
 
-// src/core/paths.ts
-import fs3 from "node:fs";
-import os3 from "node:os";
-import path3 from "node:path";
-function stateDir() {
-  return process.env.TELEPATHY_HOME || path3.join(os3.homedir(), ".telepathy");
-}
-function readJson(file) {
-  try {
-    return JSON.parse(fs3.readFileSync(file, "utf8"));
-  } catch {
-    return void 0;
-  }
-}
-
 // src/version-check.ts
-import path4 from "node:path";
+import path3 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path4.join(stateDir(), "github-version.json");
+var cacheFile = () => path3.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -359,7 +338,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os4.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os3.homedir()) {
   return new Promise((resolve) => {
     let output = "";
     const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -382,19 +361,19 @@ function runHarnessCommand({ cmd, args }, cwd = os4.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path5.join(process.env.XDG_CACHE_HOME || path5.join(os4.homedir(), ".cache"), install.agent, "packages");
-  const relative = path5.relative(packages, install.dir).split(path5.sep);
-  const entry = path5.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path5.join(path5.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs4.renameSync(entry, aside);
+  const packages = path4.join(process.env.XDG_CACHE_HOME || path4.join(os3.homedir(), ".cache"), install.agent, "packages");
+  const relative = path4.relative(packages, install.dir).split(path4.sep);
+  const entry = path4.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path4.join(path4.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs3.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs4.rmSync(aside, { recursive: true, force: true });
+    fs3.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs4.rmSync(entry, { recursive: true, force: true });
-  fs4.renameSync(aside, entry);
+  fs3.rmSync(entry, { recursive: true, force: true });
+  fs3.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
@@ -412,15 +391,12 @@ async function updateAll(options = {}) {
   const log = options.log;
   const say = (line) => log ? log(line) : console.log(line);
   const before = installsInScope();
-  if (before.some((install) => install.agent === "antigravity") && !dryRun) enableAntigravitySidecar();
   if (!before.length) {
-    mentionLeftoverGemini(dryRun, say);
     say("No agent on this machine has telepathy installed.");
     return 0;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(", ")}.`);
-  mentionLeftoverGemini(dryRun, say);
   if (dryRun) {
     for (const install of before) {
       if (alreadyCurrent(install, latest)) {
@@ -470,16 +446,6 @@ Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
     return 1;
   }
   return 0;
-}
-function mentionLeftoverGemini(dryRun, say) {
-  const dir = leftoverGeminiExtension();
-  if (!dir) return;
-  if (dryRun) {
-    say(`Leftover Gemini CLI extension at ${dir}. Would remove it. ${LEFTOVER_GEMINI_NOTE}`);
-    return;
-  }
-  removeLeftoverGeminiExtension();
-  say(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 function invokedAsUpdateAll() {
   const entry = process.argv[1] ?? "";

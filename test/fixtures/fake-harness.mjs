@@ -109,12 +109,18 @@ if (args.includes('--sleep')) {
     }
     const text = (msg.params?.prompt ?? []).map((part) => part?.text ?? '').filter(Boolean).join('\n');
     const sessionId = msg.params?.sessionId;
-    const chunk = (piece, kind = 'agent_message_chunk') =>
+    const chunk = (piece, kind = 'agent_message_chunk', messageId) =>
       send({
         jsonrpc: '2.0',
         method: 'session/update',
-        params: { sessionId, update: { sessionUpdate: kind, content: { type: 'text', text: piece } } },
+        params: { sessionId, update: { sessionUpdate: kind, messageId, content: { type: 'text', text: piece } } },
       });
+    if (process.env.FAKE_ACP_TWO === '1') {
+      chunk('one', 'agent_message_chunk', 'm1');
+      chunk('two', 'agent_message_chunk', 'm2');
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
     if (process.env.FAKE_ACP_TOOL_FIRST === '1') {
       send({
         jsonrpc: '2.0',
@@ -163,6 +169,14 @@ if (args.includes('--sleep')) {
     } else if (msg.method === 'session/load') {
       send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
     } else if (msg.method === 'session/prompt') {
+      if (process.env.FAKE_ACP_AUTH_LATE === '1') {
+        process.stderr.write('authentication required\n');
+        return;
+      }
+      if (process.env.FAKE_ACP_RPC_AUTH === '1') {
+        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'unauthorized' } });
+        return;
+      }
       if (process.env.FAKE_ACP_PERMISSION === '1') {
         permId += 1;
         const id = 9000 + permId;

@@ -47,9 +47,15 @@ function restoreClaimed(peerId: string, messages: Message[]): void {
   }
 }
 
+function agentApiBin(env: NodeJS.ProcessEnv): string {
+  const exe = env.ANTIGRAVITY_AGENTAPI_EXE?.trim();
+  if (exe && !/^\$\{[^}]+\}$/.test(exe)) return exe;
+  return 'agentapi';
+}
+
 function agentApiSend(conversationId: string, prompt: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   return new Promise((resolve) => {
-    const child = spawn('agentapi', ['send-message', conversationId, prompt], { env, stdio: 'ignore' });
+    const child = spawn(agentApiBin(env), ['send-message', conversationId, prompt], { env, stdio: 'ignore' });
     child.on('error', () => resolve(false));
     child.on('exit', (code) => resolve(code === 0));
   });

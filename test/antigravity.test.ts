@@ -40,7 +40,8 @@ describe('antigravity plugin', () => {
     };
     for (const event of ['SessionStart', 'PreInvocation', 'Stop'] as const) {
       const command = hooks.telepathy[event]?.[0]?.command ?? '';
-      assert.match(command, /\$\{PLUGIN_ROOT\}\/dist\/hook\.mjs/);
+      assert.match(command, /node \.\/dist\/hook\.mjs/);
+      assert.doesNotMatch(command, /PLUGIN_ROOT/);
       assert.match(command, /--agent antigravity/);
     }
     assert.match(hooks.telepathy.SessionStart[0].command, /session-start/);
@@ -49,7 +50,7 @@ describe('antigravity plugin', () => {
 
     const mcp = fs.readFileSync(path.join(dir, 'mcp_config.json'), 'utf8');
     assert.match(mcp, /\$\{PLUGIN_ROOT\}\/dist\/server\.mjs/);
-    assert.match(mcp, /"PLUGIN_ROOT": "\$\{PLUGIN_ROOT\}"/);
+    assert.doesNotMatch(mcp, /TELEPATHY_/);
 
     const sidecar = JSON.parse(fs.readFileSync(path.join(dir, 'sidecars', 'telepathy-wake', 'sidecar.json'), 'utf8')) as {
       command: string;
@@ -248,6 +249,18 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
     assert.match(sent[2], /wake-the-app/);
     assert.equal(fs.existsSync(path.join(archiveDir(appPeer), `${msg.id}.json`)), true);
     assert.equal(fs.readdirSync(inboxDir(cliPeer)).length, 1);
+
+    const custom = path.join(bin, 'agentapi-custom');
+    fs.copyFileSync(path.join(bin, 'agentapi'), custom);
+    plant(appPeer, 'wake-again');
+    const customEnv = {
+      ...envFor('0'),
+      PATH: path.dirname(process.execPath),
+      ANTIGRAVITY_AGENTAPI_EXE: custom,
+    };
+    assert.equal(await pollSidecar(customEnv), 1);
+    const after = fs.readFileSync(log, 'utf8').trim().split('\n');
+    assert.equal(after.length, 3);
   });
 
   test('confirm reads the brain transcript, preferring the path the hook recorded', () => {
@@ -284,6 +297,19 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
     fs.mkdirSync(path.dirname(bare), { recursive: true });
     fs.writeFileSync(bare, `${messageMarker('m-ide')}\n`);
     assert.deepEqual(inspectTranscript(idePeer, messageMarker('m-ide')), { located: true, found: true });
+
+    const previous = process.env.TELEPATHY_TRANSCRIPT_DIR;
+    process.env.TELEPATHY_TRANSCRIPT_DIR = '${TELEPATHY_TRANSCRIPT_DIR}';
+    try {
+      assert.deepEqual(inspectTranscript(idePeer, messageMarker('m-ide')), { located: true, found: true });
+      const empty = path.join(sb.home, 'empty-transcripts');
+      fs.mkdirSync(empty, { recursive: true });
+      process.env.TELEPATHY_TRANSCRIPT_DIR = empty;
+      assert.deepEqual(inspectTranscript(idePeer, messageMarker('m-ide')), { located: true, found: true });
+    } finally {
+      if (previous === undefined) delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+      else process.env.TELEPATHY_TRANSCRIPT_DIR = previous;
+    }
   });
 
   test('doctor reports a leftover Gemini extension and a disabled sidecar without deleting either', async () => {
@@ -297,18 +323,25 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
     assert.match(report.text, /not enabled in ~\/\.gemini\/config\/config\.json/);
     assert.match(report.text, new RegExp(ANTIGRAVITY_SIDECAR_ID));
     assert.match(report.text, /Leftover Gemini CLI extension/);
-    assert.match(report.text, /telepathy update/);
+    assert.match(report.text, /install --remove-legacy/);
     assert.equal(fs.existsSync(leftover), true);
 
     const lines: string[] = [];
     const dry = await installAll({ dryRun: true, only: ['antigravity'], log: (line) => lines.push(line) });
     assert.equal(dry, 0);
-    assert.match(lines.join('\n'), /Would remove it/);
+    assert.doesNotMatch(lines.join('\n'), /OpenCode|Claude Code|Kilo/);
+    assert.doesNotMatch(lines.join('\n'), /Would remove/);
+    assert.equal(fs.existsSync(leftover), true);
+
+    const kept: string[] = [];
+    const live = await installAll({ only: ['antigravity'], log: (line) => kept.push(line) });
+    assert.equal(live, 1);
+    assert.doesNotMatch(kept.join('\n'), /Removed leftover/);
     assert.equal(fs.existsSync(leftover), true);
 
     const removed: string[] = [];
-    const live = await installAll({ only: ['antigravity'], log: (line) => removed.push(line) });
-    assert.equal(live, 1);
+    const legacy = await installAll({ only: ['antigravity'], removeLegacy: true, log: (line) => removed.push(line) });
+    assert.equal(legacy, 1);
     assert.match(removed.join('\n'), /Removed leftover Gemini CLI extension/);
     assert.equal(fs.existsSync(leftover), false);
 
@@ -336,19 +369,19 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
     }
   });
 
-  test('headless auth writes modelProvider only when it is empty', () => {
+  test('headless auth follows the login type and does not write settings', () => {
     const file = path.join(sb.env.HOME as string, '.gemini', 'antigravity-cli', 'settings.json');
-    const refused = ensureAgyApiKey({ ...process.env, GEMINI_API_KEY: '' });
+    const refused = ensureAgyApiKey({ ...process.env, HOME: sb.env.HOME, GEMINI_API_KEY: 'test-key' });
     assert.equal(refused.ok, false);
     if (!refused.ok) assert.match(refused.warning, /consumer login/);
     assert.equal(fs.existsSync(file), false);
 
-    const env = { ...process.env, HOME: sb.env.HOME, GEMINI_API_KEY: 'test-key' };
-    assert.equal(ensureAgyApiKey(env).ok, true);
-    assert.equal(JSON.parse(fs.readFileSync(file, 'utf8')).modelProvider, 'gemini');
-    const kept = { modelProvider: 'vertex', project: 'p' };
-    fs.writeFileSync(file, JSON.stringify(kept));
-    assert.equal(ensureAgyApiKey(env).ok, true);
-    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), kept);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ modelProvider: 'gemini' }));
+    const missing = ensureAgyApiKey({ ...process.env, HOME: sb.env.HOME, GEMINI_API_KEY: '' });
+    assert.equal(missing.ok, false);
+    if (!missing.ok) assert.match(missing.warning, /GEMINI_API_KEY/);
+    assert.equal(ensureAgyApiKey({ ...process.env, HOME: sb.env.HOME, GEMINI_API_KEY: 'test-key' }).ok, true);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, 'utf8')), { modelProvider: 'gemini' });
   });
 });

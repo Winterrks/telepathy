@@ -160,21 +160,39 @@ const AUTH_FAILURE = /not logged in|login required|authentication (?:failed|requ
  * is not submitted. A prompt already on the wire and not yet accepted is cancelled.
  */
 export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
+  // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
   const child = spawn(options.bin, options.args, {
     cwd: options.cwd,
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
+    detached: process.platform !== 'win32',
   });
+  const stopChild = (signal: NodeJS.Signals) => {
+    const pid = child.pid;
+    if (pid && process.platform !== 'win32') {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch {
+        // the child is already gone, or it is not a group leader
+      }
+    }
+    if (child.exitCode === null && !child.killed) child.kill(signal);
+  };
   let stderrTail = '';
   let sessionReady = false;
   let failure: number | undefined;
+  let authReported = false;
   const noteStderr = (text: string) => {
     options.trace?.(text);
     stderrTail = (stderrTail + text).slice(-4000);
-    if (!sessionReady && AUTH_FAILURE.test(stderrTail)) {
-      failure = 1;
-      if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+    if (!AUTH_FAILURE.test(stderrTail)) return;
+    failure = 1;
+    if (sessionReady && !authReported) {
+      authReported = true;
+      options.emit(authMessage(options.bin, stderrTail));
     }
+    stopChild('SIGTERM');
   };
   child.stderr?.on('data', (chunk: Buffer) => noteStderr(chunk.toString()));
   let userStop = false;
@@ -233,9 +251,28 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     writeText('\n');
   };
 
+  let lastUpdate: { kind: string; messageId?: string } | undefined;
+  const updateIdentity = (params: unknown): { kind: string; messageId?: string } => {
+    const root = (params ?? {}) as { update?: unknown };
+    const update = (root.update ?? root) as { sessionUpdate?: unknown; messageId?: unknown };
+    return {
+      kind: typeof update.sessionUpdate === 'string' ? update.sessionUpdate : 'text',
+      messageId: typeof update.messageId === 'string' ? update.messageId : undefined,
+    };
+  };
+
   let acceptDelivery: (() => void) | undefined;
   let onUpdate: (params: unknown) => void = (params) => {
-    writeText(textOf(params));
+    const text = textOf(params);
+    const identity = updateIdentity(params);
+    const newMessage =
+      !!lastUpdate &&
+      !!text &&
+      (lastUpdate.kind !== identity.kind ||
+        (!!identity.messageId && !!lastUpdate.messageId && identity.messageId !== lastUpdate.messageId));
+    if (newMessage && !endedWithNl) writeText('\n');
+    if (text) lastUpdate = identity;
+    writeText(text);
   };
 
   const rpc = new LineRpc(
@@ -284,7 +321,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       if (!cancelTurn()) {
         userStop = true;
         releaseStdin();
-        if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+        stopChild('SIGTERM');
       }
     } finally {
       handlingSigint = false;
@@ -310,7 +347,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
 
   try {
     if (failure !== undefined) {
-      if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+      stopChild('SIGTERM');
       throw new Error(authMessage(options.bin, stderrTail));
     }
     await rpc.request('initialize', {
@@ -335,7 +372,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       sessionId = sessionIdOf(created);
     }
     if (!sessionId) {
-      child.kill('SIGTERM');
+      stopChild('SIGTERM');
       throw new Error(`${options.bin} did not return a session id`);
     }
     sessionReady = true;
@@ -397,7 +434,17 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
               cancel();
               finish(false);
             }
-          } catch {
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const closed = message === 'agent exited' || message === 'agent stdin is closed';
+            if (!closed) {
+              const auth = AUTH_FAILURE.test(message) || AUTH_FAILURE.test(stderrTail);
+              options.emit(auth ? authMessage(options.bin, stderrTail || message) : message);
+              if (auth) {
+                failure = 1;
+                stopChild('SIGTERM');
+              }
+            }
             finish(false);
           } finally {
             clearInterval(watch);
@@ -415,7 +462,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
         return accepted;
       },
       close() {
-        if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+        stopChild('SIGTERM');
         releaseStdin();
       },
       exited,
@@ -424,7 +471,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   } catch (err) {
     if (!options.headless) process.off('SIGINT', onSigint);
     releaseStdin();
-    if (child.exitCode === null && !child.killed) child.kill('SIGTERM');
+    stopChild('SIGTERM');
     const message = err instanceof Error ? err.message : String(err);
     const detail = stderrTail.trim().split('\n').filter(Boolean).at(-1);
     if (detail && !message.includes(detail)) throw new Error(`${message}: ${detail}`);
