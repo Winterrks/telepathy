@@ -3,8 +3,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
-import { archiveSettled, messageMarker, type Message } from './messages.ts';
-import { archiveDir, configuredEnv, ensureDir, envDurationMs, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
+import { archiveSettled, messageMarker, type Message, withdrawEverywhere } from './messages.ts';
+import { archiveDir, configuredEnv, envDurationMs, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
 import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
@@ -232,17 +232,12 @@ function fileHas(file: string, marker: string): boolean {
 
 export type WithdrawResult = 'withdrawn' | 'claimed' | 'missing';
 
-/** Moves an inbox file aside. A file already in `archive/` was claimed and stays there. */
+/**
+ * Moves the inbox copy, or a copy a consumer already claimed into `archive/`, into `withdrawn/`.
+ * A claimed file is not proof the model saw it, and leaving it in `archive/` lets that consumer retry.
+ */
 export function withdrawPending(peerId: string, messageId: string): WithdrawResult {
-  const src = path.join(inboxDir(peerId), `${messageId}.json`);
-  const dest = path.join(ensureDir(withdrawnDir(peerId)), `${messageId}.json`);
-  try {
-    fs.renameSync(src, dest);
-    return 'withdrawn';
-  } catch {
-    if (fs.existsSync(path.join(archiveDir(peerId), `${messageId}.json`))) return 'claimed';
-    return 'missing';
-  }
+  return withdrawEverywhere(peerId, messageId);
 }
 
 function storedMessage(peerId: string, messageId: string): Message | undefined {
@@ -339,8 +334,9 @@ interface Retract {
 }
 
 /**
- * Every failure withdraws the inbox copy, deletes a queued Codex item, and cancels a wake that is still
- * on disk. A file already in `withdrawn/` stays there. Nothing is moved back to the inbox.
+ * Every failure withdraws the inbox copy and a copy already claimed into `archive/`, deletes a queued
+ * Codex item, and cancels a wake that is still on disk. A file already in `withdrawn/` stays there.
+ * Nothing is moved back to the inbox.
  */
 async function retract(peer: Peer, messageId: string, routeStatus: string, deleteMs: number): Promise<Retract> {
   const stored = storedMessage(peer.id, messageId);

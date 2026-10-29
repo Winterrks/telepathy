@@ -119,11 +119,17 @@ var cacheHome = () => process.env.XDG_CACHE_HOME || path2.join(home(), ".cache")
 var dataHome = () => process.env.XDG_DATA_HOME || path2.join(home(), ".local", "share");
 function resolveReal(dir) {
   const abs = path2.resolve(dir);
-  try {
-    return fs2.realpathSync(abs);
-  } catch {
-    return abs;
+  const missing = [];
+  let current = abs;
+  while (current !== path2.dirname(current)) {
+    try {
+      return path2.join(fs2.realpathSync(current), ...missing);
+    } catch {
+      missing.unshift(path2.basename(current));
+      current = path2.dirname(current);
+    }
   }
+  return abs;
 }
 function genericDir(dir) {
   const normalized = resolveReal(dir);
@@ -146,7 +152,7 @@ function isolatedStateRoots() {
     passwd = fs2.realpathSync(passwd);
   } catch {
   }
-  if (state === path2.join(passwd, ".telepathy")) return void 0;
+  if (state === resolveReal(path2.join(passwd, ".telepathy"))) return void 0;
   const parent = path2.dirname(state);
   const roots = [genericDir(parent) || parent === passwd ? state : parent];
   let apparent = path2.resolve(os2.homedir());

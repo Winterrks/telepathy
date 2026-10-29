@@ -18,13 +18,25 @@ const home = () => os.homedir();
 const cacheHome = () => process.env.XDG_CACHE_HOME || path.join(home(), '.cache');
 const dataHome = () => process.env.XDG_DATA_HOME || path.join(home(), '.local', 'share');
 
+/**
+ * Canonical path, including when the last component does not exist yet.
+ * On macOS `/var` is a symlink to `/private/var`. A missing `TELEPATHY_HOME` used to stay
+ * under `/var` while an existing install dir realpath'd to `/private/var`, so the sandbox
+ * install looked outside the sandbox and a sibling temp dir could look inside it.
+ */
 function resolveReal(dir: string): string {
   const abs = path.resolve(dir);
-  try {
-    return fs.realpathSync(abs);
-  } catch {
-    return abs;
+  const missing: string[] = [];
+  let current = abs;
+  while (current !== path.dirname(current)) {
+    try {
+      return path.join(fs.realpathSync(current), ...missing);
+    } catch {
+      missing.unshift(path.basename(current));
+      current = path.dirname(current);
+    }
   }
+  return abs;
 }
 
 /** `/tmp` and the passwd home are not a sandbox. A directory under them can be. */
@@ -57,7 +69,7 @@ export function isolatedStateRoots(): string[] | undefined {
   } catch {
     // keep the unresolved home
   }
-  if (state === path.join(passwd, '.telepathy')) return undefined;
+  if (state === resolveReal(path.join(passwd, '.telepathy'))) return undefined;
   const parent = path.dirname(state);
   const roots = [genericDir(parent) || parent === passwd ? state : parent];
   let apparent = path.resolve(os.homedir());

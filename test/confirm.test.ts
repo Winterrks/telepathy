@@ -4,7 +4,7 @@ import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
-import { messageMarker } from '../src/core/messages.ts';
+import { claimInbox, messageMarker, type Message, writeToInbox } from '../src/core/messages.ts';
 import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { readPeer, registerPresence, registerSession } from '../src/core/peers.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox, waitFor } from './helpers.ts';
@@ -227,8 +227,32 @@ describe('transcript confirmation', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
-    assert.match(result.error, /already claimed/);
+    assert.match(result.error, /withdrawn/);
+    assert.doesNotMatch(result.error, /already claimed/);
+    assert.equal(fs.existsSync(path.join(archive, file)), false);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), file)), true);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), false);
     assertNoRepeatedSentence(result.error);
+  });
+
+  test('an expired message and a withdrawn marker are not claimed again', () => {
+    const { to } = pair();
+    const expired: Message = {
+      id: `m-expired00-${n.toString(16).padStart(6, '0')}`,
+      from: { id: 'codex-1', agent: 'codex', name: 'from', address: 'codex:from' },
+      to: { id: to.id, agent: to.agent, name: to.name, address: to.address },
+      body: 'too late',
+      sentAt: new Date().toISOString(),
+      deliverBy: Date.now() - 1,
+    };
+    writeToInbox(expired);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${expired.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${expired.id}.json`)), false);
+    writeToInbox(expired);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${expired.id}.json`)), false);
   });
 
   test('a session that is not running stores nothing', async () => {

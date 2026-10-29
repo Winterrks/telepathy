@@ -719,6 +719,17 @@ function observeResumedCodex(proc: CodexTuiProc, threadId: string, cwd: string |
     });
   }
   if (peerId('codex', proc.pid) !== id) writeJsonAtomic(linkFile('codex', proc.pid), { id });
+  linkCodexWrappers(proc, id);
+}
+
+/** The npm/node wrapper is the same window. Point its row at the native process so listPeers keeps one. */
+function linkCodexWrappers(proc: CodexTuiProc, id: string): void {
+  for (const wrapperPid of proc.wrapperPids ?? []) {
+    const wrapperId = peerId('codex', wrapperPid);
+    if (wrapperId === id) continue;
+    if (!fs.existsSync(path.join(peerDir(wrapperId), 'session.json'))) continue;
+    writeJsonAtomic(linkFile('codex', wrapperPid), { id });
+  }
 }
 
 function observeUnpromptedCodex(proc: CodexTuiProc, cwd: string | undefined): void {
@@ -737,9 +748,11 @@ function observeUnpromptedCodex(proc: CodexTuiProc, cwd: string | undefined): vo
     existing.codexHome === home &&
     (existing.cwd || !cwd)
   ) {
+    linkCodexWrappers(proc, id);
     return;
   }
   registerSession('codex', proc.pid, { cwd, source: 'process', codexHome: home });
+  linkCodexWrappers(proc, id);
 }
 
 /**
