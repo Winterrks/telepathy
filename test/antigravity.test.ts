@@ -15,7 +15,7 @@ import { inspectTranscript } from '../src/core/confirm.ts';
 import { messageMarker, writeToInbox, type Message } from '../src/core/messages.ts';
 import { archiveDir, inboxDir } from '../src/core/paths.ts';
 import { readPeer, readSession, registerListener, sessionPeerId } from '../src/core/peers.ts';
-import { pollSidecar } from '../src/sidecar.ts';
+import { agentApiInvocation, nextSidecarDelayMs, pollSidecar } from '../src/sidecar.ts';
 import { ROOT, fakeAgent, killAndWait, makeSandbox, runHook, type Sandbox } from './helpers.ts';
 
 const CONV = '11111111-2222-4333-8444-555555555555';
@@ -237,10 +237,10 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
       AGENTAPI_CODE: code,
     });
 
-    assert.equal(await pollSidecar(envFor('1')), 0);
+    assert.deepEqual(await pollSidecar(envFor('1')), { sent: 0, failed: true });
     assert.equal(fs.existsSync(path.join(inboxDir(appPeer), `${msg.id}.json`)), true, 'a failed send puts the inbox back');
 
-    assert.equal(await pollSidecar(envFor('0')), 1);
+    assert.deepEqual(await pollSidecar(envFor('0')), { sent: 1, failed: false });
     const lines = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
     assert.equal(lines.length, 2);
     const sent = lines[1];
@@ -250,17 +250,48 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
     assert.equal(fs.existsSync(path.join(archiveDir(appPeer), `${msg.id}.json`)), true);
     assert.equal(fs.readdirSync(inboxDir(cliPeer)).length, 1);
 
-    const custom = path.join(bin, 'agentapi-custom');
-    fs.copyFileSync(path.join(bin, 'agentapi'), custom);
+    const languageServer = path.join(bin, 'language_server');
+    fs.copyFileSync(path.join(bin, 'agentapi'), languageServer);
     plant(appPeer, 'wake-again');
     const customEnv = {
       ...envFor('0'),
       PATH: path.dirname(process.execPath),
-      ANTIGRAVITY_AGENTAPI_EXE: custom,
+      ANTIGRAVITY_AGENTAPI_EXE: languageServer,
     };
-    assert.equal(await pollSidecar(customEnv), 1);
-    const after = fs.readFileSync(log, 'utf8').trim().split('\n');
+    assert.deepEqual(await pollSidecar(customEnv), { sent: 1, failed: false });
+    const after = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
     assert.equal(after.length, 3);
+    assert.deepEqual(after[2].slice(0, 2), ['agentapi', 'send-message']);
+
+    const wrapper = path.join(bin, 'agentapi');
+    plant(appPeer, 'wake-via-wrapper');
+    const wrapperEnv = { ...envFor('0'), PATH: path.dirname(process.execPath), ANTIGRAVITY_AGENTAPI_EXE: wrapper };
+    assert.deepEqual(await pollSidecar(wrapperEnv), { sent: 1, failed: false });
+    const wrapped = fs.readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line) as string[]);
+    assert.equal(wrapped[3][0], 'send-message');
+    assert.notEqual(wrapped[3][0], 'agentapi');
+  });
+
+  test('a failing sidecar exec backs off instead of retrying every second', () => {
+    assert.equal(nextSidecarDelayMs(1_000, false), 1_000);
+    assert.equal(nextSidecarDelayMs(1_000, true), 2_000);
+    assert.equal(nextSidecarDelayMs(2_000, true), 4_000);
+    assert.equal(nextSidecarDelayMs(16_000, true), 30_000);
+    assert.equal(nextSidecarDelayMs(30_000, true), 30_000);
+    assert.equal(nextSidecarDelayMs(30_000, false), 1_000);
+    assert.deepEqual(agentApiInvocation({}), { command: 'agentapi', args: ['send-message'] });
+    assert.deepEqual(agentApiInvocation({ ANTIGRAVITY_AGENTAPI_EXE: '${ANTIGRAVITY_AGENTAPI_EXE}' }), {
+      command: 'agentapi',
+      args: ['send-message'],
+    });
+    assert.deepEqual(agentApiInvocation({ ANTIGRAVITY_AGENTAPI_EXE: '/Applications/Antigravity.app/language_server' }), {
+      command: '/Applications/Antigravity.app/language_server',
+      args: ['agentapi', 'send-message'],
+    });
+    assert.deepEqual(agentApiInvocation({ ANTIGRAVITY_AGENTAPI_EXE: '/Users/me/.gemini/antigravity/bin/agentapi' }), {
+      command: '/Users/me/.gemini/antigravity/bin/agentapi',
+      args: ['send-message'],
+    });
   });
 
   test('confirm reads the brain transcript, preferring the path the hook recorded', () => {

@@ -237,38 +237,55 @@ function restoreClaimed(peerId2, messages) {
     }
   }
 }
-function agentApiBin(env) {
-  const exe = env.ANTIGRAVITY_AGENTAPI_EXE?.trim();
-  if (exe && !/^\$\{[^}]+\}$/.test(exe)) return exe;
-  return "agentapi";
+var SIDECAR_POLL_MS = 1e3;
+var SIDECAR_BACKOFF_MAX_MS = 3e4;
+function agentApiInvocation(env) {
+  const exe = configuredEnv("ANTIGRAVITY_AGENTAPI_EXE", env);
+  const command = exe || "agentapi";
+  const base = path4.basename(command).toLowerCase();
+  const wrapper = base === "agentapi" || base === "agentapi.exe";
+  return { command, args: wrapper ? ["send-message"] : ["agentapi", "send-message"] };
+}
+function nextSidecarDelayMs(previousMs, failed) {
+  if (!failed) return SIDECAR_POLL_MS;
+  const base = Number.isFinite(previousMs) && previousMs > 0 ? previousMs : SIDECAR_POLL_MS;
+  return Math.min(SIDECAR_BACKOFF_MAX_MS, Math.max(SIDECAR_POLL_MS * 2, base * 2));
 }
 function agentApiSend(conversationId, prompt, env) {
+  const launch = agentApiInvocation(env);
   return new Promise((resolve) => {
-    const child = spawn(agentApiBin(env), ["send-message", conversationId, prompt], { env, stdio: "ignore" });
+    const child = spawn(launch.command, [...launch.args, conversationId, prompt], { env, stdio: "ignore" });
     child.on("error", () => resolve(false));
     child.on("exit", (code) => resolve(code === 0));
   });
 }
 async function pollSidecar(env = process.env) {
   let sent = 0;
+  let failed = false;
   for (const peer of appConversations()) {
     registerListener("antigravity", peer.pid, peer.id);
     const messages = claimInbox(peer.id);
     if (!messages.length) continue;
     const prompt = messages.map((msg) => formatAsUserTurn(msg)).join("\n\n");
     const ok = await agentApiSend(peer.conversationId, prompt, env);
-    if (!ok) restoreClaimed(peer.id, messages);
-    else sent += messages.length;
+    if (!ok) {
+      restoreClaimed(peer.id, messages);
+      failed = true;
+    } else sent += messages.length;
   }
-  return sent;
+  return { sent, failed };
 }
 async function main() {
+  let delay = SIDECAR_POLL_MS;
   for (; ; ) {
+    let failed = false;
     try {
-      await pollSidecar();
+      failed = (await pollSidecar()).failed;
     } catch {
+      failed = true;
     }
-    await new Promise((resolve) => setTimeout(resolve, 1e3));
+    delay = nextSidecarDelayMs(delay, failed);
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
 }
 var entry = process.argv[1];
@@ -276,5 +293,7 @@ if (entry && import.meta.url === pathToFileURL(path4.resolve(entry)).href) {
   void main();
 }
 export {
+  agentApiInvocation,
+  nextSidecarDelayMs,
   pollSidecar
 };

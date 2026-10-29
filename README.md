@@ -241,12 +241,13 @@ root: at the root, `agy` would also install the other agents' folders.
 agy plugin install https://github.com/Winterrks/telepathy/tree/main/antigravity
 ```
 
-A copy placed in `~/.gemini/config/plugins/telepathy/` is the same plugin. The CLI also stages installs under
-`~/.gemini/antigravity-cli/plugins/telepathy/`. Reinstall to update.
+`agy plugin install` puts the plugin in `~/.gemini/config/plugins/telepathy/`. Reinstall to update.
 
-`telepathy install` and `telepathy update` enable the App sidecar `telepathy/telepathy-wake` in
-`~/.gemini/config/config.json`. That sidecar watches App conversations and wakes an idle one with
-`agentapi send-message <conversation_id> <prompt>`. The CLI TUI has no inject API: hooks deliver at the next
+`telepathy install` enables the App sidecar `telepathy/telepathy-wake` in
+`~/.gemini/config/config.json` when that file is inside the active home. The sidecar watches App
+conversations and wakes an idle one with `agentapi send-message <conversation_id> <prompt>`. When
+`ANTIGRAVITY_AGENTAPI_EXE` points at `language_server`, the sidecar runs `<exe> agentapi send-message`.
+A failed exec backs off from 2s up to 30s. The CLI TUI has no inject API: hooks deliver at the next
 invocation (`injectSteps`) or by continuing a turn that was about to stop (`decision: "continue"`). The IDE is
 not woken while idle.
 
