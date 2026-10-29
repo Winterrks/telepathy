@@ -1734,7 +1734,9 @@ function resolvePeer(to, peers) {
   const qSlug = slugify(q.replace(AGENT_PREFIX_RE, ""));
   const qAgent = AGENT_PREFIX_RE.exec(q)?.[1] ?? (REF_RE.test(q) ? q.slice(0, q.lastIndexOf("-")) : void 0);
   const sameAgent = (p) => !qAgent || p.agent === qAgent;
-  return pick(peers.filter((p) => p.id === q), "matches") ?? pick(peers.filter((p) => p.address.toLowerCase() === q), "matches") ?? // `codex:` with nothing after the colon is that agent when only one of its sessions is up.
+  const byId = peers.filter((p) => p.id.toLowerCase() === q);
+  const exactId = byId.filter((p) => p.id === query);
+  return pick(exactId.length ? exactId : byId, "matches") ?? pick(peers.filter((p) => p.address.toLowerCase() === q), "matches") ?? // `codex:` with nothing after the colon is that agent when only one of its sessions is up.
   pick(q.endsWith(":") && qAgent && qSlug === "" ? peers.filter((p) => p.agent === qAgent) : [], "matches") ?? pick(peers.filter((p) => sameAgent(p) && (slugsOf(p).includes(qSlug) || p.name.toLowerCase() === q)), "matches") ?? pick(peers.filter((p) => sameAgent(p) && qSlug !== "" && slugsOf(p).some((s) => s.startsWith(qSlug))), "is a prefix of") ?? {
     error: `No reachable session matches "${to}". ` + (peers.length ? `Reachable: ${peers.map(peerRef).join(", ")}.` : "No other sessions with telepathy are running.")
   };

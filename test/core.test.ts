@@ -174,6 +174,23 @@ describe('resolvePeer', () => {
     assert.match(r.error, /No reachable session matches/);
     assert.match(r.error, /codex:billing-migration \[codex-103\]/);
   });
+
+  test('a ref matches ignoring case, and the exact id wins when both cases exist', () => {
+    const upper: Peer = { ...peer('antigravity', 1, 'Conv'), id: 'antigravity-convB' };
+    const lower: Peer = { ...peer('antigravity', 2, 'conv'), id: 'antigravity-convb' };
+    const folded = resolvePeer('ANTIGRAVITY-CONVB', [upper]);
+    assert.ok('peer' in folded);
+    if (!('peer' in folded)) return;
+    assert.equal(folded.peer.id, 'antigravity-convB');
+    const listed = resolvePeer('name [antigravity-convB]', [upper]);
+    assert.ok('peer' in listed && listed.peer.id === 'antigravity-convB');
+    const exact = resolvePeer('antigravity-convB', [upper, lower]);
+    assert.ok('peer' in exact && exact.peer.id === 'antigravity-convB');
+    const ambiguous = resolvePeer('antigravity-CONVB', [upper, lower]);
+    assert.ok('error' in ambiguous);
+    if (!('error' in ambiguous)) return;
+    assert.match(ambiguous.error, /2 sessions/);
+  });
 });
 
 describe('agents', () => {
