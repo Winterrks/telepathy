@@ -146,12 +146,46 @@ async function deliverConversation(peer: AppConversation, env: NodeJS.ProcessEnv
   return { sent: messages.length - blocked.length, failed: false };
 }
 
+const inflight = new Map<string, Promise<{ sent: number; failed: boolean }>>();
+const retryNotBefore = new Map<string, number>();
+const retryDelay = new Map<string, number>();
+
+function noteDelivery(peerId: string, result: { sent: number; failed: boolean }): void {
+  if (!result.failed) {
+    retryDelay.set(peerId, SIDECAR_POLL_MS);
+    retryNotBefore.delete(peerId);
+    return;
+  }
+  const next = nextSidecarDelayMs(retryDelay.get(peerId) ?? SIDECAR_POLL_MS, true);
+  retryDelay.set(peerId, next);
+  retryNotBefore.set(peerId, Date.now() + next);
+}
+
 /**
- * One pass over App inboxes. Conversations run together, so one hung `agentapi` does not hold the others.
- * `failed` is true when an exec did not deliver, so the loop can back off.
+ * Starts at most one push per App conversation. A conversation already in flight is left alone, so this
+ * call does not wait for it. `respectBackoff` is for the poll loop: a conversation whose last exec failed
+ * waits 2s, then doubles, up to 30s. Other conversations are still dispatched on the next 1s tick.
  */
-export async function pollSidecar(env: NodeJS.ProcessEnv = process.env): Promise<{ sent: number; failed: boolean }> {
-  const results = await Promise.all(appConversations().map((peer) => deliverConversation(peer, env)));
+export async function pollSidecar(
+  env: NodeJS.ProcessEnv = process.env,
+  respectBackoff = false,
+): Promise<{ sent: number; failed: boolean }> {
+  const now = Date.now();
+  const started: Promise<{ sent: number; failed: boolean }>[] = [];
+  for (const peer of appConversations()) {
+    if (inflight.has(peer.id)) continue;
+    if (respectBackoff && (retryNotBefore.get(peer.id) ?? 0) > now) continue;
+    const job = deliverConversation(peer, env).then((result) => {
+      noteDelivery(peer.id, result);
+      return result;
+    });
+    const tracked = job.finally(() => {
+      if (inflight.get(peer.id) === tracked) inflight.delete(peer.id);
+    });
+    inflight.set(peer.id, tracked);
+    started.push(tracked);
+  }
+  const results = await Promise.all(started);
   return {
     sent: results.reduce((sum, result) => sum + result.sent, 0),
     failed: results.some((result) => result.failed),
@@ -159,17 +193,12 @@ export async function pollSidecar(env: NodeJS.ProcessEnv = process.env): Promise
 }
 
 async function main(): Promise<void> {
-  let delay = SIDECAR_POLL_MS;
   for (;;) {
-    let failed = false;
-    try {
-      failed = (await pollSidecar()).failed;
-    } catch {
+    // Do not await. A hung push stays in `inflight`; the next tick still dispatches every other conversation.
+    void pollSidecar(process.env, true).catch(() => {
       // a bad peer directory must not kill the sidecar; Antigravity restarts only on exit
-      failed = true;
-    }
-    delay = nextSidecarDelayMs(delay, failed);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    });
+    await new Promise((resolve) => setTimeout(resolve, SIDECAR_POLL_MS));
   }
 }
 

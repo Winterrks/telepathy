@@ -247,8 +247,9 @@ agy plugin install https://github.com/Winterrks/telepathy/tree/main/antigravity
 `~/.gemini/config/config.json` when that file is inside the active home. The sidecar watches App
 conversations and wakes an idle one with `agentapi send-message <conversation_id> <prompt>`. When
 `ANTIGRAVITY_AGENTAPI_EXE` points at `language_server`, the sidecar runs `<exe> agentapi send-message`.
-A failed exec backs off from 2s up to 30s. A message the sender already withdrew, or whose deadline has
-passed, is not sent later. One hung `agentapi` does not block the other App conversations. The CLI TUI has no inject API: hooks deliver at the next
+A failed exec backs off from 2s up to 30s for that conversation only. A message the sender already
+withdrew, or whose deadline has passed, is not sent later. One hung `agentapi` does not block the other
+App conversations: they are still dispatched about once a second. The CLI TUI has no inject API: hooks deliver at the next
 invocation (`injectSteps`) or by continuing a turn that was about to stop (`decision: "continue"`). The IDE is
 not woken while idle.
 

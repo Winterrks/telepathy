@@ -355,24 +355,46 @@ async function deliverConversation(peer, env) {
   }
   return { sent: messages.length - blocked.length, failed: false };
 }
-async function pollSidecar(env = process.env) {
-  const results = await Promise.all(appConversations().map((peer) => deliverConversation(peer, env)));
+var inflight = /* @__PURE__ */ new Map();
+var retryNotBefore = /* @__PURE__ */ new Map();
+var retryDelay = /* @__PURE__ */ new Map();
+function noteDelivery(peerId2, result) {
+  if (!result.failed) {
+    retryDelay.set(peerId2, SIDECAR_POLL_MS);
+    retryNotBefore.delete(peerId2);
+    return;
+  }
+  const next = nextSidecarDelayMs(retryDelay.get(peerId2) ?? SIDECAR_POLL_MS, true);
+  retryDelay.set(peerId2, next);
+  retryNotBefore.set(peerId2, Date.now() + next);
+}
+async function pollSidecar(env = process.env, respectBackoff = false) {
+  const now = Date.now();
+  const started = [];
+  for (const peer of appConversations()) {
+    if (inflight.has(peer.id)) continue;
+    if (respectBackoff && (retryNotBefore.get(peer.id) ?? 0) > now) continue;
+    const job = deliverConversation(peer, env).then((result) => {
+      noteDelivery(peer.id, result);
+      return result;
+    });
+    const tracked = job.finally(() => {
+      if (inflight.get(peer.id) === tracked) inflight.delete(peer.id);
+    });
+    inflight.set(peer.id, tracked);
+    started.push(tracked);
+  }
+  const results = await Promise.all(started);
   return {
     sent: results.reduce((sum, result) => sum + result.sent, 0),
     failed: results.some((result) => result.failed)
   };
 }
 async function main() {
-  let delay = SIDECAR_POLL_MS;
   for (; ; ) {
-    let failed = false;
-    try {
-      failed = (await pollSidecar()).failed;
-    } catch {
-      failed = true;
-    }
-    delay = nextSidecarDelayMs(delay, failed);
-    await new Promise((resolve) => setTimeout(resolve, delay));
+    void pollSidecar(process.env, true).catch(() => {
+    });
+    await new Promise((resolve) => setTimeout(resolve, SIDECAR_POLL_MS));
   }
 }
 var entry = process.argv[1];

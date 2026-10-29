@@ -379,6 +379,67 @@ if (process.env.AGENTAPI_HANG_FOR && argv.includes(process.env.AGENTAPI_HANG_FOR
     assert.match(fs.readFileSync(hangLog, 'utf8'), new RegExp(okMsg.id));
   });
 
+  test('a hung conversation does not delay a send that arrives later', async () => {
+    const cwd = path.join(sb.env.HOME as string, 'split');
+    const hangProc = spawn();
+    const soonProc = spawn();
+    const hangId = 'abababab-cdcd-4efe-8787-909090909090';
+    const soonId = 'cdcdcdcd-efef-4878-9090-121212121212';
+    runHook(sb, 'antigravity', hangProc.pid, 'session-start', payload(hangId, 'antigravity', cwd));
+    runHook(sb, 'antigravity', soonProc.pid, 'session-start', payload(soonId, 'antigravity', cwd));
+    const hangPeer = sessionPeerId('antigravity', hangProc.pid, hangId);
+    const soonPeer = sessionPeerId('antigravity', soonProc.pid, soonId);
+    plant(hangPeer, 'hold-this-conversation');
+    const release = path.join(path.dirname(sb.home), 'agentapi-split-release');
+    const log = path.join(path.dirname(sb.home), 'agentapi-split.log');
+    fs.rmSync(release, { force: true });
+    fs.rmSync(log, { force: true });
+    const bin = path.join(path.dirname(sb.home), 'agentapi-split-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(
+      path.join(bin, 'agentapi'),
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(process.env.AGENTAPI_LOG, JSON.stringify(argv) + '\\n');
+if (argv.includes(${JSON.stringify(hangId)})) {
+  const start = Date.now();
+  while (!fs.existsSync(process.env.AGENTAPI_RELEASE)) {
+    if (Date.now() - start > 8000) process.exit(3);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+}
+process.exit(0);
+`,
+    );
+    fs.chmodSync(path.join(bin, 'agentapi'), 0o755);
+    const env = {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      AGENTAPI_LOG: log,
+      AGENTAPI_RELEASE: release,
+      TELEPATHY_AGENTAPI_TIMEOUT_MS: '7000',
+    };
+    const hanging = pollSidecar(env);
+    try {
+      const started = Date.now();
+      while (Date.now() - started < 3000) {
+        if (fs.existsSync(log) && fs.readFileSync(log, 'utf8').includes(hangId)) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.match(fs.readFileSync(log, 'utf8'), new RegExp(hangId));
+      const soon = plant(soonPeer, 'deliver-while-the-other-hangs');
+      const began = Date.now();
+      const result = await pollSidecar(env);
+      assert.ok(Date.now() - began < 2000, 'a later send waits for the next poll, not for the hung push');
+      assert.equal(result.sent, 1);
+      assert.equal(fs.existsSync(path.join(archiveDir(soonPeer), `${soon.id}.json`)), true);
+    } finally {
+      fs.writeFileSync(release, 'go');
+      await hanging;
+    }
+  });
+
   test('confirm reads the brain transcript, preferring the path the hook recorded', () => {
     const id = sessionPeerId('antigravity', 1, APP);
     const recorded = readSession(id)?.transcriptPath;
