@@ -7,7 +7,7 @@ import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
 import { findInstalls, isNewer } from '../src/core/installs.ts';
-import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand } from '../src/core/codex-launch.ts';
+import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, dedupeCodexTuiProcs, isCodexExecCommand } from '../src/core/codex-launch.ts';
 import { formatAgo, describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
 import { clearProcessListCache, processTable } from '../src/core/proc.ts';
@@ -548,6 +548,44 @@ describe('Codex TUI launch', () => {
     assert.equal(isCodexExecCommand('codex'), false);
     assert.equal(codexTuiLaunch('node /opt/telepathy/dist/server.mjs --agent codex'), undefined);
     assert.equal(codexTuiLaunch('bash -c codex'), undefined);
+  });
+
+  test('an npm node wrapper and its native codex child are one peer', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const wrapper = fakeAgent();
+    const child = fakeAgent();
+    const wrapperArgs = 'node /usr/local/lib/node_modules/@openai/codex/bin/codex.js';
+    const childArgs = '/usr/local/lib/node_modules/@openai/codex/codex';
+    try {
+      const deduped = dedupeCodexTuiProcs(
+        [
+          { pid: wrapper.pid, args: wrapperArgs },
+          { pid: child.pid, args: childArgs },
+        ],
+        (pid) => (pid === child.pid ? wrapper.pid : undefined),
+      );
+      assert.deepEqual(deduped.map((proc) => proc.pid), [child.pid]);
+      assert.deepEqual(deduped[0]?.wrapperPids, [wrapper.pid]);
+
+      setCodexProcs(sb, [{ pid: wrapper.pid, args: wrapperArgs, cwd: '/work/app' }]);
+      assert.ok(listPeers().some((peer) => peer.id === `codex-${wrapper.pid}`));
+
+      setCodexProcs(sb, [
+        { pid: wrapper.pid, args: wrapperArgs, cwd: '/work/app', ppid: 1 },
+        { pid: child.pid, args: childArgs, cwd: '/work/app', ppid: wrapper.pid },
+      ]);
+      const peers = listPeers().filter((peer) => peer.agent === 'codex' && (peer.pid === wrapper.pid || peer.pid === child.pid));
+      assert.deepEqual(peers.map((peer) => peer.pid), [child.pid]);
+      const link = JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', `codex-${wrapper.pid}`, 'link.json'), 'utf8')) as { id: string };
+      assert.equal(link.id, `codex-${child.pid}`);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(wrapper);
+      await killAndWait(child);
+      sb.cleanup();
+    }
   });
 
   test('a launched Codex with no thread stays its own row when another session appears', async () => {

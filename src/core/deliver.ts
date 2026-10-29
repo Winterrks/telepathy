@@ -14,7 +14,7 @@ import {
   writeToInbox,
 } from './messages.ts';
 import { envDurationMs, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { beginToolCall, confirmDelivery, confirmWaitEnabled, endToolCall, withdrawPending } from './confirm.ts';
+import { beginToolCall, confirmDelivery, confirmWaitEnabled, confirmWindow, endToolCall, withdrawPending } from './confirm.ts';
 import { keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
@@ -112,12 +112,14 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   const limited = checkRate(self.id, recipient.id, body);
   if (limited) return { ok: false, error: limited };
 
+  const plan = confirmWindow();
   const message: Message = {
     id: newMessageId(),
     from: partyOf(self),
     to: partyOf(recipient),
     body,
     sentAt: new Date().toISOString(),
+    deliverBy: plan.deadline ?? Date.now() + plan.abort + plan.grace,
   };
 
   // A launched Codex TUI has no thread until the first prompt (or `codex resume <id>`). Queueing needs a thread

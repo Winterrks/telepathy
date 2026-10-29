@@ -84,7 +84,7 @@ export function makeSandbox(): Sandbox {
 /** Replaces the Codex TUI scan. `args` is the command line `ps` would have shown. */
 export function setCodexProcs(
   sb: Sandbox,
-  procs: { pid: number; args: string; cwd?: string; start?: string; parent?: string; codexHome?: string }[],
+  procs: { pid: number; args: string; cwd?: string; start?: string; parent?: string; ppid?: number; codexHome?: string }[],
 ): void {
   fs.writeFileSync(sb.codexProcs, JSON.stringify(procs));
 }

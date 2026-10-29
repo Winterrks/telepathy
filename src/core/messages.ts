@@ -21,6 +21,11 @@ export interface Message {
   /** For a message to Codex: its item in Codex's own queue, which delivers it as a turn, and that queue's thread. */
   codexQueueId?: string;
   codexThreadId?: string;
+  /**
+   * Epoch ms after which this copy must not be handed to the recipient.
+   * The sender's confirm deadline. A later retry, including one that already claimed the inbox, stops.
+   */
+  deliverBy?: number;
 }
 
 export const MAX_MESSAGE_CHARS = 100_000;
@@ -43,9 +48,46 @@ export function archiveMessage(msg: Message): void {
   pruneArchive(msg.to.id);
 }
 
+/** True when the sender already withdrew this id, or its confirm deadline has passed. */
+export function deliveryBlocked(peerId: string, msg: Message, now = Date.now()): boolean {
+  if (fs.existsSync(path.join(withdrawnDir(peerId), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === 'number' && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+
+/**
+ * Moves an inbox or archive copy into `withdrawn/` and removes both sources.
+ * The withdrawn file is the marker a later send checks. A missing id is left missing.
+ */
+export function withdrawEverywhere(peerId: string, messageId: string): 'withdrawn' | 'claimed' | 'missing' {
+  const file = `${messageId}.json`;
+  const dest = path.join(ensureDir(withdrawnDir(peerId)), file);
+  const sources = [path.join(inboxDir(peerId), file), path.join(archiveDir(peerId), file)];
+  if (!fs.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs.renameSync(src, dest);
+        break;
+      } catch {
+        // not in this directory, or the other racer took it
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs.existsSync(src)) fs.rmSync(src, { force: true });
+    } catch {
+      // still held
+    }
+  }
+  if (fs.existsSync(dest)) return 'withdrawn';
+  if (sources.some((src) => fs.existsSync(src))) return 'claimed';
+  return 'missing';
+}
+
 /**
  * Moves every pending inbox message to the archive and returns the ones this call moved.
  * The rename is atomic, so when two consumers race for a message exactly one of them gets it.
+ * A withdrawn or expired message is not returned. It stays in `withdrawn/`.
  */
 export function claimInbox(peerId: string): Message[] {
   let files: string[];
@@ -63,7 +105,12 @@ export function claimInbox(peerId: string): Message[] {
       continue; // another consumer claimed it first
     }
     const msg = readJson<Message>(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId, msg)) {
+      withdrawEverywhere(peerId, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId);
   return claimed;
@@ -77,7 +124,17 @@ export function pendingMessages(peerId: string): Message[] {
   } catch {
     return [];
   }
-  return files.map((f) => readJson<Message>(path.join(inboxDir(peerId), f))).filter((m): m is Message => !!m);
+  const pending: Message[] = [];
+  for (const file of files) {
+    const msg = readJson<Message>(path.join(inboxDir(peerId), file));
+    if (!msg) continue;
+    if (deliveryBlocked(peerId, msg)) {
+      withdrawEverywhere(peerId, msg.id);
+      continue;
+    }
+    pending.push(msg);
+  }
+  return pending;
 }
 
 /** Moves one message from the inbox to the archive without handing it to anyone. */

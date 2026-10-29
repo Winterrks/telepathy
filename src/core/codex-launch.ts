@@ -17,6 +17,11 @@ export interface CodexTuiProc {
   start?: string;
   /** `CODEX_HOME` from this process, when it could be read. Queue and delete use it. */
   codexHome?: string;
+  /**
+   * Interpreter pids (`node …/codex.js`, an npm bin) that spawned this same TUI.
+   * They are not separate peers. The session row links them here.
+   */
+  wrapperPids?: number[];
 }
 
 /** Flags that take the next argv token. A boolean flag must not swallow the prompt or the subcommand. */
@@ -224,11 +229,55 @@ function acceptTui(args: string, parent: string | undefined): boolean {
   return !!codexTuiLaunch(args) && !parentIsAppBundle(parent);
 }
 
+function interpreterWrapper(command: string): boolean {
+  const tokens = tokenize(command);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? '')) i++;
+  const exe = tokens[i];
+  return !!exe && INTERPRETERS.has(binName(exe));
+}
+
+function descendsFrom(pid: number, ancestor: number, ppidOf: (pid: number) => number | undefined): boolean {
+  let current = ppidOf(pid);
+  for (let hop = 0; hop < 16 && current; hop++) {
+    if (current === ancestor) return true;
+    current = ppidOf(current);
+  }
+  return false;
+}
+
+/**
+ * `npm`/`npx` leaves a `node …/codex.js` process in front of the native `codex` child. Both command lines
+ * are interactive Codex, and listing both registers two peers for one window. The interpreter is dropped
+ * when its descendant is also a TUI. The native process keeps the wrapper pids so that row can be linked away.
+ */
+export function dedupeCodexTuiProcs(procs: CodexTuiProc[], ppidOf: (pid: number) => number | undefined): CodexTuiProc[] {
+  const drop = new Set<number>();
+  const wrappersOf = new Map<number, number[]>();
+  for (const proc of procs) {
+    if (!interpreterWrapper(proc.args)) continue;
+    const descendants = procs.filter((other) => other.pid !== proc.pid && descendsFrom(other.pid, proc.pid, ppidOf));
+    if (!descendants.length) continue;
+    drop.add(proc.pid);
+    for (const other of descendants) {
+      const list = wrappersOf.get(other.pid) ?? [];
+      if (!list.includes(proc.pid)) list.push(proc.pid);
+      wrappersOf.set(other.pid, list);
+    }
+  }
+  return procs
+    .filter((proc) => !drop.has(proc.pid))
+    .map((proc) => {
+      const wrapperPids = wrappersOf.get(proc.pid);
+      return wrapperPids?.length ? { ...proc, wrapperPids } : proc;
+    });
+}
+
 function procsFromOverride(file: string): CodexTuiProc[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
     if (!Array.isArray(parsed)) return [];
-    const procs: CodexTuiProc[] = [];
+    const procs: (CodexTuiProc & { ppid?: number })[] = [];
     for (const row of parsed) {
       if (!row || typeof row !== 'object') continue;
       const rec = row as {
@@ -237,6 +286,7 @@ function procsFromOverride(file: string): CodexTuiProc[] {
         cwd?: unknown;
         start?: unknown;
         parent?: unknown;
+        ppid?: unknown;
         codexHome?: unknown;
       };
       if (typeof rec.pid !== 'number' || typeof rec.args !== 'string') continue;
@@ -249,9 +299,11 @@ function procsFromOverride(file: string): CodexTuiProc[] {
         cwd: typeof rec.cwd === 'string' ? rec.cwd : undefined,
         start: typeof rec.start === 'string' ? rec.start : undefined,
         codexHome,
+        ppid: typeof rec.ppid === 'number' ? rec.ppid : undefined,
       });
     }
-    return procs;
+    const ppid = new Map(procs.map((proc) => [proc.pid, proc.ppid]));
+    return dedupeCodexTuiProcs(procs, (pid) => ppid.get(pid));
   } catch {
     return [];
   }
@@ -285,12 +337,15 @@ export function codexTuiProcesses(): CodexTuiProc[] {
     candidates.push({ pid, args });
   }
   const homes = codexHomes(candidates.map((candidate) => candidate.pid));
-  const procs = candidates.map((candidate) => ({
-    pid: candidate.pid,
-    args: candidate.args,
-    start: table.get(candidate.pid)?.start,
-    codexHome: homes.get(candidate.pid),
-  }));
+  const procs = dedupeCodexTuiProcs(
+    candidates.map((candidate) => ({
+      pid: candidate.pid,
+      args: candidate.args,
+      start: table.get(candidate.pid)?.start,
+      codexHome: homes.get(candidate.pid),
+    })),
+    (pid) => table.get(pid)?.ppid,
+  );
   liveCache = { at: Date.now(), procs };
   return procs;
 }
