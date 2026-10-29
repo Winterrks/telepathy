@@ -841,8 +841,13 @@ export function resolvePeer(to: string, peers: Peer[]): Resolution {
   const qAgent = AGENT_PREFIX_RE.exec(q)?.[1] ?? (REF_RE.test(q) ? q.slice(0, q.lastIndexOf('-')) : undefined);
   const sameAgent = (p: Peer) => !qAgent || p.agent === qAgent;
 
+  // Refs keep the session id's own capitals (`antigravity-convB`). The query is lowercased for the
+  // other comparisons, so the id is compared on both sides. An exact id still wins when two ids
+  // differ only by case.
+  const byId = peers.filter((p) => p.id.toLowerCase() === q);
+  const exactId = byId.filter((p) => p.id === query);
   return (
-    pick(peers.filter((p) => p.id === q), 'matches') ??
+    pick(exactId.length ? exactId : byId, 'matches') ??
     pick(peers.filter((p) => p.address.toLowerCase() === q), 'matches') ??
     // `codex:` with nothing after the colon is that agent when only one of its sessions is up.
     pick(q.endsWith(':') && qAgent && qSlug === '' ? peers.filter((p) => p.agent === qAgent) : [], 'matches') ??
