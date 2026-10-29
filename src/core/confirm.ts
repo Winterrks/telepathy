@@ -4,7 +4,7 @@ import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message } from './messages.ts';
-import { archiveDir, configuredEnv, ensureDir, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
+import { archiveDir, configuredEnv, ensureDir, envDurationMs, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
 import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
@@ -22,7 +22,7 @@ export function confirmAbortMs(): number {
   // 100s + 10s grace is 110s. Claude moves a live tool call to the background at about 120s, and the
   // return after the grace period does not wait on anything else. When a tool call has been marked,
   // that 110s is measured from the mark, so listing before the wait counts against it.
-  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
+  return envDurationMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
 }
 
 /** Set at the start of a tool call. Unset, the 110s starts when the wait itself starts. */
@@ -54,16 +54,11 @@ export function confirmWindow(now = Date.now()): { abort: number; grace: number;
 }
 
 export function confirmGraceMs(): number {
-  return envMs('TELEPATHY_CONFIRM_GRACE_MS', 10_000);
+  return envDurationMs('TELEPATHY_CONFIRM_GRACE_MS', 10_000);
 }
 
 export function confirmPollMs(): number {
-  return Math.max(15, envMs('TELEPATHY_CONFIRM_POLL_MS', 200));
-}
-
-function envMs(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  return Math.max(15, envDurationMs('TELEPATHY_CONFIRM_POLL_MS', 200));
 }
 
 const FULL_READ = 32 * 1024 * 1024;

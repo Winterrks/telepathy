@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { debugLog } from './debug.ts';
 import type { Message } from './messages.ts';
-import { ensureDir, inboxDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
+import { ensureDir, envDurationMs, inboxDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import type { Peer } from './peers.ts';
 
 /**
@@ -84,15 +84,11 @@ export const deliveryConfigPath = () => path.join(stateDir(), 'delivery.json');
 export const wakeLogPath = () => path.join(stateDir(), 'wake.log');
 
 export function wakeDebounceMs(): number {
-  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MS);
-  if (Number.isFinite(n) && n >= 0) return n;
-  return WAKE_DEBOUNCE_MS;
+  return envDurationMs('TELEPATHY_WAKE_DEBOUNCE_MS', WAKE_DEBOUNCE_MS);
 }
 
 export function wakeDebounceMaxMs(): number {
-  const n = Number(process.env.TELEPATHY_WAKE_DEBOUNCE_MAX_MS);
-  const configured = Number.isFinite(n) && n >= 0 ? n : WAKE_DEBOUNCE_MAX_MS;
-  return Math.max(configured, wakeDebounceMs());
+  return Math.max(envDurationMs('TELEPATHY_WAKE_DEBOUNCE_MAX_MS', WAKE_DEBOUNCE_MAX_MS), wakeDebounceMs());
 }
 
 interface WakeItem {

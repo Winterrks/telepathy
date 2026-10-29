@@ -13,7 +13,7 @@ import {
   partyOf,
   writeToInbox,
 } from './messages.ts';
-import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { envDurationMs, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { beginToolCall, confirmDelivery, confirmWaitEnabled, endToolCall, withdrawPending } from './confirm.ts';
 import { keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
@@ -49,10 +49,9 @@ const DUPLICATE_WINDOW_MS = 2 * 60_000;
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX_PER_RECIPIENT = 20;
 /** How long a sender waits for the recipient's socket watcher to claim. A held message falls through after this. */
-const SOCKET_WAIT_MS = () => {
-  const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
-  return Number.isFinite(n) && n >= 0 ? n : 1500;
-};
+export function socketWaitMs(): number {
+  return envDurationMs('TELEPATHY_SOCKET_WAIT_MS', 1500);
+}
 
 interface SentEntry {
   to: string;
@@ -339,7 +338,7 @@ function inboxRung(recipient: Peer): DeliveryAttempt {
 }
 
 async function waitForSocket(peerId: string, messageId: string): Promise<void> {
-  const deadline = Date.now() + SOCKET_WAIT_MS();
+  const deadline = Date.now() + socketWaitMs();
   while (stillPending(peerId, messageId) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
