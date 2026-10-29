@@ -174,11 +174,17 @@ import os2 from "node:os";
 import path3 from "node:path";
 function resolveReal(dir) {
   const abs = path3.resolve(dir);
-  try {
-    return fs2.realpathSync(abs);
-  } catch {
-    return abs;
+  const missing2 = [];
+  let current = abs;
+  while (current !== path3.dirname(current)) {
+    try {
+      return path3.join(fs2.realpathSync(current), ...missing2);
+    } catch {
+      missing2.unshift(path3.basename(current));
+      current = path3.dirname(current);
+    }
   }
+  return abs;
 }
 function genericDir(dir) {
   const normalized = resolveReal(dir);
@@ -201,7 +207,7 @@ function isolatedStateRoots() {
     passwd = fs2.realpathSync(passwd);
   } catch {
   }
-  if (state === path3.join(passwd, ".telepathy")) return void 0;
+  if (state === resolveReal(path3.join(passwd, ".telepathy"))) return void 0;
   const parent = path3.dirname(state);
   const roots = [genericDir(parent) || parent === passwd ? state : parent];
   let apparent = path3.resolve(os2.homedir());
@@ -965,6 +971,40 @@ function processCwd(pid) {
 function acceptTui(args, parent) {
   return !!codexTuiLaunch(args) && !parentIsAppBundle(parent);
 }
+function interpreterWrapper(command) {
+  const tokens = tokenize(command);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? "")) i++;
+  const exe = tokens[i];
+  return !!exe && INTERPRETERS2.has(binName(exe));
+}
+function descendsFrom(pid, ancestor, ppidOf) {
+  let current = ppidOf(pid);
+  for (let hop = 0; hop < 16 && current; hop++) {
+    if (current === ancestor) return true;
+    current = ppidOf(current);
+  }
+  return false;
+}
+function dedupeCodexTuiProcs(procs, ppidOf) {
+  const drop = /* @__PURE__ */ new Set();
+  const wrappersOf = /* @__PURE__ */ new Map();
+  for (const proc of procs) {
+    if (!interpreterWrapper(proc.args)) continue;
+    const descendants = procs.filter((other) => other.pid !== proc.pid && descendsFrom(other.pid, proc.pid, ppidOf));
+    if (!descendants.length) continue;
+    drop.add(proc.pid);
+    for (const other of descendants) {
+      const list2 = wrappersOf.get(other.pid) ?? [];
+      if (!list2.includes(proc.pid)) list2.push(proc.pid);
+      wrappersOf.set(other.pid, list2);
+    }
+  }
+  return procs.filter((proc) => !drop.has(proc.pid)).map((proc) => {
+    const wrapperPids = wrappersOf.get(proc.pid);
+    return wrapperPids?.length ? { ...proc, wrapperPids } : proc;
+  });
+}
 function procsFromOverride(file2) {
   try {
     const parsed = JSON.parse(fs10.readFileSync(file2, "utf8"));
@@ -982,10 +1022,12 @@ function procsFromOverride(file2) {
         args: rec.args,
         cwd: typeof rec.cwd === "string" ? rec.cwd : void 0,
         start: typeof rec.start === "string" ? rec.start : void 0,
-        codexHome
+        codexHome,
+        ppid: typeof rec.ppid === "number" ? rec.ppid : void 0
       });
     }
-    return procs;
+    const ppid = new Map(procs.map((proc) => [proc.pid, proc.ppid]));
+    return dedupeCodexTuiProcs(procs, (pid) => ppid.get(pid));
   } catch {
     return [];
   }
@@ -1003,12 +1045,15 @@ function codexTuiProcesses() {
     candidates.push({ pid, args });
   }
   const homes = codexHomes(candidates.map((candidate) => candidate.pid));
-  const procs = candidates.map((candidate) => ({
-    pid: candidate.pid,
-    args: candidate.args,
-    start: table.get(candidate.pid)?.start,
-    codexHome: homes.get(candidate.pid)
-  }));
+  const procs = dedupeCodexTuiProcs(
+    candidates.map((candidate) => ({
+      pid: candidate.pid,
+      args: candidate.args,
+      start: table.get(candidate.pid)?.start,
+      codexHome: homes.get(candidate.pid)
+    })),
+    (pid) => table.get(pid)?.ppid
+  );
   liveCache = { at: Date.now(), procs };
   return procs;
 }
@@ -1498,6 +1543,15 @@ function observeResumedCodex(proc, threadId, cwd) {
     });
   }
   if (peerId("codex", proc.pid) !== id) writeJsonAtomic(linkFile("codex", proc.pid), { id });
+  linkCodexWrappers(proc, id);
+}
+function linkCodexWrappers(proc, id) {
+  for (const wrapperPid of proc.wrapperPids ?? []) {
+    const wrapperId = peerId("codex", wrapperPid);
+    if (wrapperId === id) continue;
+    if (!fs12.existsSync(path12.join(peerDir(wrapperId), "session.json"))) continue;
+    writeJsonAtomic(linkFile("codex", wrapperPid), { id });
+  }
 }
 function observeUnpromptedCodex(proc, cwd) {
   const id = peerId("codex", proc.pid);
@@ -1509,9 +1563,11 @@ function observeUnpromptedCodex(proc, cwd) {
   const existing = readSession(id);
   const home2 = proc.codexHome || existing?.codexHome || defaultCodexHome();
   if (existing?.source === "process" && existing.pid === proc.pid && isSameProcess(proc.pid, existing.procStart) && existing.codexHome === home2 && (existing.cwd || !cwd)) {
+    linkCodexWrappers(proc, id);
     return;
   }
   registerSession("codex", proc.pid, { cwd, source: "process", codexHome: home2 });
+  linkCodexWrappers(proc, id);
 }
 function keptPeers() {
   let names = [];
@@ -1622,6 +1678,33 @@ function archiveMessage(msg) {
   writeJsonAtomic(path13.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
   pruneArchive(msg.to.id);
 }
+function deliveryBlocked(peerId2, msg, now = Date.now()) {
+  if (fs13.existsSync(path13.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === "number" && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+function withdrawEverywhere(peerId2, messageId) {
+  const file2 = `${messageId}.json`;
+  const dest = path13.join(ensureDir(withdrawnDir(peerId2)), file2);
+  const sources = [path13.join(inboxDir(peerId2), file2), path13.join(archiveDir(peerId2), file2)];
+  if (!fs13.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs13.renameSync(src, dest);
+        break;
+      } catch {
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs13.existsSync(src)) fs13.rmSync(src, { force: true });
+    } catch {
+    }
+  }
+  if (fs13.existsSync(dest)) return "withdrawn";
+  if (sources.some((src) => fs13.existsSync(src))) return "claimed";
+  return "missing";
+}
 function claimInbox(peerId2) {
   let files;
   try {
@@ -1638,7 +1721,12 @@ function claimInbox(peerId2) {
       continue;
     }
     const msg = readJson(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId2);
   return claimed;
@@ -1650,7 +1738,17 @@ function pendingMessages(peerId2) {
   } catch {
     return [];
   }
-  return files.map((f) => readJson(path13.join(inboxDir(peerId2), f))).filter((m) => !!m);
+  const pending = [];
+  for (const file2 of files) {
+    const msg = readJson(path13.join(inboxDir(peerId2), file2));
+    if (!msg) continue;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    pending.push(msg);
+  }
+  return pending;
 }
 function archivePending(peerId2, id) {
   try {
@@ -30927,15 +31025,7 @@ function fileHas(file2, marker) {
   }
 }
 function withdrawPending(peerId2, messageId) {
-  const src = path22.join(inboxDir(peerId2), `${messageId}.json`);
-  const dest = path22.join(ensureDir(withdrawnDir(peerId2)), `${messageId}.json`);
-  try {
-    fs19.renameSync(src, dest);
-    return "withdrawn";
-  } catch {
-    if (fs19.existsSync(path22.join(archiveDir(peerId2), `${messageId}.json`))) return "claimed";
-    return "missing";
-  }
+  return withdrawEverywhere(peerId2, messageId);
 }
 function storedMessage(peerId2, messageId) {
   for (const dir of [inboxDir(peerId2), archiveDir(peerId2), withdrawnDir(peerId2)]) {
@@ -31701,12 +31791,14 @@ async function sendMessage(self2, to, body) {
     const recipient = resolved.peer;
     const limited = checkRate(self2.id, recipient.id, body);
     if (limited) return { ok: false, error: limited };
+    const plan = confirmWindow();
     const message = {
       id: newMessageId(),
       from: partyOf(self2),
       to: partyOf(recipient),
       body,
-      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+      sentAt: (/* @__PURE__ */ new Date()).toISOString(),
+      deliverBy: plan.deadline ?? Date.now() + plan.abort + plan.grace
     };
     if (recipient.agent === "codex" && !recipient.sessionId) {
       return {

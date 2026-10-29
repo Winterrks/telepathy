@@ -26,6 +26,15 @@ function configuredEnv(name, env = process.env) {
   if (!value || UNEXPANDED.test(value)) return void 0;
   return value;
 }
+function envDurationMs(name, fallback, env = process.env) {
+  const raw = env[name];
+  if (typeof raw !== "string") return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
 function stateDir() {
   return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
@@ -33,6 +42,7 @@ var peersDir = () => path.join(stateDir(), "peers");
 var peerDir = (id) => path.join(peersDir(), id);
 var inboxDir = (id) => path.join(peerDir(id), "inbox");
 var archiveDir = (id) => path.join(peerDir(id), "archive");
+var withdrawnDir = (id) => path.join(peerDir(id), "withdrawn");
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
@@ -170,6 +180,33 @@ var peerRef = (peer) => `${peer.address} [${peer.id}]`;
 // src/core/messages.ts
 var ARCHIVE_KEEP = 200;
 var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
+function deliveryBlocked(peerId2, msg, now = Date.now()) {
+  if (fs2.existsSync(path3.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === "number" && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+function withdrawEverywhere(peerId2, messageId) {
+  const file = `${messageId}.json`;
+  const dest = path3.join(ensureDir(withdrawnDir(peerId2)), file);
+  const sources = [path3.join(inboxDir(peerId2), file), path3.join(archiveDir(peerId2), file)];
+  if (!fs2.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs2.renameSync(src, dest);
+        break;
+      } catch {
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs2.existsSync(src)) fs2.rmSync(src, { force: true });
+    } catch {
+    }
+  }
+  if (fs2.existsSync(dest)) return "withdrawn";
+  if (sources.some((src) => fs2.existsSync(src))) return "claimed";
+  return "missing";
+}
 function claimInbox(peerId2) {
   let files;
   try {
@@ -186,7 +223,12 @@ function claimInbox(peerId2) {
       continue;
     }
     const msg = readJson(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId2);
   return claimed;
@@ -230,11 +272,16 @@ function appConversations() {
 }
 function restoreClaimed(peerId2, messages) {
   for (const msg of messages) {
-    const file = `${msg.id}.json`;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    const dest = path4.join(ensureDir(inboxDir(peerId2)), `${msg.id}.json`);
     try {
-      fs3.renameSync(path4.join(archiveDir(peerId2), file), path4.join(ensureDir(inboxDir(peerId2)), file));
+      fs3.renameSync(path4.join(archiveDir(peerId2), `${msg.id}.json`), dest);
     } catch {
     }
+    if (deliveryBlocked(peerId2, msg)) withdrawEverywhere(peerId2, msg.id);
   }
 }
 var SIDECAR_POLL_MS = 1e3;
@@ -251,29 +298,69 @@ function nextSidecarDelayMs(previousMs, failed) {
   const base = Number.isFinite(previousMs) && previousMs > 0 ? previousMs : SIDECAR_POLL_MS;
   return Math.min(SIDECAR_BACKOFF_MAX_MS, Math.max(SIDECAR_POLL_MS * 2, base * 2));
 }
-function agentApiSend(conversationId, prompt, env) {
+function agentApiTimeoutMs(env = process.env) {
+  return envDurationMs("TELEPATHY_AGENTAPI_TIMEOUT_MS", 3e4, env);
+}
+function killChild(child) {
+  if (!child.pid || child.exitCode !== null) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+    }
+  }
+}
+function agentApiSend(peerId2, conversationId, prompt, messages, env) {
   const launch = agentApiInvocation(env);
+  const deadline = Math.min(Date.now() + agentApiTimeoutMs(env), ...messages.map((msg) => msg.deliverBy ?? Number.POSITIVE_INFINITY));
   return new Promise((resolve) => {
-    const child = spawn(launch.command, [...launch.args, conversationId, prompt], { env, stdio: "ignore" });
-    child.on("error", () => resolve(false));
-    child.on("exit", (code) => resolve(code === 0));
+    const child = spawn(launch.command, [...launch.args, conversationId, prompt], {
+      env,
+      stdio: "ignore",
+      detached: true
+    });
+    let settled = false;
+    const finish = (ok) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(watch);
+      resolve(ok);
+    };
+    const blocked = () => messages.some((msg) => deliveryBlocked(peerId2, msg)) || Date.now() >= deadline;
+    const watch = setInterval(() => {
+      if (!blocked()) return;
+      killChild(child);
+      finish(false);
+    }, 50);
+    child.on("error", () => {
+      killChild(child);
+      finish(false);
+    });
+    child.on("exit", (code) => finish(code === 0 && !messages.some((msg) => deliveryBlocked(peerId2, msg))));
   });
 }
-async function pollSidecar(env = process.env) {
-  let sent = 0;
-  let failed = false;
-  for (const peer of appConversations()) {
-    registerListener("antigravity", peer.pid, peer.id);
-    const messages = claimInbox(peer.id);
-    if (!messages.length) continue;
-    const prompt = messages.map((msg) => formatAsUserTurn(msg)).join("\n\n");
-    const ok = await agentApiSend(peer.conversationId, prompt, env);
-    if (!ok) {
-      restoreClaimed(peer.id, messages);
-      failed = true;
-    } else sent += messages.length;
+async function deliverConversation(peer, env) {
+  registerListener("antigravity", peer.pid, peer.id);
+  const messages = claimInbox(peer.id);
+  if (!messages.length) return { sent: 0, failed: false };
+  const prompt = messages.map((msg) => formatAsUserTurn(msg)).join("\n\n");
+  const ok = await agentApiSend(peer.id, peer.conversationId, prompt, messages, env);
+  const blocked = messages.filter((msg) => deliveryBlocked(peer.id, msg));
+  for (const msg of blocked) withdrawEverywhere(peer.id, msg.id);
+  if (!ok) {
+    restoreClaimed(peer.id, messages.filter((msg) => !deliveryBlocked(peer.id, msg)));
+    return { sent: 0, failed: true };
   }
-  return { sent, failed };
+  return { sent: messages.length - blocked.length, failed: false };
+}
+async function pollSidecar(env = process.env) {
+  const results = await Promise.all(appConversations().map((peer) => deliverConversation(peer, env)));
+  return {
+    sent: results.reduce((sum, result) => sum + result.sent, 0),
+    failed: results.some((result) => result.failed)
+  };
 }
 async function main() {
   let delay = SIDECAR_POLL_MS;
@@ -294,6 +381,7 @@ if (entry && import.meta.url === pathToFileURL(path4.resolve(entry)).href) {
 }
 export {
   agentApiInvocation,
+  agentApiTimeoutMs,
   nextSidecarDelayMs,
   pollSidecar
 };

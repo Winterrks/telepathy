@@ -2,8 +2,8 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { claimInbox, formatAsUserTurn, type Message } from './core/messages.ts';
-import { archiveDir, configuredEnv, ensureDir, inboxDir, peersDir, readJson } from './core/paths.ts';
+import { claimInbox, deliveryBlocked, formatAsUserTurn, type Message, withdrawEverywhere } from './core/messages.ts';
+import { archiveDir, configuredEnv, ensureDir, envDurationMs, inboxDir, peersDir, readJson } from './core/paths.ts';
 import { registerListener, type SessionRecord } from './core/peers.ts';
 
 /**
@@ -36,14 +36,20 @@ function appConversations(): AppConversation[] {
   return found;
 }
 
+/** Puts a failed send back only when the sender has not withdrawn it and its deadline has not passed. */
 function restoreClaimed(peerId: string, messages: Message[]): void {
   for (const msg of messages) {
-    const file = `${msg.id}.json`;
-    try {
-      fs.renameSync(path.join(archiveDir(peerId), file), path.join(ensureDir(inboxDir(peerId)), file));
-    } catch {
-      // already gone
+    if (deliveryBlocked(peerId, msg)) {
+      withdrawEverywhere(peerId, msg.id);
+      continue;
     }
+    const dest = path.join(ensureDir(inboxDir(peerId)), `${msg.id}.json`);
+    try {
+      fs.renameSync(path.join(archiveDir(peerId), `${msg.id}.json`), dest);
+    } catch {
+      // the sender already moved it to withdrawn/, or another consumer took it
+    }
+    if (deliveryBlocked(peerId, msg)) withdrawEverywhere(peerId, msg.id);
   }
 }
 
@@ -71,31 +77,85 @@ export function nextSidecarDelayMs(previousMs: number, failed: boolean): number 
   return Math.min(SIDECAR_BACKOFF_MAX_MS, Math.max(SIDECAR_POLL_MS * 2, base * 2));
 }
 
-function agentApiSend(conversationId: string, prompt: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+/** One hung `agentapi` must not run forever. A message's own deadline can end it sooner. */
+export function agentApiTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  return envDurationMs('TELEPATHY_AGENTAPI_TIMEOUT_MS', 30_000, env);
+}
+
+function killChild(child: ReturnType<typeof spawn>): void {
+  if (!child.pid || child.exitCode !== null) return;
+  try {
+    process.kill(-child.pid, 'SIGKILL');
+  } catch {
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // already gone
+    }
+  }
+}
+
+function agentApiSend(
+  peerId: string,
+  conversationId: string,
+  prompt: string,
+  messages: Message[],
+  env: NodeJS.ProcessEnv,
+): Promise<boolean> {
   const launch = agentApiInvocation(env);
+  const deadline = Math.min(Date.now() + agentApiTimeoutMs(env), ...messages.map((msg) => msg.deliverBy ?? Number.POSITIVE_INFINITY));
   return new Promise((resolve) => {
-    const child = spawn(launch.command, [...launch.args, conversationId, prompt], { env, stdio: 'ignore' });
-    child.on('error', () => resolve(false));
-    child.on('exit', (code) => resolve(code === 0));
+    const child = spawn(launch.command, [...launch.args, conversationId, prompt], {
+      env,
+      stdio: 'ignore',
+      detached: true,
+    });
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearInterval(watch);
+      resolve(ok);
+    };
+    const blocked = () => messages.some((msg) => deliveryBlocked(peerId, msg)) || Date.now() >= deadline;
+    const watch = setInterval(() => {
+      if (!blocked()) return;
+      killChild(child);
+      finish(false);
+    }, 50);
+    child.on('error', () => {
+      killChild(child);
+      finish(false);
+    });
+    child.on('exit', (code) => finish(code === 0 && !messages.some((msg) => deliveryBlocked(peerId, msg))));
   });
 }
 
-/** One pass over App inboxes. `failed` is true when an exec did not deliver, so the loop can back off. */
-export async function pollSidecar(env: NodeJS.ProcessEnv = process.env): Promise<{ sent: number; failed: boolean }> {
-  let sent = 0;
-  let failed = false;
-  for (const peer of appConversations()) {
-    registerListener('antigravity', peer.pid, peer.id);
-    const messages = claimInbox(peer.id);
-    if (!messages.length) continue;
-    const prompt = messages.map((msg) => formatAsUserTurn(msg)).join('\n\n');
-    const ok = await agentApiSend(peer.conversationId, prompt, env);
-    if (!ok) {
-      restoreClaimed(peer.id, messages);
-      failed = true;
-    } else sent += messages.length;
+async function deliverConversation(peer: AppConversation, env: NodeJS.ProcessEnv): Promise<{ sent: number; failed: boolean }> {
+  registerListener('antigravity', peer.pid, peer.id);
+  const messages = claimInbox(peer.id);
+  if (!messages.length) return { sent: 0, failed: false };
+  const prompt = messages.map((msg) => formatAsUserTurn(msg)).join('\n\n');
+  const ok = await agentApiSend(peer.id, peer.conversationId, prompt, messages, env);
+  const blocked = messages.filter((msg) => deliveryBlocked(peer.id, msg));
+  for (const msg of blocked) withdrawEverywhere(peer.id, msg.id);
+  if (!ok) {
+    restoreClaimed(peer.id, messages.filter((msg) => !deliveryBlocked(peer.id, msg)));
+    return { sent: 0, failed: true };
   }
-  return { sent, failed };
+  return { sent: messages.length - blocked.length, failed: false };
+}
+
+/**
+ * One pass over App inboxes. Conversations run together, so one hung `agentapi` does not hold the others.
+ * `failed` is true when an exec did not deliver, so the loop can back off.
+ */
+export async function pollSidecar(env: NodeJS.ProcessEnv = process.env): Promise<{ sent: number; failed: boolean }> {
+  const results = await Promise.all(appConversations().map((peer) => deliverConversation(peer, env)));
+  return {
+    sent: results.reduce((sum, result) => sum + result.sent, 0),
+    failed: results.some((result) => result.failed),
+  };
 }
 
 async function main(): Promise<void> {

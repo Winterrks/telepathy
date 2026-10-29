@@ -12,8 +12,8 @@ import {
   expandHomePath,
 } from '../src/core/antigravity.ts';
 import { inspectTranscript } from '../src/core/confirm.ts';
-import { messageMarker, writeToInbox, type Message } from '../src/core/messages.ts';
-import { archiveDir, inboxDir } from '../src/core/paths.ts';
+import { messageMarker, withdrawEverywhere, writeToInbox, type Message } from '../src/core/messages.ts';
+import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { readPeer, readSession, registerListener, sessionPeerId } from '../src/core/peers.ts';
 import { agentApiInvocation, nextSidecarDelayMs, pollSidecar } from '../src/sidecar.ts';
 import { ROOT, fakeAgent, killAndWait, makeSandbox, runHook, type Sandbox } from './helpers.ts';
@@ -292,6 +292,91 @@ process.exit(Number(process.env.AGENTAPI_CODE || 0));
       command: '/Users/me/.gemini/antigravity/bin/agentapi',
       args: ['send-message'],
     });
+  });
+
+  test('a withdrawn or expired message is not sent, even after agentapi starts working', async () => {
+    const cwd = path.join(sb.env.HOME as string, 'late');
+    const appProc = spawn();
+    const other = spawn();
+    const otherId = 'dddddddd-eeee-4fff-8999-aaaaaaaaaaaa';
+    runHook(sb, 'antigravity', appProc.pid, 'session-start', payload(APP, 'antigravity', cwd));
+    runHook(sb, 'antigravity', other.pid, 'session-start', payload(otherId, 'antigravity', cwd));
+    const appPeer = sessionPeerId('antigravity', appProc.pid, APP);
+    const otherPeer = sessionPeerId('antigravity', other.pid, otherId);
+    const msg = plant(appPeer, 'do-not-deliver-late');
+    const held = path.join(path.dirname(sb.home), 'agentapi-hold');
+    const log = path.join(path.dirname(sb.home), 'agentapi-late.log');
+    const bin = path.join(path.dirname(sb.home), 'agentapi-late-bin');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(
+      path.join(bin, 'agentapi'),
+      `#!/usr/bin/env node
+const fs = require('node:fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(process.env.AGENTAPI_LOG, JSON.stringify(argv) + '\\n');
+if (process.env.AGENTAPI_HANG_FOR && argv.includes(process.env.AGENTAPI_HANG_FOR)) {
+  const start = Date.now();
+  const timer = setInterval(() => { if (Date.now() - start > 3000) { clearInterval(timer); process.exit(2); } }, 50);
+} else if (process.env.AGENTAPI_HOLD) {
+  const start = Date.now();
+  while (!fs.existsSync(process.env.AGENTAPI_HOLD)) {
+    if (Date.now() - start > 8000) process.exit(3);
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+  }
+  process.exit(Number(process.env.AGENTAPI_CODE || 0));
+} else process.exit(Number(process.env.AGENTAPI_CODE || 0));
+`,
+    );
+    fs.chmodSync(path.join(bin, 'agentapi'), 0o755);
+    const env = {
+      ...process.env,
+      PATH: `${bin}${path.delimiter}${process.env.PATH ?? ''}`,
+      AGENTAPI_LOG: log,
+      AGENTAPI_HOLD: held,
+      TELEPATHY_AGENTAPI_TIMEOUT_MS: '5000',
+    };
+    const pending = pollSidecar(env);
+    const started = Date.now();
+    while (!fs.existsSync(log) && Date.now() - started < 3000) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    withdrawEverywhere(appPeer, msg.id);
+    const first = await pending;
+    assert.equal(first.sent, 0);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(appPeer), `${msg.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(appPeer), `${msg.id}.json`)), false);
+    const before = fs.readFileSync(log, 'utf8').trim().split('\n').length;
+    fs.writeFileSync(held, 'go');
+    const again = await pollSidecar({ ...env, AGENTAPI_CODE: '0', AGENTAPI_HOLD: '' });
+    assert.equal(again.sent, 0);
+    assert.equal(fs.readFileSync(log, 'utf8').trim().split('\n').length, before);
+
+    const late = plant(appPeer, 'already-expired');
+    const expired = { ...late, deliverBy: Date.now() - 1 };
+    writeToInbox(expired);
+    const quiet = path.join(path.dirname(sb.home), 'agentapi-quiet.log');
+    const skipped = await pollSidecar({ ...env, AGENTAPI_LOG: quiet, AGENTAPI_HOLD: '', AGENTAPI_CODE: '0' });
+    assert.equal(skipped.sent, 0);
+    assert.equal(fs.existsSync(quiet), false);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(appPeer), `${late.id}.json`)), true);
+
+    const okMsg = plant(appPeer, 'the-free-conversation');
+    const hung = plant(otherPeer, 'the-hung-conversation');
+    const hangLog = path.join(path.dirname(sb.home), 'agentapi-hang.log');
+    const began = Date.now();
+    const both = await pollSidecar({
+      ...env,
+      AGENTAPI_LOG: hangLog,
+      AGENTAPI_HOLD: '',
+      AGENTAPI_HANG_FOR: otherId,
+      AGENTAPI_CODE: '0',
+      TELEPATHY_AGENTAPI_TIMEOUT_MS: '400',
+    });
+    assert.ok(Date.now() - began < 2000, 'a hung agentapi does not stall the other conversation past its timeout');
+    assert.equal(both.sent, 1);
+    assert.equal(fs.existsSync(path.join(archiveDir(appPeer), `${okMsg.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(otherPeer), `${hung.id}.json`)), true);
+    assert.match(fs.readFileSync(hangLog, 'utf8'), new RegExp(okMsg.id));
   });
 
   test('confirm reads the brain transcript, preferring the path the hook recorded', () => {
