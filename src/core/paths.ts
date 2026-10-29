@@ -24,6 +24,21 @@ export function configuredEnv(name: string, env: NodeJS.ProcessEnv = process.env
   return value;
 }
 
+/**
+ * A millisecond duration from the environment. Missing, blank, whitespace, non-finite, and
+ * non-positive values are unset, so the default stands. `${VAR:-}` arrives as `""`, and
+ * `Number("")` is `0`, which must not become a zero timeout.
+ */
+export function envDurationMs(name: string, fallback: number, env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[name];
+  if (typeof raw !== 'string') return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
 /** Root of all shared state. Every agent session on this machine reads and writes here. */
 export function stateDir(): string {
   return configuredEnv('TELEPATHY_HOME') || path.join(os.homedir(), '.telepathy');

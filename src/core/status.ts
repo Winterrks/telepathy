@@ -1,7 +1,7 @@
 import path from 'node:path';
 import type { Agent } from './agents.ts';
 import { codexActivity, codexLastResponse } from './codex-activity.ts';
-import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { envDurationMs, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, type Peer } from './peers.ts';
 import { commandLine, processTable } from './proc.ts';
 
@@ -68,8 +68,7 @@ const TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
 
 /** `ps` and processes younger than this are not a session's own command. Claude samples `ps` for a moment. */
 export function transientChildMs(): number {
-  const n = Number(process.env.TELEPATHY_TRANSIENT_CHILD_MS);
-  return Number.isFinite(n) && n >= 0 ? n : 2_000;
+  return envDurationMs('TELEPATHY_TRANSIENT_CHILD_MS', 2_000);
 }
 
 /** A short-lived `ps` (or any process younger than {@link transientChildMs}) is not the session's work. */

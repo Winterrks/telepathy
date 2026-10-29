@@ -4,7 +4,7 @@ import path from 'node:path';
 import { debugLog } from './debug.ts';
 import { confirmWaitEnabled, transcriptHasMarker } from './confirm.ts';
 import { archivePending, formatForClaudeSocket, messageMarker, pendingMessages } from './messages.ts';
-import { ensureDir, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { ensureDir, envDurationMs, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, isDeliveryOwner, type Peer, readPeer, sessionOwners } from './peers.ts';
 import { isSameProcess, procStart } from './proc.ts';
 
@@ -280,6 +280,14 @@ export async function flushClaudeSocket(id: string): Promise<SocketOutcome | 'id
 }
 
 /**
+ * After crossSessionInbound or the socket path changes, wait before posting again. Claude's own "Released"
+ * can land in the transcript in that gap; a second post is what shows "(2 held)" and "Dropped a peer message".
+ */
+export function holdRepostDelayMs(): number {
+  return envDurationMs('TELEPATHY_HOLD_REPOST_DELAY_MS', 2_000);
+}
+
+/**
  * Started by the Claude session's own MCP server. Other agents' servers must not start it: they are not the
  * session's child, and a post from them is an ordinary peer message that the default inbound rules may hold.
  * Returns a stop function.
@@ -293,12 +301,6 @@ export function startClaudeSocketWatcher(id: string, ownerPid?: number): () => v
   const posted = new Map<string, { socketPath: string; inbound: string; outcome: SocketOutcome; at: number; changeKey?: string; changeAt?: number }>();
   let blockedLog: string | undefined;
   const FAILED_RETRY_MS = 10_000;
-  // After crossSessionInbound or the socket path changes, wait before posting again. Claude's own "Released"
-  // can land in the transcript in that gap; a second post is what shows "(2 held)" and "Dropped a peer message".
-  const holdRepostDelayMs = () => {
-    const n = Number(process.env.TELEPATHY_HOLD_REPOST_DELAY_MS);
-    return Number.isFinite(n) && n >= 0 ? n : 2_000;
-  };
 
   const flush = async (): Promise<SocketOutcome | 'idle' | 'blocked'> => {
     // A duplicate window's server must not post: its socket is a different process.

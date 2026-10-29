@@ -353,7 +353,7 @@ describe('Claude inbox socket', () => {
   });
 
   test('a hold or refuse is not posted, and lifting the hold posts once', async () => {
-    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
+    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '1';
     const sock = path.join(sb.home, 'once.sock');
     let posts = 0;
     const server = await serve(sock, (buf) => {
@@ -421,7 +421,7 @@ describe('Claude inbox socket', () => {
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.writeFileSync(path.join(transcript, 'session.jsonl'), `telepathy-id:${held.message.id}\n`);
       fs.rmSync(path.join(settingsDir, 'settings.local.json'));
-      process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
+      process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '1';
       await waitFor(() => (fs.existsSync(path.join(sb.home, 'peers', peer.id, 'archive', `${held.message.id}.json`)) ? true : undefined));
       assert.equal(posts, 0, 'the marker is the release; do not post');
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
@@ -495,7 +495,7 @@ describe('webhook and command wake', () => {
     sb = makeSandbox();
     process.env.TELEPATHY_HOME = sb.home;
     process.env.TELEPATHY_DEBUG = '1';
-    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
+    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '1';
     delete process.env.TELEPATHY_NAME;
     fs.mkdirSync(sb.home, { recursive: true });
   });
@@ -682,7 +682,7 @@ describe('webhook and command wake', () => {
       const log = fs.existsSync(path.join(sb.home, 'debug.log')) ? fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8') : '';
       assert.equal(log.includes('bot-key'), false);
     } finally {
-      process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
+      process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '1';
       server.close();
     }
   });
