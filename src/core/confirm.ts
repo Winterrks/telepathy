@@ -5,7 +5,7 @@ import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
 import { archiveSettled, messageMarker, type Message, withdrawEverywhere } from './messages.ts';
 import { archiveDir, configuredEnv, envDurationMs, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
-import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
+import { claudeConfigDir, copilotEventsFile, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
 /**
@@ -75,13 +75,13 @@ export function transcriptHasMarker(peer: Peer | undefined, marker: string): boo
 }
 
 /**
- * A peer telepathy itself is hosting (`telepathy run` ACP or `--headless`) records acceptance here.
- * The harness transcript is still searched: either file containing the marker is proof.
+ * The inbox pump writes this when it accepts a turn. A plugin-owned peer has no `hosted.json`,
+ * and the file is still proof: the sender cannot see `COPILOT_HOME`.
  */
 function hostedTranscript(peer: Peer, marker: string): TranscriptLook | undefined {
-  if (!fs.existsSync(path.join(peerDir(peer.id), 'hosted.json'))) return undefined;
   const file = path.join(peerDir(peer.id), 'delivery-transcript.jsonl');
-  return { located: true, found: fs.existsSync(file) && fileHas(file, marker) };
+  if (!fs.existsSync(file)) return undefined;
+  return { located: true, found: fileHas(file, marker) };
 }
 
 /**
@@ -112,12 +112,22 @@ function searchHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
   if (peer.agent === 'codex') return codexTranscript(peer, marker);
   if (peer.agent === 'opencode' || peer.agent === 'kilo') return opencodeTranscript(marker);
   if (peer.agent === 'antigravity') return antigravityTranscript(peer, marker);
-  if (peer.agent === 'copilot' && peer.sessionId) {
-    const file = path.join(os.homedir(), '.copilot', 'session-state', peer.sessionId, 'events.jsonl');
-    if (!fs.existsSync(file)) return { located: false, found: false };
-    return { located: true, found: fileHas(file, marker) };
-  }
+  if (peer.agent === 'copilot' && peer.sessionId) return copilotTranscript(peer, marker);
   return { located: false, found: false };
+}
+
+/**
+ * The hook records `transcriptPath` because the sender does not have the recipient's `COPILOT_HOME`.
+ * `~/.copilot` remains the fallback when nothing was recorded.
+ */
+function copilotTranscript(peer: Peer, marker: string): TranscriptLook {
+  const files = new Set<string>();
+  const recorded = readSession(peer.id)?.transcriptPath;
+  if (recorded && !UNEXPANDED_PATH.test(recorded)) files.add(recorded);
+  if (peer.sessionId) files.add(copilotEventsFile(peer.sessionId));
+  const existing = [...files].filter((file) => fs.existsSync(file));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
 
 function claudeTranscript(peer: Peer, marker: string): TranscriptLook {

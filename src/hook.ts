@@ -23,6 +23,7 @@ import {
   readSession,
   isDeliveryOwner,
   linkedPeerId,
+  copilotEventsFile,
   registerSession,
   registerStableName,
   selfPeer,
@@ -186,15 +187,23 @@ function reply(r: HookReply | undefined): void {
  * SessionStart: record which session/thread this agent process is running, so peers can address it. Prints
  * nothing unless the agent can't show MCP server instructions: agents add this hook's output to the context.
  */
+/** Where this Copilot process writes `events.jsonl`. The sender cannot see `COPILOT_HOME`. */
+function copilotSessionFields(sessionId: string | undefined): { transcriptPath?: string } {
+  if (!sessionId) return {};
+  return { transcriptPath: copilotEventsFile(sessionId) };
+}
+
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
   // Detached, and a no-op when a check already ran today. Never delays this hook's reply.
   scheduleAutoUpdate('session-start');
   const id = idOf(agent, agentPid, input);
+  const session = sessionOf(agent, input);
   registerSession(agent, agentPid, {
-    ...sessionOf(agent, input),
+    ...session,
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
     ...(agent === 'antigravity' ? antigravitySessionFields(input) : {}),
+    ...(agent === 'copilot' ? copilotSessionFields(session.sessionId) : {}),
   });
   registerStableName(agent, id);
   if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
@@ -225,7 +234,12 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
   if (agent === 'claude' && isDeliveryOwner(idOf(agent, agentPid, input), agentPid)) {
     recordClaudeSocket(idOf(agent, agentPid, input), process.env, agentPid);
   }
-  const extra = agent === 'antigravity' ? antigravitySessionFields(input) : {};
+  const extra =
+    agent === 'antigravity'
+      ? antigravitySessionFields(input)
+      : agent === 'copilot'
+        ? copilotSessionFields(sessionId ?? existing?.sessionId)
+        : {};
   if (
     existing?.source === 'hook' &&
     sameHost &&

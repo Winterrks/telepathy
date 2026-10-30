@@ -11,6 +11,7 @@ import {
   clearHosted,
   headlessLogPath,
   namedPeerId,
+  claimPluginSession,
   readHeadlessRecord,
   pluginInboxPeerId,
   recallHarnessSession,
@@ -39,6 +40,8 @@ export interface HeadlessRun {
 interface Plane {
   child: ChildProcess;
   exited: Promise<number>;
+  /** Plugin peer claimed from the harness session id, before the first prompt. */
+  pluginPeerId?: string;
   inject(text: string, stillPending: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
 }
 
@@ -148,7 +151,7 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   memory.changed = persist;
   persist();
   const stopPump = startInboxPump(
-    pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
+    plane.pluginPeerId ?? (pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId),
     (text, stillPending, withdrawn) => plane.inject(text, stillPending, withdrawn),
   );
   let stopping = false;
@@ -513,6 +516,7 @@ async function promptSession(base: string, id: string, text: string, stillPendin
 }
 
 async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: string) => void): Promise<Plane> {
+  let claimed: string | undefined;
   const session = await startAcpSession({
     agent: options.agent,
     bin: options.bin,
@@ -533,15 +537,20 @@ async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: s
     trace: writeLog,
     onTurnSettled: () => {
       const id = options.pluginPeer
-        ? pluginInboxPeerId(options.agent, options.name, memory.id)
+        ? claimed ?? pluginInboxPeerId(options.agent, options.name, memory.id)
         : namedPeerId(options.agent, options.name).peerId;
       if (id) writeStatus(id, 'idle');
     },
   });
   memory.id = session.sessionId;
+  if (options.pluginPeer && session.child.pid && memory.id) {
+    claimed = claimPluginSession(options.agent, session.child.pid, memory.id, options.cwd, options.name);
+    writeStatus(claimed, 'idle');
+  }
   return {
     child: session.child,
     exited: session.exited,
+    pluginPeerId: claimed,
     inject: (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
   };
 }

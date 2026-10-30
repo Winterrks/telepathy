@@ -5,6 +5,7 @@ import { archiveSettled, formatAsUserTurn, pendingMessages } from '../core/messa
 import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, withdrawnDir, writeJsonAtomic } from '../core/paths.ts';
 import { isAlive, procStart } from '../core/proc.ts';
 import {
+  copilotEventsFile,
   notePeerExit,
   readPeer,
   readSession,
@@ -144,6 +145,25 @@ export function registerHostedPeer(agent: Agent, cwd: string, name?: string): Ho
   return { peerId, slug: slug || sessionId, address: peer?.address ?? `${agent}:${slug || sessionId}` };
 }
 
+/**
+ * The harness session is known as soon as `session/new` or `session/load` returns, before Copilot's
+ * hook runs. Register that peer now. Otherwise the plugin's server lists `copilot-<pid>` and a send
+ * sits there until the first prompt, while the pump watches `copilot-<session id>`.
+ * The listener is this process: it pumps the inbox into the live session.
+ */
+export function claimPluginSession(agent: Agent, childPid: number, sessionId: string, cwd: string, name?: string): string {
+  const id = sessionPeerId(agent, childPid, sessionId);
+  registerSession(agent, childPid, {
+    sessionId,
+    cwd,
+    source: 'plugin',
+    ...(agent === 'copilot' ? { transcriptPath: copilotEventsFile(sessionId) } : {}),
+  });
+  if (name) registerStableName(agent, id, name);
+  registerListener(agent, childPid, id);
+  return id;
+}
+
 /** Peer id `--name` will use, before this process registers. Used to resume the harness session. */
 export function namedPeerId(agent: Agent, name: string): { peerId: string; slug: string } {
   const slug = slugify(name) || `${agent}-headless`;
@@ -179,7 +199,9 @@ export function pluginInboxPeerId(agent: Agent, name?: string, sessionId?: strin
     }
     if (sessionId && session.sessionId === sessionId) bySession = id;
   }
-  return byName ?? bySession;
+  // The harness session is the inbox this host is driving. A second peer that only shares the name
+  // (the pid placeholder, or a previous run) must not take the pump.
+  return bySession ?? byName;
 }
 
 /**

@@ -9,7 +9,7 @@ import { findInstalls, isNewer } from '../core/installs.ts';
 import { cachedGithubVersion } from '../version-check.ts';
 import { runHeadless } from '../headless/run.ts';
 import { writeStatus } from '../core/status.ts';
-import { clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump, type HostedPeer } from '../headless/peer.ts';
+import { claimPluginSession, clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump, type HostedPeer } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
 import { acpCommand, canonicalRunAgent, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
@@ -215,6 +215,8 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
   const resume = explicitResume(userArgs) ?? (named ? recallHarnessSession(named.peerId) : undefined);
   let hosted: HostedPeer | undefined;
   let sessionId = '';
+  // Set once session/new or session/load returns, before the first prompt. The callback runs later.
+  let pluginId: string | undefined;
   const session = await startAcpSession({
     agent: harness.agent,
     bin,
@@ -226,18 +228,22 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
     emit: (line) => process.stdout.write(line.endsWith('\n') ? line : line + '\n'),
     stream: (text) => process.stdout.write(text),
     onTurnSettled: () => {
-      const id = hosted?.peerId ?? pluginInboxPeerId(harness.agent, name, sessionId);
+      const id = hosted?.peerId ?? pluginId ?? pluginInboxPeerId(harness.agent, name, sessionId);
       if (id) writeStatus(id, 'idle');
     },
   });
   sessionId = session.sessionId;
+  if (pluginPeer && session.child.pid) {
+    pluginId = claimPluginSession(harness.agent, session.child.pid, session.sessionId, cwd, name);
+    writeStatus(pluginId, 'idle');
+  }
   // The installed plugin is the named peer. A second host registration shows up beside it.
   // The host still pumps that peer's inbox: an idle ACP session has no other delivery path.
   hosted = pluginPeer ? undefined : registerHostedPeer(harness.agent, cwd, name);
   const memoryPeer = hosted?.peerId ?? named?.peerId;
   if (memoryPeer) rememberHarnessSession(memoryPeer, session.sessionId);
   const stopPump = startInboxPump(
-    hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
+    hosted?.peerId ?? pluginId ?? (() => pluginInboxPeerId(harness.agent, name, session.sessionId)),
     (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
   );
   const shutdown = () => session.close();

@@ -208,6 +208,12 @@ const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 
 export const defaultCodexHome = () => configuredEnv('CODEX_HOME') || path.join(os.homedir(), '.codex');
+
+/** Copilot's event log. `COPILOT_HOME` relocates it; the default is `~/.copilot`. */
+export function copilotEventsFile(sessionId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = configuredEnv('COPILOT_HOME', env) || path.join(os.homedir(), '.copilot');
+  return path.join(home, 'session-state', sessionId, 'events.jsonl');
+}
 export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 export function registerSession(

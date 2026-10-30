@@ -9,10 +9,11 @@ import { autoUpdateEnabled, runAutoUpdate, scheduleAutoUpdate } from '../src/aut
 import { sendMessage } from '../src/core/deliver.ts';
 import { installsInScope } from '../src/core/installs.ts';
 import { configuredEnv, inboxDir, stateDir } from '../src/core/paths.ts';
-import { configuredStableName, readPeer, registerSession } from '../src/core/peers.ts';
+import { configuredStableName, isPeerAlive, listPeers, readPeer, registerPresence, registerSession, registerStableName, resolvePeer } from '../src/core/peers.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
 import { readHeadlessRecord } from '../src/headless/peer.ts';
 import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
+import { describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
 import { ROOT, fakeAgent, makeSandbox, type Sandbox } from './helpers.ts';
 
@@ -46,6 +47,7 @@ interface World {
     cwd?: string;
     name?: string;
     home?: string;
+    pid?: number;
     pluginDirs?: string;
     claudeConfig?: string;
   }[];
@@ -1139,6 +1141,99 @@ test('copilot userPromptSubmitted skips a prompt the ACP host already injected',
     assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), false);
   } finally {
     agent.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('copilot session-start records events.jsonl under COPILOT_HOME, not --plugin-dir', () => {
+  const w = world();
+  const agent = fakeAgent();
+  const copilotHome = path.join(path.dirname(w.sb.home), 'copilot-home');
+  const pluginDir = path.join(path.dirname(w.sb.home), 'plugin-dir');
+  const env = { ...w.env, COPILOT_HOME: copilotHome, TELEPATHY_AGENT_PID: String(agent.pid) };
+  try {
+    const result = spawnSync(process.execPath, [path.join(ROOT, 'src', 'hook.ts'), '--agent', 'copilot', 'session-start', 'sessionStart', '--plugin-dir', pluginDir], {
+      input: JSON.stringify({ sessionId: 'sess-keep', cwd: '/work' }),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const session = JSON.parse(fs.readFileSync(path.join(w.sb.home, 'peers', 'copilot-sess-keep', 'session.json'), 'utf8')) as { transcriptPath?: string };
+    const expected = path.join(copilotHome, 'session-state', 'sess-keep', 'events.jsonl');
+    assert.equal(session.transcriptPath, expected);
+    assert.equal(session.transcriptPath?.includes(pluginDir), false);
+  } finally {
+    agent.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('a Copilot session is reachable before the first prompt, including after resume', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  plantCopilot(w.env.HOME as string);
+  confirmEnv();
+  process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
+  const peerId = 'copilot-sess-keep';
+  const self = sender();
+
+  const waitReady = async () => {
+    await waitFor(() => {
+      const peer = readPeer(peerId);
+      return peer && isPeerAlive(peer) && peer.stableName === 'gem' ? peer : undefined;
+    });
+  };
+  const hidePidPlaceholder = () => {
+    const starts = w.readLog().filter((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    const pid = starts[starts.length - 1]?.pid;
+    assert.equal(typeof pid, 'number');
+    registerPresence('copilot', pid as number, { cwd: '/work' });
+    registerStableName('copilot', `copilot-${pid}`, 'gem');
+    const listed = listPeers().filter((peer) => peer.agent === 'copilot');
+    assert.deepEqual(listed.map((peer) => peer.id), [peerId]);
+    const resolved = resolvePeer('copilot:gem', listPeers());
+    assert.equal('peer' in resolved && resolved.peer.id, peerId);
+    const described = describePeer(listed[0] as NonNullable<(typeof listed)[number]>);
+    assert.match(described, /the host delivers messages as they arrive/);
+    assert.doesNotMatch(described, /next turn|no listener/);
+  };
+
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitReady();
+    hidePidPlaceholder();
+    const sent = await sendMessage(self, 'copilot:gem', 'before any prompt');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('before any prompt')), true);
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+
+  const resumed = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitReady();
+    hidePidPlaceholder();
+    const sent = await sendMessage(self, 'copilot:gem', 'after restart');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    resumed.child.stdin.end();
+    await resumed.done;
+  } finally {
+    if (resumed.child.exitCode === null) resumed.child.kill('SIGKILL');
+  }
+
+  const explicit = spawnCli(['run', 'copilot', '--resume', 'sess-keep'], w.env);
+  try {
+    await waitReady();
+    const resolved = resolvePeer('copilot:gem', listPeers());
+    assert.equal('peer' in resolved && resolved.peer.id, peerId);
+    assert.equal(isPeerAlive('peer' in resolved ? resolved.peer : undefined), true);
+    const sent = await sendMessage(self, 'copilot:gem', 'after explicit resume');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    explicit.child.stdin.end();
+    await explicit.done;
+  } finally {
+    if (explicit.child.exitCode === null) explicit.child.kill('SIGKILL');
     w.restore();
   }
 });

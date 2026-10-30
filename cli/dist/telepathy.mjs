@@ -1329,6 +1329,10 @@ function rememberedName(agent, sessionId) {
   if (!sessionId || !sessionToken(sessionId)) return void 0;
   return readJson(rememberedFile(agent, sessionId))?.name;
 }
+function copilotEventsFile(sessionId, env = process.env) {
+  const home2 = configuredEnv("COPILOT_HOME", env) || path10.join(os6.homedir(), ".copilot");
+  return path10.join(home2, "session-state", sessionId, "events.jsonl");
+}
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
   const file2 = path10.join(peerDir(id), "session.json");
   const previous = readJson(file2);
@@ -31160,9 +31164,9 @@ function transcriptHasMarker(peer, marker) {
   return !!peer && inspectTranscript(peer, marker).found;
 }
 function hostedTranscript(peer, marker) {
-  if (!fs19.existsSync(path23.join(peerDir(peer.id), "hosted.json"))) return void 0;
   const file2 = path23.join(peerDir(peer.id), "delivery-transcript.jsonl");
-  return { located: true, found: fs19.existsSync(file2) && fileHas(file2, marker) };
+  if (!fs19.existsSync(file2)) return void 0;
+  return { located: true, found: fileHas(file2, marker) };
 }
 function inspectTranscript(peer, marker) {
   const hosted = hostedTranscript(peer, marker);
@@ -31185,12 +31189,17 @@ function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "antigravity") return antigravityTranscript(peer, marker);
-  if (peer.agent === "copilot" && peer.sessionId) {
-    const file2 = path23.join(os10.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
-    if (!fs19.existsSync(file2)) return { located: false, found: false };
-    return { located: true, found: fileHas(file2, marker) };
-  }
+  if (peer.agent === "copilot" && peer.sessionId) return copilotTranscript(peer, marker);
   return { located: false, found: false };
+}
+function copilotTranscript(peer, marker) {
+  const files = /* @__PURE__ */ new Set();
+  const recorded2 = readSession(peer.id)?.transcriptPath;
+  if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files.add(recorded2);
+  if (peer.sessionId) files.add(copilotEventsFile(peer.sessionId));
+  const existing = [...files].filter((file2) => fs19.existsSync(file2));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
@@ -32197,6 +32206,7 @@ function launchHint(peer) {
 function deliveryHint(peer) {
   const launch = launchHint(peer);
   if (launch) return launch;
+  if (peer.agent === "copilot" && peer.hasListener) return "the host delivers messages as they arrive";
   if (peer.agent === "codex" || peer.hasListener) return void 0;
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);
@@ -33570,6 +33580,18 @@ function registerHostedPeer(agent, cwd, name) {
   const peer = readPeer(peerId2);
   return { peerId: peerId2, slug: slug || sessionId, address: peer?.address ?? `${agent}:${slug || sessionId}` };
 }
+function claimPluginSession(agent, childPid, sessionId, cwd, name) {
+  const id = sessionPeerId(agent, childPid, sessionId);
+  registerSession(agent, childPid, {
+    sessionId,
+    cwd,
+    source: "plugin",
+    ...agent === "copilot" ? { transcriptPath: copilotEventsFile(sessionId) } : {}
+  });
+  if (name) registerStableName(agent, id, name);
+  registerListener(agent, childPid, id);
+  return id;
+}
 function namedPeerId(agent, name) {
   const slug = slugify(name) || `${agent}-headless`;
   return { peerId: sessionPeerId(agent, process.pid, `h-${slug}`), slug };
@@ -33598,7 +33620,7 @@ function pluginInboxPeerId(agent, name, sessionId) {
     }
     if (sessionId && session.sessionId === sessionId) bySession = id;
   }
-  return byName ?? bySession;
+  return bySession ?? byName;
 }
 function startInboxPump(peerId2, inject) {
   const resolve = typeof peerId2 === "function" ? peerId2 : () => peerId2;
@@ -33737,7 +33759,7 @@ async function runHeadless(options) {
   memory.changed = persist;
   persist();
   const stopPump = startInboxPump(
-    pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
+    plane.pluginPeerId ?? (pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId),
     (text, stillPending2, withdrawn) => plane.inject(text, stillPending2, withdrawn)
   );
   let stopping = false;
@@ -34080,6 +34102,7 @@ async function promptSession(base, id, text, stillPending2) {
   return false;
 }
 async function startAcp(options, memory, writeLog) {
+  let claimed;
   const session = await startAcpSession({
     agent: options.agent,
     bin: options.bin,
@@ -34099,14 +34122,19 @@ async function startAcp(options, memory, writeLog) {
     },
     trace: writeLog,
     onTurnSettled: () => {
-      const id = options.pluginPeer ? pluginInboxPeerId(options.agent, options.name, memory.id) : namedPeerId(options.agent, options.name).peerId;
+      const id = options.pluginPeer ? claimed ?? pluginInboxPeerId(options.agent, options.name, memory.id) : namedPeerId(options.agent, options.name).peerId;
       if (id) writeStatus(id, "idle");
     }
   });
   memory.id = session.sessionId;
+  if (options.pluginPeer && session.child.pid && memory.id) {
+    claimed = claimPluginSession(options.agent, session.child.pid, memory.id, options.cwd, options.name);
+    writeStatus(claimed, "idle");
+  }
   return {
     child: session.child,
     exited: session.exited,
+    pluginPeerId: claimed,
     inject: (text, stillPending2, withdrawn) => session.prompt(text, stillPending2, withdrawn)
   };
 }
@@ -34285,6 +34313,7 @@ async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
   const resume = explicitResume(userArgs) ?? (named ? recallHarnessSession(named.peerId) : void 0);
   let hosted;
   let sessionId = "";
+  let pluginId;
   const session = await startAcpSession({
     agent: harness.agent,
     bin,
@@ -34296,16 +34325,20 @@ async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
     emit: (line) => process.stdout.write(line.endsWith("\n") ? line : line + "\n"),
     stream: (text) => process.stdout.write(text),
     onTurnSettled: () => {
-      const id = hosted?.peerId ?? pluginInboxPeerId(harness.agent, name, sessionId);
+      const id = hosted?.peerId ?? pluginId ?? pluginInboxPeerId(harness.agent, name, sessionId);
       if (id) writeStatus(id, "idle");
     }
   });
   sessionId = session.sessionId;
+  if (pluginPeer && session.child.pid) {
+    pluginId = claimPluginSession(harness.agent, session.child.pid, session.sessionId, cwd, name);
+    writeStatus(pluginId, "idle");
+  }
   hosted = pluginPeer ? void 0 : registerHostedPeer(harness.agent, cwd, name);
   const memoryPeer = hosted?.peerId ?? named?.peerId;
   if (memoryPeer) rememberHarnessSession(memoryPeer, session.sessionId);
   const stopPump = startInboxPump(
-    hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
+    hosted?.peerId ?? pluginId ?? (() => pluginInboxPeerId(harness.agent, name, session.sessionId)),
     (text, stillPending2, withdrawn) => session.prompt(text, stillPending2, withdrawn)
   );
   const shutdown = () => session.close();

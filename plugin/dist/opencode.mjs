@@ -20358,6 +20358,10 @@ var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 var defaultCodexHome = () => configuredEnv("CODEX_HOME") || path5.join(os2.homedir(), ".codex");
+function copilotEventsFile(sessionId, env = process.env) {
+  const home = configuredEnv("COPILOT_HOME", env) || path5.join(os2.homedir(), ".copilot");
+  return path5.join(home, "session-state", sessionId, "events.jsonl");
+}
 var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path5.join(os2.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
   const file2 = path5.join(peerDir(id), "session.json");
@@ -21413,9 +21417,9 @@ function confirmPollMs() {
 var FULL_READ = 32 * 1024 * 1024;
 var TAIL_READ = 4 * 1024 * 1024;
 function hostedTranscript(peer, marker) {
-  if (!fs9.existsSync(path9.join(peerDir(peer.id), "hosted.json"))) return void 0;
   const file2 = path9.join(peerDir(peer.id), "delivery-transcript.jsonl");
-  return { located: true, found: fs9.existsSync(file2) && fileHas(file2, marker) };
+  if (!fs9.existsSync(file2)) return void 0;
+  return { located: true, found: fileHas(file2, marker) };
 }
 function inspectTranscript(peer, marker) {
   const hosted = hostedTranscript(peer, marker);
@@ -21438,12 +21442,17 @@ function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "antigravity") return antigravityTranscript(peer, marker);
-  if (peer.agent === "copilot" && peer.sessionId) {
-    const file2 = path9.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
-    if (!fs9.existsSync(file2)) return { located: false, found: false };
-    return { located: true, found: fileHas(file2, marker) };
-  }
+  if (peer.agent === "copilot" && peer.sessionId) return copilotTranscript(peer, marker);
   return { located: false, found: false };
+}
+function copilotTranscript(peer, marker) {
+  const files = /* @__PURE__ */ new Set();
+  const recorded2 = readSession(peer.id)?.transcriptPath;
+  if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files.add(recorded2);
+  if (peer.sessionId) files.add(copilotEventsFile(peer.sessionId));
+  const existing = [...files].filter((file2) => fs9.existsSync(file2));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file2) => fileHas(file2, marker)) };
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
@@ -21859,6 +21868,7 @@ function launchHint(peer) {
 function deliveryHint(peer) {
   const launch = launchHint(peer);
   if (launch) return launch;
+  if (peer.agent === "copilot" && peer.hasListener) return "the host delivers messages as they arrive";
   if (peer.agent === "codex" || peer.hasListener) return void 0;
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);

@@ -1453,6 +1453,10 @@ var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 var defaultCodexHome = () => configuredEnv("CODEX_HOME") || path6.join(os2.homedir(), ".codex");
+function copilotEventsFile(sessionId, env = process.env) {
+  const home2 = configuredEnv("COPILOT_HOME", env) || path6.join(os2.homedir(), ".copilot");
+  return path6.join(home2, "session-state", sessionId, "events.jsonl");
+}
 var claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path6.join(os2.homedir(), ".claude");
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
   const file = path6.join(peerDir(id), "session.json");
@@ -2529,9 +2533,9 @@ function confirmPollMs() {
 var FULL_READ = 32 * 1024 * 1024;
 var TAIL_READ = 4 * 1024 * 1024;
 function hostedTranscript(peer, marker) {
-  if (!fs9.existsSync(path10.join(peerDir(peer.id), "hosted.json"))) return void 0;
   const file = path10.join(peerDir(peer.id), "delivery-transcript.jsonl");
-  return { located: true, found: fs9.existsSync(file) && fileHas(file, marker) };
+  if (!fs9.existsSync(file)) return void 0;
+  return { located: true, found: fileHas(file, marker) };
 }
 function inspectTranscript(peer, marker) {
   const hosted = hostedTranscript(peer, marker);
@@ -2554,12 +2558,17 @@ function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "codex") return codexTranscript(peer, marker);
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "antigravity") return antigravityTranscript(peer, marker);
-  if (peer.agent === "copilot" && peer.sessionId) {
-    const file = path10.join(os4.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
-    if (!fs9.existsSync(file)) return { located: false, found: false };
-    return { located: true, found: fileHas(file, marker) };
-  }
+  if (peer.agent === "copilot" && peer.sessionId) return copilotTranscript(peer, marker);
   return { located: false, found: false };
+}
+function copilotTranscript(peer, marker) {
+  const files2 = /* @__PURE__ */ new Set();
+  const recorded2 = readSession(peer.id)?.transcriptPath;
+  if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files2.add(recorded2);
+  if (peer.sessionId) files2.add(copilotEventsFile(peer.sessionId));
+  const existing = [...files2].filter((file) => fs9.existsSync(file));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
@@ -3573,14 +3582,20 @@ function reply(r) {
   if (r.stderr) process.stderr.write(r.stderr + "\n");
   if (r.exitCode !== void 0) process.exitCode = r.exitCode;
 }
+function copilotSessionFields(sessionId) {
+  if (!sessionId) return {};
+  return { transcriptPath: copilotEventsFile(sessionId) };
+}
 function sessionStart(agent, agentPid, input) {
   scheduleAutoUpdate("session-start");
   const id = idOf(agent, agentPid, input);
+  const session = sessionOf(agent, input);
   registerSession(agent, agentPid, {
-    ...sessionOf(agent, input),
+    ...session,
     source: "hook",
     codexHome: agent === "codex" ? defaultCodexHome() : void 0,
-    ...agent === "antigravity" ? antigravitySessionFields(input) : {}
+    ...agent === "antigravity" ? antigravitySessionFields(input) : {},
+    ...agent === "copilot" ? copilotSessionFields(session.sessionId) : {}
   });
   registerStableName(agent, id);
   if (agent === "claude" && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
@@ -3602,7 +3617,7 @@ function refreshSession(agent, agentPid, input) {
   if (agent === "claude" && isDeliveryOwner(idOf(agent, agentPid, input), agentPid)) {
     recordClaudeSocket(idOf(agent, agentPid, input), process.env, agentPid);
   }
-  const extra = agent === "antigravity" ? antigravitySessionFields(input) : {};
+  const extra = agent === "antigravity" ? antigravitySessionFields(input) : agent === "copilot" ? copilotSessionFields(sessionId ?? existing?.sessionId) : {};
   if (existing?.source === "hook" && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd) && (!extra.transcriptPath || existing.transcriptPath === extra.transcriptPath)) {
     return;
   }
