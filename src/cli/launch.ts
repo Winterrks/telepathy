@@ -18,7 +18,8 @@ export function pluginInstalled(agent: Agent): boolean {
  * True when this harness will start telepathy's MCP server itself.
  * Copilot's `plugin install` copy lives under `installed-plugins`, and `copilot --acp` starts that server.
  * `plugin marketplace add <dir>` loads the plugin from that folder. That ACP session does not start the
- * server, so the host still passes one. Passing one next to an `installed-plugins` copy would register twice.
+ * server, so the host adds one with `--additional-mcp-config`. Copilot rejects a stdio server on
+ * `session/new`. Adding either beside an `installed-plugins` copy would register twice.
  */
 export function harnessProvidesMcp(agent: Agent): boolean {
   if (agent !== 'copilot') return pluginInstalled(agent);

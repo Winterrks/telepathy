@@ -32113,7 +32113,7 @@ var init_inbox_wait = __esm({
 
 // src/core/copilot-resume.ts
 import fs23 from "node:fs";
-import os11 from "node:os";
+import os12 from "node:os";
 import path27 from "node:path";
 function shellTokens(command) {
   const out = [];
@@ -32358,7 +32358,7 @@ function detectResumedCopilotSession(input2) {
   return { state: "pending" };
 }
 function copilotHome() {
-  return configuredEnv("COPILOT_HOME") || path27.join(os11.homedir(), ".copilot");
+  return configuredEnv("COPILOT_HOME") || path27.join(os12.homedir(), ".copilot");
 }
 function processStartMs(pid) {
   const start = procStart(pid);
@@ -33648,12 +33648,13 @@ async function ensureInstalled(agent) {
 // src/cli/run.ts
 await init_auto_update();
 import { spawn as spawn7 } from "node:child_process";
-import os10 from "node:os";
+import os11 from "node:os";
 import path23 from "node:path";
 
 // src/acp/host.ts
 import { spawn as spawn5 } from "node:child_process";
 import fs16 from "node:fs";
+import os9 from "node:os";
 import path18 from "node:path";
 import readline2 from "node:readline";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
@@ -33796,6 +33797,45 @@ function telepathyMcpServers(agent, env = process.env) {
     }
   ];
 }
+function advertisesStdioMcp(result) {
+  const root = result ?? {};
+  const agentCaps = root.agentCapabilities ?? {};
+  const raw = agentCaps.mcpCapabilities ?? root.mcpCapabilities;
+  if (Array.isArray(raw)) return raw.some((item) => item === "stdio" || item === "local");
+  if (!raw || typeof raw !== "object") return false;
+  const flags = raw;
+  return flags.stdio === true || flags.local === true;
+}
+function copilotCliMcp(agent, env) {
+  if (agent !== "copilot" || harnessProvidesMcp(agent)) return void 0;
+  const dir = fs16.mkdtempSync(path18.join(os9.tmpdir(), "telepathy-mcp-"));
+  const file2 = path18.join(dir, "mcp.json");
+  const entry = mcpEntry();
+  const args = entry.viaCli ? [entry.file, "mcp", "--agent", agent] : [entry.file, "--agent", agent];
+  const serverEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string") serverEnv[key] = value;
+  }
+  fs16.writeFileSync(
+    file2,
+    JSON.stringify({
+      mcpServers: {
+        telepathy: { type: "local", command: process.execPath, args, tools: ["*"], env: serverEnv }
+      }
+    })
+  );
+  fs16.chmodSync(file2, 384);
+  return {
+    args: ["--additional-mcp-config", `@${file2}`],
+    cleanup: () => fs16.rmSync(dir, { recursive: true, force: true })
+  };
+}
+function insertBeforeDoubleDash(args, extra) {
+  if (!extra.length) return args;
+  const end = args.indexOf("--");
+  if (end < 0) return [...args, ...extra];
+  return [...args.slice(0, end), ...extra, ...args.slice(end)];
+}
 function mcpEntry() {
   const override = process.env.TELEPATHY_MCP_ENTRY;
   if (override) return { file: override, viaCli: !override.endsWith("server.mjs") };
@@ -33870,7 +33910,9 @@ function sessionIdOf(result) {
 }
 var AUTH_FAILURE = /not logged in|login required|authentication (?:failed|required)|please run \S+ login|unauthorized|invalid api key|credentials? (?:not found|missing|expired)/i;
 async function startAcpSession(options) {
-  const child = spawn5(options.bin, options.args, {
+  const mcpEnv = options.env ?? process.env;
+  const cliMcp = copilotCliMcp(options.agent, mcpEnv);
+  const child = spawn5(options.bin, insertBeforeDoubleDash(options.args, cliMcp?.args ?? []), {
     cwd: options.cwd,
     env: options.env ?? process.env,
     stdio: ["pipe", "pipe", "pipe"],
@@ -33905,7 +33947,10 @@ async function startAcpSession(options) {
   child.stderr?.on("data", (chunk) => noteStderr(chunk.toString()));
   let userStop = false;
   const exited = new Promise((resolve) => {
-    child.on("error", () => resolve(failure2 ?? 127));
+    child.on("error", () => {
+      cliMcp?.cleanup();
+      resolve(failure2 ?? 127);
+    });
     child.on("exit", (code, signal) => {
       if (failure2 !== void 0) resolve(failure2);
       else if (userStop) resolve(0);
@@ -34005,7 +34050,10 @@ async function startAcpSession(options) {
       process.stdin.unref();
     });
   };
-  child.on("exit", () => releaseStdin());
+  child.on("exit", () => {
+    releaseStdin();
+    cliMcp?.cleanup();
+  });
   let session;
   const cancelTurn = () => {
     clearAsk();
@@ -34056,13 +34104,19 @@ async function startAcpSession(options) {
       stopChild("SIGTERM");
       throw new Error(authMessage(options.bin, stderrTail));
     }
-    await rpc.request("initialize", {
+    const initialized = await rpc.request("initialize", {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: "telepathy", version: VERSION }
     });
     if (failure2 !== void 0) throw new Error(authMessage(options.bin, stderrTail));
-    const mcpServers = telepathyMcpServers(options.agent, options.env ?? process.env);
+    const stdioOk = advertisesStdioMcp(initialized);
+    const mcpServers = harnessProvidesMcp(options.agent) || cliMcp || !stdioOk ? [] : telepathyMcpServers(options.agent, mcpEnv);
+    if (!harnessProvidesMcp(options.agent) && !cliMcp && !stdioOk) {
+      options.emit(
+        `${options.bin} does not accept stdio MCP servers, and telepathy has no command-line way to add one. This session has no telepathy tools.`
+      );
+    }
     let sessionId = options.resumeSessionId;
     let resumed = false;
     if (sessionId) {
@@ -34222,7 +34276,7 @@ function authMessage(bin, stderrTail) {
 
 // src/cli/agy-auth.ts
 import fs17 from "node:fs";
-import os9 from "node:os";
+import os10 from "node:os";
 import path19 from "node:path";
 var AGY_CONSUMER_LOGIN_WARNING = [
   "telepathy: refusing to drive Antigravity headless or ACP on a consumer login.",
@@ -34236,7 +34290,7 @@ var AGY_API_KEY_MISSING = [
   "Headless and ACP are not started."
 ].join("\n");
 function agySettingsFile(env = process.env) {
-  const home2 = env.HOME?.trim() || os9.homedir();
+  const home2 = env.HOME?.trim() || os10.homedir();
   return path19.join(home2, ".gemini", "antigravity-cli", "settings.json");
 }
 function agyLoginType(env = process.env) {
@@ -35199,7 +35253,7 @@ function execPassthrough(bin, args, cwd, env) {
       process.off("SIGTERM", onTerm);
       process.off("SIGHUP", onHup);
       if (signal) {
-        const num = os10.constants.signals[signal];
+        const num = os11.constants.signals[signal];
         resolve(typeof num === "number" ? 128 + num : 1);
         return;
       }

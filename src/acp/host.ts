@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
@@ -66,9 +67,10 @@ interface McpServer {
 }
 
 /**
- * The MCP server block for `session/new`. Gemini merges this onto the user's settings; an empty list
- * leaves those settings in place. Copilot's behavior is unverified live (see the design note).
- * The env array replaces the server's environment, so it carries the variables the user already has.
+ * The MCP server block for `session/new`. An empty list leaves the agent's own settings in place.
+ * Send it only when initialize advertises stdio. Copilot advertises http and sse and rejects a stdio
+ * server here (`--additional-mcp-config` is how that session gets one). The env array replaces the
+ * server's environment, so it carries the variables the user already has.
  */
 export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = process.env): McpServer[] {
   if (harnessProvidesMcp(agent)) return [];
@@ -85,6 +87,59 @@ export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = proce
         .map(([name, value]) => ({ name, value })),
     },
   ];
+}
+
+/** True when initialize's `mcpCapabilities` lists stdio (or Copilot's synonym `local`). */
+export function advertisesStdioMcp(result: unknown): boolean {
+  const root = (result ?? {}) as { agentCapabilities?: unknown; mcpCapabilities?: unknown };
+  const agentCaps = (root.agentCapabilities ?? {}) as { mcpCapabilities?: unknown };
+  const raw = agentCaps.mcpCapabilities ?? root.mcpCapabilities;
+  if (Array.isArray(raw)) return raw.some((item) => item === 'stdio' || item === 'local');
+  if (!raw || typeof raw !== 'object') return false;
+  const flags = raw as { stdio?: unknown; local?: unknown };
+  return flags.stdio === true || flags.local === true;
+}
+
+interface CliMcp {
+  args: string[];
+  cleanup: () => void;
+}
+
+/**
+ * Copilot ACP rejects stdio servers passed on `session/new`. `--additional-mcp-config @file` adds the
+ * same local server the plugin manifest uses, for this process only. A copy under `installed-plugins`
+ * already starts that server.
+ */
+function copilotCliMcp(agent: Agent, env: NodeJS.ProcessEnv): CliMcp | undefined {
+  if (agent !== 'copilot' || harnessProvidesMcp(agent)) return undefined;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-mcp-'));
+  const file = path.join(dir, 'mcp.json');
+  const entry = mcpEntry();
+  const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
+  const serverEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === 'string') serverEnv[key] = value;
+  }
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      mcpServers: {
+        telepathy: { type: 'local', command: process.execPath, args, tools: ['*'], env: serverEnv },
+      },
+    }),
+  );
+  fs.chmodSync(file, 0o600);
+  return {
+    args: ['--additional-mcp-config', `@${file}`],
+    cleanup: () => fs.rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+function insertBeforeDoubleDash(args: string[], extra: string[]): string[] {
+  if (!extra.length) return args;
+  const end = args.indexOf('--');
+  if (end < 0) return [...args, ...extra];
+  return [...args.slice(0, end), ...extra, ...args.slice(end)];
 }
 
 /** `viaCli` means the file is the `telepathy` command, so the server is `telepathy mcp`. */
@@ -215,8 +270,10 @@ const AUTH_FAILURE = /not logged in|login required|authentication (?:failed|requ
  * injected; that copy is no longer pending, and cancelling it drops the turn.
  */
 export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
+  const mcpEnv = options.env ?? process.env;
+  const cliMcp = copilotCliMcp(options.agent, mcpEnv);
   // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
-  const child = spawn(options.bin, options.args, {
+  const child = spawn(options.bin, insertBeforeDoubleDash(options.args, cliMcp?.args ?? []), {
     cwd: options.cwd,
     env: options.env ?? process.env,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -252,7 +309,10 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   child.stderr?.on('data', (chunk: Buffer) => noteStderr(chunk.toString()));
   let userStop = false;
   const exited = new Promise<number>((resolve) => {
-    child.on('error', () => resolve(failure ?? 127));
+    child.on('error', () => {
+      cliMcp?.cleanup();
+      resolve(failure ?? 127);
+    });
     child.on('exit', (code, signal) => {
       if (failure !== undefined) resolve(failure);
       else if (userStop) resolve(0);
@@ -366,7 +426,10 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       process.stdin.unref();
     });
   };
-  child.on('exit', () => releaseStdin());
+  child.on('exit', () => {
+    releaseStdin();
+    cliMcp?.cleanup();
+  });
 
   let session: AcpSession | undefined;
   const cancelTurn = (): boolean => {
@@ -421,14 +484,22 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       stopChild('SIGTERM');
       throw new Error(authMessage(options.bin, stderrTail));
     }
-    await rpc.request('initialize', {
+    const initialized = await rpc.request('initialize', {
       protocolVersion: 1,
       clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
       clientInfo: { name: 'telepathy', version: VERSION },
     });
     if (failure !== undefined) throw new Error(authMessage(options.bin, stderrTail));
 
-    const mcpServers = telepathyMcpServers(options.agent, options.env ?? process.env);
+    const stdioOk = advertisesStdioMcp(initialized);
+    // Copilot's server is on the command line. Other agents get it on session/new only when they
+    // advertise stdio. Otherwise the session still starts, without telepathy's tools.
+    const mcpServers = harnessProvidesMcp(options.agent) || cliMcp || !stdioOk ? [] : telepathyMcpServers(options.agent, mcpEnv);
+    if (!harnessProvidesMcp(options.agent) && !cliMcp && !stdioOk) {
+      options.emit(
+        `${options.bin} does not accept stdio MCP servers, and telepathy has no command-line way to add one. This session has no telepathy tools.`,
+      );
+    }
     let sessionId = options.resumeSessionId;
     let resumed = false;
     if (sessionId) {

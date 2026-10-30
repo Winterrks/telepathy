@@ -383,8 +383,10 @@ describe('Claude inbox socket', () => {
       assert.equal(posts, 0);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
-      await waitFor(() => (posts === 1 ? true : undefined));
-      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
+      const heldFile = path.join(inboxDir(peer.id), `${held.message.id}.json`);
+      await waitFor(() => (posts === 1 && !fs.existsSync(heldFile) ? true : undefined));
+      assert.equal(posts, 1);
+      assert.equal(fs.existsSync(heldFile), false);
     } finally {
       server.close();
       fs.rmSync(path.join(sb.home, 'once', '.claude'), { recursive: true, force: true });

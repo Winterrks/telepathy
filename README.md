@@ -214,9 +214,11 @@ before the first prompt. `copilot --resume=<id>` and `copilot --resume <id>` rec
 `workspace.yaml` and does not write `session.resume`, so that file does not block the named resume. `--continue` and a
 bare `--resume` still claim nothing when two sessions in the folder were touched after the process started. If the
 signals disagree, it stays `session-<pid>` until the first prompt. `telepathy run copilot` injects messages as they
-arrive. It also passes telepathy's MCP server when Copilot will not start one: a `plugin install` copy under
-`installed-plugins` starts the server, and the host does not add a second one. A plugin loaded with
-`plugin marketplace add <dir>` does not start it in ACP. Leave that host with `/exit`, `/quit`, or Ctrl-C.
+arrive. Copilot's ACP initialize advertises http and sse only, and it rejects a stdio server on `session/new`.
+A `plugin install` copy under `installed-plugins` starts telepathy's server, so the host leaves that command line alone.
+A plugin loaded with `plugin marketplace add <dir>` does not start the server. The host adds it for that session with
+`copilot --acp --additional-mcp-config @<file>`, the same local server the plugin manifest uses. Leave that host with
+`/exit`, `/quit`, or Ctrl-C.
 
 ### Qwen Code
 
