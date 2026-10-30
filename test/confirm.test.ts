@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall } from '../src/core/confirm.ts';
+import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall, transcriptHasMarker } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { claimInbox, messageMarker, type Message, writeToInbox } from '../src/core/messages.ts';
 import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
@@ -64,10 +64,10 @@ describe('transcript confirmation', () => {
     const key = `g${n++}`;
     registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-tx');
     registerSession('codex', fromProc.pid, { sessionId: 'thread-tx', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
-    registerPresence('gemini', toProc.pid, { cwd: '/w/docs' }, `gemini-${key}`);
-    registerSession('gemini', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
+    registerPresence('qwen', toProc.pid, { cwd: '/w/docs' }, `qwen-${key}`);
+    registerSession('qwen', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
     const from = readPeer('codex-thread-tx');
-    const to = readPeer(`gemini-${key}`);
+    const to = readPeer(`qwen-${key}`);
     assert.ok(from && to);
     return { from, to };
   };
@@ -426,5 +426,68 @@ describe('transcript confirmation', () => {
     assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${message.id}.json`)), true);
     assert.match(fs.readFileSync(sb.codexLog, 'utf8').slice(before.length), /app-server/);
     assert.deepEqual(JSON.parse(fs.readFileSync(`${sb.codexLog}.queue.json`, 'utf8')), []);
+  });
+
+  test('copilot confirm reads the recorded COPILOT_HOME log and a pump transcript without hosted.json', () => {
+    const savedHome = process.env.HOME;
+    const savedCopilot = process.env.COPILOT_HOME;
+    const savedTranscript = process.env.TELEPATHY_TRANSCRIPT_DIR;
+    delete process.env.COPILOT_HOME;
+    delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+    const home = path.join(sb.home, 'empty-home');
+    fs.mkdirSync(home, { recursive: true });
+    process.env.HOME = home;
+    const proc = fakeAgent();
+    agents.push(proc);
+    const sessionId = 'sess-copilot';
+    const id = 'copilot-sess-copilot';
+    const copilotHome = path.join(sb.home, 'copilot-home');
+    const recorded = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    try {
+      registerPresence('copilot', proc.pid, { cwd: '/work' }, id);
+      registerSession('copilot', proc.pid, { sessionId, cwd: '/work', source: 'hook', transcriptPath: recorded });
+      const peer = readPeer(id);
+      assert.ok(peer);
+      const inHome = messageMarker('m-000000009-abc123');
+      assert.equal(transcriptHasMarker(peer, inHome), false);
+      fs.mkdirSync(path.dirname(recorded), { recursive: true });
+      fs.writeFileSync(recorded, JSON.stringify({ type: 'session.start', data: { initialPrompt: inHome } }) + '\n');
+      assert.equal(transcriptHasMarker(peer, inHome), false);
+      fs.appendFileSync(recorded, JSON.stringify({ type: 'user.message', data: { content: inHome } }) + '\n');
+      assert.equal(transcriptHasMarker(peer, inHome), true);
+      const peerDir = path.join(sb.home, 'peers', id);
+      assert.equal(fs.existsSync(path.join(peerDir, 'hosted.json')), false);
+
+      const pumped = messageMarker('m-00000000a-def456');
+      assert.equal(transcriptHasMarker(peer, pumped), false);
+      fs.appendFileSync(path.join(peerDir, 'delivery-transcript.jsonl'), `${pumped}\n`);
+      assert.equal(transcriptHasMarker(peer, pumped), true);
+
+      const unrecorded = fakeAgent();
+      agents.push(unrecorded);
+      registerPresence('copilot', unrecorded.pid, { cwd: '/work' }, 'copilot-sess-plain');
+      registerSession('copilot', unrecorded.pid, { sessionId: 'sess-plain', cwd: '/work', source: 'hook' });
+      const plain = readPeer('copilot-sess-plain');
+      assert.ok(plain);
+      const onlyCustom = messageMarker('m-00000000b-aabbcc');
+      const customOnly = path.join(copilotHome, 'session-state', 'sess-plain', 'events.jsonl');
+      fs.mkdirSync(path.dirname(customOnly), { recursive: true });
+      fs.writeFileSync(customOnly, `${onlyCustom}\n`);
+      assert.equal(transcriptHasMarker(plain, onlyCustom), false);
+      const fallback = path.join(home, '.copilot', 'session-state', 'sess-plain', 'events.jsonl');
+      fs.mkdirSync(path.dirname(fallback), { recursive: true });
+      fs.writeFileSync(
+        fallback,
+        JSON.stringify({ type: 'hook.start', data: { hookType: 'userPromptSubmitted', prompt: onlyCustom } }) + '\n',
+      );
+      assert.equal(transcriptHasMarker(plain, onlyCustom), true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedCopilot === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = savedCopilot;
+      if (savedTranscript === undefined) delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+      else process.env.TELEPATHY_TRANSCRIPT_DIR = savedTranscript;
+    }
   });
 });

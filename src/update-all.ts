@@ -10,8 +10,8 @@ import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
  * Updates telepathy in every agent on this machine that has it installed, each with the agent's own update
  * command:
  *   node update-all.mjs [--dry-run]
- * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Gemini CLI and
- * Qwen Code ask to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
+ * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Qwen Code
+ * asks to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
  * keep the version they started with until they restart.
  */
 
@@ -34,9 +34,8 @@ function stepsFor(install: Install): Step[] | 'cache' {
       ];
     case 'codex':
       return [{ cmd: 'codex', args: ['plugin', 'marketplace', 'upgrade', marketplace] }];
-    case 'gemini':
     case 'qwen':
-      return [{ cmd: install.agent, args: ['extensions', 'update', 'telepathy'] }];
+      return [{ cmd: 'qwen', args: ['extensions', 'update', 'telepathy'] }];
     case 'copilot':
       return [{ cmd: 'copilot', args: ['plugin', 'update', `telepathy@${marketplace}`] }];
     case 'devin':
@@ -51,7 +50,7 @@ function stepsFor(install: Install): Step[] | 'cache' {
   }
 }
 
-/** Runs one step, answering "y" to any confirmation prompt (Gemini and Qwen ask on every update). */
+/** Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). */
 export function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let output = '';

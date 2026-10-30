@@ -8,13 +8,15 @@ import { test } from 'node:test';
 import { autoUpdateEnabled, runAutoUpdate, scheduleAutoUpdate } from '../src/auto-update.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { installsInScope } from '../src/core/installs.ts';
-import { newMessageId, writeToInbox } from '../src/core/messages.ts';
-import { configuredEnv, inboxDir, stateDir } from '../src/core/paths.ts';
-import { configuredStableName, readPeer, registerSession } from '../src/core/peers.ts';
+import { configuredEnv, inboxDir, peerDir, stateDir } from '../src/core/paths.ts';
+import { configuredStableName, isPeerAlive, listPeers, readPeer, registerPresence, registerSession, registerStableName, resolvePeer } from '../src/core/peers.ts';
+import { clearProcessListCache, descendantPids, resolveCopilotPid } from '../src/core/proc.ts';
+import { claimPluginSession, readHeadlessRecord } from '../src/headless/peer.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
-import { readHeadlessRecord } from '../src/headless/peer.ts';
-import { parseRunArgs } from '../src/cli/run.ts';
-import { ROOT, makeSandbox, type Sandbox } from './helpers.ts';
+import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
+import { describePeer } from '../src/core/listing.ts';
+import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
+import { ROOT, fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
 
 const CLI = path.join(ROOT, 'src', 'cli.ts');
 const FAKE = path.join(ROOT, 'test', 'fixtures', 'fake-harness.mjs');
@@ -22,7 +24,7 @@ const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-bins-'));
 const REAL_STATE = '/home/ubuntu/.telepathy';
 const realStateBefore = fs.existsSync(REAL_STATE);
 
-for (const name of ['claude', 'codex', 'opencode', 'kilo', 'gemini', 'copilot', 'qwen', 'grok', 'devin', 'claude-agent-acp', 'claude-code-acp', 'codex-acp']) {
+for (const name of ['claude', 'codex', 'opencode', 'kilo', 'agy', 'copilot', 'qwen', 'grok', 'devin', 'claude-agent-acp', 'claude-code-acp', 'codex-acp', 'antigravity-acp']) {
   const file = path.join(BIN_DIR, name);
   fs.writeFileSync(file, `#!/usr/bin/env node\nprocess.env.FAKE_ARGV0 = ${JSON.stringify(name)};\nimport(process.env.FAKE_HARNESS_FILE);\n`);
   fs.chmodSync(file, 0o755);
@@ -46,6 +48,7 @@ interface World {
     cwd?: string;
     name?: string;
     home?: string;
+    pid?: number;
     pluginDirs?: string;
     claudeConfig?: string;
   }[];
@@ -119,10 +122,10 @@ function plantCodex(sb: Sandbox): void {
   fs.mkdirSync(path.join(sb.codexHome, 'plugins', 'cache', 'telepathy', 'telepathy', '0.9.0'), { recursive: true });
 }
 
-function plantGemini(home: string): void {
-  const dir = path.join(home, '.gemini', 'extensions', 'telepathy');
+function plantCopilot(home: string): void {
+  const dir = path.join(home, '.copilot', 'installed-plugins', 'telepathy', 'telepathy', '.github', 'plugin');
   fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'gemini-extension.json'), JSON.stringify({ version: '0.9.0' }));
+  fs.writeFileSync(path.join(dir, 'plugin.json'), JSON.stringify({ name: 'telepathy', version: '0.9.0' }));
 }
 
 function run(args: string[], env: NodeJS.ProcessEnv, cwd?: string) {
@@ -189,6 +192,11 @@ test('parseRunArgs keeps harness flags after the agent', () => {
   assert.equal(after.name, 'box');
   assert.equal(after.cwd, '/tmp');
   assert.deepEqual(after.userArgs, ['extra']);
+  assert.equal(explicitResume(['--resume', 'sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['--resume=sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['-r', 'sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['--resume']), undefined);
+  assert.equal(explicitResume(['--resume', '--acp']), undefined);
 });
 
 test('help, version, list, and an unknown agent', () => {
@@ -202,7 +210,10 @@ test('help, version, list, and an unknown agent', () => {
     assert.equal(version.stdout.trim(), '0.0.0-dev');
     const list = run(['run', '--list'], w.env);
     assert.equal(list.status, 0);
-    assert.match(list.stdout, /gemini\s+acp/);
+    assert.match(list.stdout, /antigravity\s+passthrough/);
+    assert.match(list.stdout, /headless: antigravity/);
+    assert.match(list.stdout, /agy is an alias/);
+    assert.doesNotMatch(list.stdout, /gemini/);
     assert.match(list.stdout, /headless: claude/);
     assert.match(list.stdout, /claude-agent-acp/);
     assert.doesNotMatch(list.stdout, /turn\.;/);
@@ -258,12 +269,11 @@ test('install --dry-run prints official commands and does not run them', () => {
     assert.match(result.stdout, /claude plugin marketplace add Winterrks\/telepathy/);
     assert.match(result.stdout, /plugin install telepathy@telepathy/);
     assert.match(result.stdout, /\/plugins install/);
-    assert.doesNotMatch(result.stdout, /OpenCode|Gemini|Copilot/);
+    assert.doesNotMatch(result.stdout, /OpenCode|Antigravity|Copilot/);
     assert.equal(w.readLog().length, 0);
-    const kilo = run(['install', '--dry-run', '--only=kilo'], w.env);
-    assert.equal(kilo.status, 0);
-    assert.match(kilo.stdout, /kilo\.json/);
-    assert.doesNotMatch(kilo.stdout, /claude plugin marketplace/);
+    const equals = run(['install', '--dry-run', '--only=kilo'], w.env);
+    assert.match(equals.stdout, /kilo\.json/);
+    assert.doesNotMatch(equals.stdout, /claude plugin/);
     const bad = run(['install', '--only', 'nope'], w.env);
     assert.equal(bad.status, 1);
   } finally {
@@ -392,7 +402,7 @@ test('headless opencode prompts the served session', async () => {
 test('headless ACP adds telepathy only when that harness has no install, and confirms on an early update', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
     const created = w.readLog().find((entry) => entry.method === 'session/new');
@@ -404,7 +414,7 @@ test('headless ACP adds telepathy only when that harness has no install, and con
     assert.ok(servers?.[0]?.env?.some((item) => item.name === 'TELEPATHY_HOME'));
     const self = sender();
     const started = Date.now();
-    const sent = await sendMessage(self, 'gemini:gem', 'early update');
+    const sent = await sendMessage(self, 'copilot:gem', 'early update');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     assert.ok(Date.now() - started < 3000);
   } finally {
@@ -416,13 +426,13 @@ test('headless ACP adds telepathy only when that harness has no install, and con
 test('a failed headless send drops an ACP prompt that is still queued', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const first = await sendMessage(self, 'gemini:gem', 'first turn');
+    const first = await sendMessage(self, 'copilot:gem', 'first turn');
     assert.equal(first.ok, true, first.ok ? '' : first.error);
-    const second = await sendMessage(self, 'gemini:gem', 'queued turn');
+    const second = await sendMessage(self, 'copilot:gem', 'queued turn');
     assert.equal(second.ok, false);
     if (!second.ok) assert.match(second.error, /Message failed/);
     await new Promise((resolve) => setTimeout(resolve, 2500));
@@ -430,7 +440,7 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
     assert.equal(prompts.length, 1);
     assert.match(JSON.stringify(prompts[0]?.params), /first turn/);
     assert.equal(JSON.stringify(w.readLog()).includes('queued turn'), false);
-    const record = readHeadlessRecord('gemini', 'gem');
+    const record = readHeadlessRecord('copilot', 'gem');
     assert.ok(record);
     const dir = inboxDir(record.peerId);
     assert.equal(fs.existsSync(dir) ? fs.readdirSync(dir).length : 0, 0);
@@ -442,16 +452,16 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
 
 test('an installed ACP harness gets an empty mcpServers list', async () => {
   const w = world();
-  plantGemini(w.env.HOME as string);
-  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'gemini'], w.env);
+  plantCopilot(w.env.HOME as string);
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
     const created = w.readLog().find((entry) => entry.method === 'session/new');
     const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
     assert.deepEqual(servers, []);
-    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'gemini');
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
     assert.equal(started?.name, 'gem');
-    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'gemini-h-gem', 'hosted.json')), false);
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
   } finally {
     await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();
@@ -501,7 +511,7 @@ test('TELEPATHY_HEADLESS_APPROVE allows every permission, not one', async () => 
 
 test('interactive ACP takes a stdin prompt and exits when stdin closes', async () => {
   const w = world();
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('hello interactive\n');
@@ -541,17 +551,60 @@ test('the bundled CLI starts with a shebang when the bundle has been built', () 
   assert.equal(version.stdout.trim(), '0.9.0');
 });
 
-test('a tool call confirms an ACP turn before the turn finishes', async () => {
-  const w = world({ FAKE_ACP_TOOL_FIRST: '1', FAKE_ACP_HOLD_MS: '4000' });
+test('an ACP update that echoes the prompt confirms before the turn finishes', async () => {
+  const w = world({ FAKE_ACP_TOOL_ECHO: '1', FAKE_ACP_HOLD_MS: '4000' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
     const started = Date.now();
-    const sent = await sendMessage(self, 'gemini:tool', 'run a tool');
+    const sent = await sendMessage(self, 'copilot:tool', 'run a tool');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     assert.ok(Date.now() - started < 3000);
+  } finally {
+    await stop(w.env, 'tool', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('a Copilot sessionStart initialPrompt does not confirm before user.message', async () => {
+  const w = world({
+    FAKE_ACP_TOOL_FIRST: '1',
+    FAKE_ACP_HOLD_MS: '4000',
+    FAKE_ACP_EVENTS_AFTER_MS: '400',
+    FAKE_ACP_INITIAL_PROMPT: '1',
+  });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const started = Date.now();
+    const sent = await sendMessage(self, 'copilot:tool', 'run a tool');
+    const elapsed = Date.now() - started;
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.ok(elapsed >= 300, `confirmed on sessionStart initialPrompt (${elapsed}ms)`);
+    assert.ok(elapsed < 3000, `confirmed too late (${elapsed}ms)`);
+  } finally {
+    await stop(w.env, 'tool', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('a Copilot update that does not echo the prompt waits for events.jsonl', async () => {
+  const w = world({ FAKE_ACP_TOOL_FIRST: '1', FAKE_ACP_HOLD_MS: '4000', FAKE_ACP_EVENTS_AFTER_MS: '350' });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const started = Date.now();
+    const sent = await sendMessage(self, 'copilot:tool', 'run a tool');
+    const elapsed = Date.now() - started;
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.ok(elapsed >= 300, `confirmed too early (${elapsed}ms)`);
+    assert.ok(elapsed < 3000, `confirmed too late (${elapsed}ms)`);
   } finally {
     await stop(w.env, 'tool', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();
@@ -561,11 +614,11 @@ test('a tool call confirms an ACP turn before the turn finishes', async () => {
 test('ACP messages are separated by a newline', async () => {
   const w = world({ FAKE_ACP_TWO: '1' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'lines', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'lines', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const sent = await sendMessage(self, 'gemini:lines', 'hi');
+    const sent = await sendMessage(self, 'copilot:lines', 'hi');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     await waitFor(() => (launched.out().includes('one\ntwo') ? true : undefined));
   } finally {
@@ -577,11 +630,11 @@ test('ACP messages are separated by a newline', async () => {
 test('an ACP auth failure after the prompt exits', async () => {
   const w = world({ FAKE_ACP_AUTH_LATE: '1' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'late', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'late', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const pending = sendMessage(self, 'gemini:late', 'hi');
+    const pending = sendMessage(self, 'copilot:late', 'hi');
     const result = await Promise.race([
       launched.done,
       new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`auth hang: ${launched.err()}\n${launched.out()}`)), 8000)),
@@ -598,11 +651,11 @@ test('an ACP auth failure after the prompt exits', async () => {
 test('ACP text chunks are one stream, not one line each', async () => {
   const w = world({ FAKE_ACP_SPLIT: '1' });
   confirmEnv();
-  const launched = spawnCli(['run', '--headless', '--name', 'chunks', 'gemini'], w.env);
+  const launched = spawnCli(['run', '--headless', '--name', 'chunks', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.err().includes('is up') ? true : undefined));
     const self = sender();
-    const sent = await sendMessage(self, 'gemini:chunks', 'hi');
+    const sent = await sendMessage(self, 'copilot:chunks', 'hi');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     await waitFor(() => (launched.out().includes('Hello there') ? true : undefined));
     assert.doesNotMatch(launched.out(), /Hello\n/);
@@ -614,7 +667,7 @@ test('ACP text chunks are one stream, not one line each', async () => {
 
 test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '8000' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('hold this turn\n');
@@ -638,7 +691,7 @@ test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
 
 test('a cancelled permission does not consume the next line', async () => {
   const w = world({ FAKE_ACP_PERMISSION: '1' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     await waitFor(() => (launched.out().includes('session ') ? true : undefined));
     launched.child.stdin.write('first prompt\n');
@@ -660,7 +713,7 @@ test('a cancelled permission does not consume the next line', async () => {
 
 test('an ACP agent that fails to authenticate exits instead of waiting', async () => {
   const w = world({ FAKE_ACP_AUTH_HANG: '1' });
-  const launched = spawnCli(['run', 'gemini'], w.env);
+  const launched = spawnCli(['run', 'copilot'], w.env);
   try {
     const result = await Promise.race([
       launched.done,
@@ -856,10 +909,50 @@ test('MCP configs use only the placeholder syntax that harness expands', () => {
     mcpServers: { bridge: { env_vars: string[] } };
   };
   for (const name of FORWARDED_ENV) assert.ok(codex.mcpServers.bridge.env_vars.includes(name));
-  for (const file of ['plugin/copilot.mcp.json', 'plugin/devin.mcp.json', 'plugin/grok.mcp.json', 'gemini-extension.json', 'qwen-extension.json', '.kimi-plugin/plugin.json']) {
+  for (const file of ['plugin/copilot.mcp.json', 'plugin/devin.mcp.json', 'plugin/grok.mcp.json', 'qwen-extension.json', '.kimi-plugin/plugin.json', 'antigravity/mcp_config.json']) {
     const text = fs.readFileSync(path.join(ROOT, file), 'utf8');
     assert.doesNotMatch(text, /\$\{TELEPATHY_/, `${file} still assigns a \${TELEPATHY_} placeholder`);
     assert.doesNotMatch(text, /"CODEX_HOME"/, `${file} still assigns CODEX_HOME`);
+  }
+});
+
+test('agy is the antigravity alias, and headless refuses a consumer login', () => {
+  const w = world();
+  try {
+    const listed = parseRunArgs(['agy', '--conversation', 'abc']);
+    assert.equal(listed.agent, 'agy');
+    const refused = run(['run', '--headless', '--name', 'box', 'agy'], w.env);
+    assert.equal(refused.status, 1);
+    assert.match(refused.stderr, /consumer login/);
+    assert.match(refused.stderr, /GEMINI_API_KEY/);
+    assert.equal(w.readLog().some((entry) => entry.event === 'start'), false);
+  } finally {
+    w.restore();
+  }
+});
+
+test('headless agy uses stream-json and an API key, not agy -p', async () => {
+  const w = world({ GEMINI_API_KEY: 'test-key' });
+  const settings = path.join(w.env.HOME as string, '.gemini', 'antigravity-cli', 'settings.json');
+  fs.mkdirSync(path.dirname(settings), { recursive: true });
+  fs.writeFileSync(settings, JSON.stringify({ modelProvider: 'gemini' }));
+  const launched = spawnCli(['run', '--headless', '--name', 'box', 'antigravity', '--conversation', 'conv-kept'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const started = await waitFor(() => w.readLog().find((entry) => entry.event === 'start' && entry.args?.includes('stream-json')));
+    assert.ok(started?.args?.includes('--input-format'));
+    assert.ok(started?.args?.includes('stream-json'));
+    assert.equal(started?.args?.includes('-p'), false);
+    assert.ok(started?.args?.includes('--conversation'));
+    assert.ok(started?.args?.includes('conv-kept'));
+    assert.equal(JSON.parse(fs.readFileSync(settings, 'utf8')).modelProvider, 'gemini');
+    const self = sender();
+    const sent = await sendMessage(self, 'antigravity:box', 'hello agy');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    await waitFor(() => (w.readLog().some((entry) => entry.event === 'stdin' && entry.line?.includes('telepathy-id:')) ? true : undefined));
+  } finally {
+    await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
   }
 });
 
@@ -867,20 +960,14 @@ test('an unexpanded placeholder is not a home, a name, or a transcript dir', () 
   const saved = {
     TELEPATHY_HOME: process.env.TELEPATHY_HOME,
     TELEPATHY_NAME: process.env.TELEPATHY_NAME,
-    HOME: process.env.HOME,
   };
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-placeholder-'));
-  process.env.HOME = home;
   process.env.TELEPATHY_HOME = '${TELEPATHY_HOME}';
   process.env.TELEPATHY_NAME = '${TELEPATHY_NAME}';
   try {
     assert.equal(configuredEnv('TELEPATHY_HOME'), undefined);
-    assert.equal(stateDir(), path.join(home, '.telepathy'));
     assert.equal(stateDir().includes('${'), false);
     assert.equal(configuredStableName(), undefined);
-    assert.equal(configuredEnv('TELEPATHY_TRANSCRIPT_DIR', { TELEPATHY_TRANSCRIPT_DIR: '${TELEPATHY_TRANSCRIPT_DIR}' }), undefined);
   } finally {
-    fs.rmSync(home, { recursive: true, force: true });
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
@@ -888,66 +975,429 @@ test('an unexpanded placeholder is not a home, a name, or a transcript dir', () 
   }
 });
 
-test('run does not install unless asked', () => {
+test('run does not install or edit the Gemini config', async () => {
   const w = world();
+  const launched = spawnCli(['run', 'agy'], w.env);
   try {
-    const result = run(['run', 'claude', '--', '--version'], w.env);
-    assert.equal(result.status, 0);
-    assert.equal(w.readLog().some((entry) => entry.args?.includes('plugin')), false);
-    assert.ok(w.readLog().some((entry) => entry.args?.includes('--version')));
-  } finally {
-    w.restore();
-  }
-});
-
-test('an installed plugin inbox is still pumped', async () => {
-  const w = world();
-  plantClaude(w.sb);
-  const launched = spawnCli(['run', '--headless', '--name', 'box', 'claude'], w.env);
-  try {
-    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
-    const record = readHeadlessRecord('claude', 'box');
-    assert.ok(record);
-    writeToInbox({
-      id: newMessageId(),
-      from: { id: 'claude-sender', agent: 'claude', name: 'sender', address: 'claude:sender' },
-      to: { id: record.peerId, agent: 'claude', name: 'box', address: 'claude:box' },
-      body: 'pump me',
-      sentAt: new Date().toISOString(),
-    });
-    await waitFor(() => (w.readLog().some((entry) => entry.event === 'stdin' && entry.line?.includes('pump me')) ? true : undefined));
-  } finally {
-    await stop(w.env, 'box', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
-    w.restore();
-  }
-});
-
-test('an installed ACP plugin inbox is still pumped', async () => {
-  const w = world();
-  plantGemini(w.sb.env.HOME);
-  const launched = spawnCli(['run', 'gemini'], w.env);
-  try {
-    await waitFor(() => (launched.out().includes('session ') ? true : undefined));
-    registerSession('gemini', process.pid, { sessionId: 'sess-acp', cwd: '/work/gemini', source: 'hook' });
-    const peer = readPeer('gemini-sess-acp');
-    assert.ok(peer);
-    writeToInbox({
-      id: newMessageId(),
-      from: { id: 'claude-sender', agent: 'claude', name: 'sender', address: 'claude:sender' },
-      to: { id: peer.id, agent: 'gemini', name: peer.name, address: peer.address },
-      body: 'wake the acp peer',
-      sentAt: new Date().toISOString(),
-    });
-    await waitFor(() =>
-      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('wake the acp peer')) ? true : undefined,
+    await waitFor(() => (w.readLog().some((entry) => entry.event === 'start' && entry.cmd === 'agy') ? true : undefined));
+    assert.equal(
+      w.readLog().some((entry) => entry.args?.includes('plugin')),
+      false,
     );
+    assert.equal(fs.existsSync(path.join(w.env.HOME as string, '.gemini', 'config', 'config.json')), false);
   } finally {
     if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
-    await launched.done.catch(() => undefined);
     w.restore();
   }
 });
 
 test('the real home state directory is untouched', () => {
   assert.equal(fs.existsSync(REAL_STATE), realStateBefore);
+});
+
+/** Moves the one inbox file aside, the way a hook claim (archive) or a recall (withdrawn) does. */
+function relocateInbox(peerId: string, destName: 'archive' | 'withdrawn'): string {
+  const srcDir = inboxDir(peerId);
+  const files = fs.readdirSync(srcDir).filter((name) => name.endsWith('.json'));
+  assert.equal(files.length, 1);
+  const dest = path.join(path.dirname(srcDir), destName);
+  fs.mkdirSync(dest, { recursive: true });
+  fs.renameSync(path.join(srcDir, files[0] as string), path.join(dest, files[0] as string));
+  return files[0] as string;
+}
+
+function statusOf(home: string, peerId: string): { status?: string; at?: string } {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, 'peers', peerId, 'status.json'), 'utf8')) as { status?: string; at?: string };
+  } catch {
+    return {};
+  }
+}
+
+test('a hook claim does not cancel an ACP prompt, and a real withdraw does', async () => {
+  const w = world({ FAKE_ACP_DELAY_MS: '800' });
+  confirmEnv();
+  process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
+  const peerId = 'copilot-h-gem';
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const claimed = sendMessage(self, 'copilot:gem', 'claim-not-cancel');
+    await waitFor(() =>
+      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('claim-not-cancel')) ? true : undefined,
+    );
+    relocateInbox(peerId, 'archive');
+    const sent = await claimed;
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/cancel'), false);
+    await waitFor(() => (statusOf(w.sb.home, peerId).status === 'idle' ? true : undefined));
+
+    const recalled = sendMessage(self, 'copilot:gem', 'withdraw-cancels');
+    await waitFor(() =>
+      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('withdraw-cancels')) ? true : undefined,
+    );
+    relocateInbox(peerId, 'withdrawn');
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/cancel') ? true : undefined));
+    const failed = await recalled;
+    assert.equal(failed.ok, false);
+    await waitFor(() => (statusOf(w.sb.home, peerId).status === 'idle' ? true : undefined));
+    const prompts = w.readLog().filter((entry) => entry.method === 'session/prompt');
+    assert.equal(prompts.length, 2);
+  } finally {
+    await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an installed Copilot plugin still resumes the same harness session', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  plantCopilot(w.env.HOME as string);
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (first.out().includes('session sess-keep') ? true : undefined));
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(started?.name, 'gem');
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'harness-session.json')) ? true : undefined));
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+  const second = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/load') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-keep');
+    assert.equal(w.readLog().filter((entry) => entry.method === 'session/new').length, 1);
+    const starts = w.readLog().filter((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(starts.length, 2);
+    assert.ok(starts.every((entry) => entry.name === 'gem'));
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+    second.child.stdin.end();
+    await second.done;
+  } finally {
+    if (second.child.exitCode === null) second.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('telepathy run copilot --resume loads that session when the plugin is installed', async () => {
+  const w = world();
+  plantCopilot(w.env.HOME as string);
+  const launched = spawnCli(['run', 'copilot', '--resume', 'sess-explicit'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/load') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-explicit');
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/new'), false);
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.ok(started?.args?.includes('--resume'));
+    assert.ok(started?.args?.includes('sess-explicit'));
+    launched.child.stdin.end();
+    await launched.done;
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('a named ACP session without the plugin still resumes and keeps its host peer', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (first.out().includes('session sess-keep') ? true : undefined));
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')) ? true : undefined));
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+  const second = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (second.out().includes('session sess-keep') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-keep');
+    assert.equal(w.readLog().filter((entry) => entry.method === 'session/new').length, 1);
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')) ? true : undefined));
+    second.child.stdin.end();
+    await second.done;
+  } finally {
+    if (second.child.exitCode === null) second.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('copilot userPromptSubmitted skips a prompt the ACP host already injected', () => {
+  const w = world();
+  const agent = fakeAgent();
+  const hook = path.join(ROOT, 'src', 'hook.ts');
+  const env = { ...w.env, TELEPATHY_NAME: 'gem', TELEPATHY_AGENT_PID: String(agent.pid) };
+  const runHookSrc = (action: string, event: string, input: object) =>
+    spawnSync(process.execPath, [hook, '--agent', 'copilot', action, event], {
+      input: JSON.stringify(input),
+      env,
+      encoding: 'utf8',
+    });
+  const peerId = 'copilot-sess-keep';
+  try {
+    const started = runHookSrc('session-start', 'sessionStart', { sessionId: 'sess-keep', cwd: '/work' });
+    assert.equal(started.status, 0, started.stderr);
+    assert.equal(readPeer(peerId)?.name, 'gem');
+    const from = { id: 'claude-sender', agent: 'claude' as const, name: 'sender', address: 'claude:sender' };
+    const to = { id: peerId, agent: 'copilot' as const, name: 'gem', address: 'copilot:gem' };
+    const injected: Message = {
+      id: 'm-000000001-aaaaaa',
+      from,
+      to,
+      body: 'INJECTED-BODY',
+      sentAt: new Date().toISOString(),
+    };
+    const other: Message = {
+      id: 'm-000000002-bbbbbb',
+      from,
+      to,
+      body: 'OTHER-BODY',
+      sentAt: new Date().toISOString(),
+    };
+    writeToInbox(injected);
+    writeToInbox(other);
+    const submitted = runHookSrc('inbox', 'userPromptSubmitted', {
+      sessionId: 'sess-keep',
+      cwd: '/work',
+      prompt: formatAsUserTurn(injected),
+    });
+    assert.equal(submitted.status, 0, submitted.stderr);
+    assert.match(submitted.stdout, /OTHER-BODY/);
+    assert.doesNotMatch(submitted.stdout, /INJECTED-BODY/);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${other.id}.json`)), false);
+    assert.equal(statusOf(w.sb.home, peerId).status, 'busy');
+    const ended = runHookSrc('turn-end', 'agentStop', { sessionId: 'sess-keep', cwd: '/work' });
+    assert.equal(ended.status, 0, ended.stderr);
+    assert.equal(ended.stdout.trim(), '');
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), true);
+    assert.equal(statusOf(w.sb.home, peerId).status, 'idle');
+    const later = runHookSrc('inbox', 'userPromptSubmitted', { sessionId: 'sess-keep', cwd: '/work', prompt: 'just typing' });
+    assert.equal(later.status, 0, later.stderr);
+    assert.match(later.stdout, /INJECTED-BODY/);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), false);
+  } finally {
+    agent.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('copilot session-start records events.jsonl under COPILOT_HOME, not --plugin-dir', () => {
+  const w = world();
+  const agent = fakeAgent();
+  const copilotHome = path.join(path.dirname(w.sb.home), 'copilot-home');
+  const pluginDir = path.join(path.dirname(w.sb.home), 'plugin-dir');
+  const env = { ...w.env, COPILOT_HOME: copilotHome, TELEPATHY_AGENT_PID: String(agent.pid) };
+  try {
+    const result = spawnSync(process.execPath, [path.join(ROOT, 'src', 'hook.ts'), '--agent', 'copilot', 'session-start', 'sessionStart', '--plugin-dir', pluginDir], {
+      input: JSON.stringify({ sessionId: 'sess-keep', cwd: '/work' }),
+      env,
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const session = JSON.parse(fs.readFileSync(path.join(w.sb.home, 'peers', 'copilot-sess-keep', 'session.json'), 'utf8')) as { transcriptPath?: string };
+    const expected = path.join(copilotHome, 'session-state', 'sess-keep', 'events.jsonl');
+    assert.equal(session.transcriptPath, expected);
+    assert.equal(session.transcriptPath?.includes(pluginDir), false);
+  } finally {
+    agent.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('a Copilot session is reachable before the first prompt, including after resume', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  plantCopilot(w.env.HOME as string);
+  confirmEnv();
+  process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
+  const peerId = 'copilot-sess-keep';
+  const self = sender();
+
+  const waitReady = async () => {
+    await waitFor(() => {
+      const peer = readPeer(peerId);
+      return peer && isPeerAlive(peer) && peer.stableName === 'gem' ? peer : undefined;
+    });
+  };
+  const hidePidPlaceholder = () => {
+    const starts = w.readLog().filter((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    const pid = starts[starts.length - 1]?.pid;
+    assert.equal(typeof pid, 'number');
+    registerPresence('copilot', pid as number, { cwd: '/work' });
+    registerStableName('copilot', `copilot-${pid}`, 'gem');
+    const listed = listPeers().filter((peer) => peer.agent === 'copilot');
+    assert.deepEqual(listed.map((peer) => peer.id), [peerId]);
+    const resolved = resolvePeer('copilot:gem', listPeers());
+    assert.equal('peer' in resolved && resolved.peer.id, peerId);
+    const described = describePeer(listed[0] as NonNullable<(typeof listed)[number]>);
+    assert.match(described, /the host delivers messages as they arrive/);
+    assert.doesNotMatch(described, /next turn|no listener/);
+  };
+
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitReady();
+    hidePidPlaceholder();
+    const sent = await sendMessage(self, 'copilot:gem', 'before any prompt');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('before any prompt')), true);
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+
+  const resumed = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitReady();
+    hidePidPlaceholder();
+    const sent = await sendMessage(self, 'copilot:gem', 'after restart');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    resumed.child.stdin.end();
+    await resumed.done;
+  } finally {
+    if (resumed.child.exitCode === null) resumed.child.kill('SIGKILL');
+  }
+
+  const explicit = spawnCli(['run', 'copilot', '--resume', 'sess-keep'], w.env);
+  try {
+    await waitReady();
+    const resolved = resolvePeer('copilot:gem', listPeers());
+    assert.equal('peer' in resolved && resolved.peer.id, peerId);
+    assert.equal(isPeerAlive('peer' in resolved ? resolved.peer : undefined), true);
+    const sent = await sendMessage(self, 'copilot:gem', 'after explicit resume');
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    explicit.child.stdin.end();
+    await explicit.done;
+  } finally {
+    if (explicit.child.exitCode === null) explicit.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('an ambiguous live Copilot name is not reported as an offline kept session', async () => {
+  const w = world();
+  const liveA = fakeAgent();
+  const liveB = fakeAgent();
+  const dead = fakeAgent();
+  try {
+    await killAndWait(dead);
+    registerSession('copilot', dead.pid, { sessionId: 'sess-old', cwd: '/work', source: 'hook' });
+    registerStableName('copilot', 'copilot-sess-old', 'tpn20');
+    registerSession('copilot', liveA.pid, { sessionId: 'sess-live-a', cwd: '/work', source: 'plugin' });
+    registerSession('copilot', liveB.pid, { sessionId: 'sess-live-b', cwd: '/work', source: 'plugin' });
+    registerStableName('copilot', 'copilot-sess-live-a', 'tpn20');
+    registerStableName('copilot', 'copilot-sess-live-b', 'tpn20');
+    const self = sender();
+    const sent = await sendMessage(self, 'copilot:tpn20', 'which one');
+    assert.equal(sent.ok, false);
+    if (sent.ok) return;
+    assert.match(sent.error, /matches 2 sessions/);
+    assert.match(sent.error, /copilot-sess-live-a/);
+    assert.match(sent.error, /copilot-sess-live-b/);
+    assert.doesNotMatch(sent.error, /offline|sess-old/);
+  } finally {
+    await killAndWait(liveA);
+    await killAndWait(liveB);
+    w.restore();
+  }
+});
+
+test('claimPluginSession follows npm Copilot to the real child and hides the launcher', async () => {
+  const w = world();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-copilot-tree-'));
+  const shim = path.join(base, 'node_modules', '.bin', 'copilot');
+  const real = path.join(base, 'node_modules', '@github', 'copilot', 'index.js');
+  const server = path.join(base, 'telepathy', 'server.mjs');
+  fs.mkdirSync(path.dirname(shim), { recursive: true });
+  fs.mkdirSync(path.dirname(real), { recursive: true });
+  fs.mkdirSync(path.dirname(server), { recursive: true });
+  fs.writeFileSync(
+    shim,
+    `const { spawn } = require('node:child_process');\nconst child = spawn(process.execPath, [process.argv[2], process.argv[3]], { stdio: 'ignore' });\nprocess.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0); });\nsetInterval(() => {}, 1 << 30);\n`,
+  );
+  fs.writeFileSync(
+    real,
+    `const { spawn } = require('node:child_process');\nconst child = spawn(process.execPath, [process.argv[2]], { stdio: 'ignore' });\nprocess.on('SIGTERM', () => { child.kill('SIGTERM'); process.exit(0); });\nsetInterval(() => {}, 1 << 30);\n`,
+  );
+  fs.writeFileSync(server, 'setInterval(() => {}, 1 << 30);\n');
+  const launcher = spawn(process.execPath, [shim, real, server], { stdio: 'ignore' });
+  const killTree = () => {
+    clearProcessListCache();
+    if (!launcher.pid) return;
+    for (const pid of descendantPids(launcher.pid)) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+  };
+  try {
+    const realPid = await waitFor(() => {
+      if (!launcher.pid) return undefined;
+      clearProcessListCache();
+      const resolved = resolveCopilotPid(launcher.pid);
+      return resolved !== launcher.pid && descendantPids(launcher.pid).length >= 3 ? resolved : undefined;
+    }, 8000);
+    registerPresence('copilot', realPid, {});
+    registerStableName('copilot', `copilot-${realPid}`, 'tpn20');
+    const id = claimPluginSession('copilot', launcher.pid as number, 'sess-npm', '/work', 'tpn20');
+    assert.equal(id, 'copilot-sess-npm');
+    const owners = JSON.parse(fs.readFileSync(path.join(peerDir(id), 'owners.json'), 'utf8')) as { pid: number }[];
+    assert.deepEqual(owners.map((owner) => owner.pid), [realPid]);
+    const launcherLink = JSON.parse(fs.readFileSync(path.join(peerDir(`copilot-${launcher.pid}`), 'link.json'), 'utf8')) as { id?: string };
+    const realLink = JSON.parse(fs.readFileSync(path.join(peerDir(`copilot-${realPid}`), 'link.json'), 'utf8')) as { id?: string };
+    assert.equal(launcherLink.id, id);
+    assert.equal(realLink.id, id);
+    const listed = listPeers().filter((peer) => peer.agent === 'copilot');
+    assert.deepEqual(listed.map((peer) => peer.id), [id]);
+    assert.equal(listed[0]?.duplicate, false);
+    assert.equal(listed[0]?.stableName, 'tpn20');
+    registerSession('copilot', realPid, { sessionId: 'sess-npm', cwd: '/work', source: 'hook' });
+    const afterHook = JSON.parse(fs.readFileSync(path.join(peerDir(id), 'owners.json'), 'utf8')) as { pid: number }[];
+    assert.deepEqual(afterHook.map((owner) => owner.pid), [realPid]);
+    assert.equal(readPeer(id)?.duplicate, false);
+  } finally {
+    killTree();
+    fs.rmSync(base, { recursive: true, force: true });
+    w.restore();
+  }
+});
+
+test('a named Copilot run says when an empty session could not be resumed', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-empty' });
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (first.out().includes('session sess-empty') ? true : undefined));
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'harness-session.json')) ? true : undefined));
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+  const second = spawnCli(['run', '--name', 'gem', 'copilot'], {
+    ...w.env,
+    FAKE_ACP_LOAD_FAIL: '1',
+    FAKE_ACP_SESSION_ID: 'sess-new',
+  });
+  try {
+    await waitFor(() => (second.err().includes('does not save a session') ? true : undefined), 8000);
+    assert.match(second.err(), /sess-empty/);
+    assert.match(second.err(), /sess-new/);
+    assert.match(second.out(), /session sess-new/);
+    const methods = second.out() ? w.readLog().map((entry) => entry.method) : [];
+    assert.ok(methods.includes('session/load'), JSON.stringify(w.readLog()));
+    assert.ok(methods.includes('session/new'));
+  } finally {
+    if (second.child.exitCode === null) second.child.kill('SIGKILL');
+    w.restore();
+  }
 });

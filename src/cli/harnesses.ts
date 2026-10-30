@@ -1,6 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import type { Agent } from '../core/agents.ts';
-import { agentLabel } from '../core/agents.ts';
+import { agentLabel, isAgent, type Agent } from '../core/agents.ts';
 
 /** GitHub repo the harness install commands fetch. OpenCode's package name stays `telepathy`. */
 export const REPO = 'https://github.com/Winterrks/telepathy';
@@ -18,7 +17,7 @@ export type InstallPlan =
   | { kind: 'none'; instructions: string };
 
 export type RunMode = 'passthrough' | 'acp';
-export type HeadlessPlane = 'claude' | 'codex' | 'opencode' | 'acp';
+export type HeadlessPlane = 'claude' | 'codex' | 'opencode' | 'acp' | 'antigravity';
 
 export interface AcpLaunch {
   /** Binary on PATH. Adapters (`claude-agent-acp`, `codex-acp`) may be absent. */
@@ -94,18 +93,6 @@ const HARNESSES: Harness[] = [
     install: { kind: 'kilo-config' },
   },
   {
-    agent: 'gemini',
-    bins: ['gemini'],
-    passthroughBin: 'gemini',
-    defaultMode: 'acp',
-    headless: 'acp',
-    acp: { bin: 'gemini', args: ['--acp'], adapter: false },
-    install: {
-      kind: 'commands',
-      steps: [{ cmd: 'gemini', args: ['extensions', 'install', REPO, '--auto-update'] }],
-    },
-  },
-  {
     agent: 'copilot',
     bins: ['copilot'],
     passthroughBin: 'copilot',
@@ -157,10 +144,14 @@ const HARNESSES: Harness[] = [
     bins: ['agy', 'antigravity'],
     passthroughBin: 'agy',
     defaultMode: 'passthrough',
-    deliveryNote: 'Antigravity cannot wake an idle session; a message arrives on the next turn.',
+    headless: 'antigravity',
+    deliveryNote:
+      'Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.',
+    acp: { bin: 'antigravity-acp', fallbacks: ['agy_acp_server.par'], args: [], adapter: true },
     install: {
       kind: 'commands',
       steps: [{ cmd: 'agy', args: ['plugin', 'install', `${REPO}/tree/main/antigravity`] }],
+      note: 'Enables the App sidecar in ~/.gemini/config/config.json. A leftover ~/.gemini/extensions/telepathy is removed so `agy plugin import gemini` does not install telepathy twice.',
     },
   },
   {
@@ -215,6 +206,13 @@ const HARNESSES: Harness[] = [
 export const harnesses = (): Harness[] => HARNESSES;
 export const harnessByAgent = (agent: Agent): Harness | undefined => HARNESSES.find((h) => h.agent === agent);
 
+/** `telepathy run agy` is Antigravity. Other names are agent ids. */
+export function canonicalRunAgent(name: string | undefined): Agent | undefined {
+  if (!name) return undefined;
+  if (name === 'agy') return 'antigravity';
+  return isAgent(name) ? name : undefined;
+}
+
 export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {
   try {
     execFileSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { env, stdio: 'ignore' });
@@ -262,8 +260,8 @@ export function listRuns(): string {
     ...HARNESSES.map((harness) => describeRun(harness)),
     '',
     'passthrough execs the vendor CLI with your arguments and a full TTY.',
-    'acp is the default only where the native TUI cannot wake an idle session (Gemini CLI, Copilot CLI).',
-    '--acp forces an ACP host where one exists. --headless keeps a peer up until `telepathy stop`.',
+    'acp is the default only where the native TUI cannot wake an idle session (Copilot CLI).',
+    'agy is an alias for antigravity. --acp forces an ACP host where one exists. --headless keeps a peer up until `telepathy stop`.',
     `Labels: ${HARNESSES.map((harness) => agentLabel(harness.agent)).join(', ')}.`,
   ];
   return lines.join('\n');

@@ -2,14 +2,16 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { scheduleAutoUpdate } from '../auto-update.ts';
-import { startAcpSession } from '../acp/host.ts';
-import { agentLabel, isAgent } from '../core/agents.ts';
+import { noteMissedCopilotResume, startAcpSession } from '../acp/host.ts';
+import { ensureAgyApiKey } from './agy-auth.ts';
+import { agentLabel } from '../core/agents.ts';
 import { findInstalls, isNewer } from '../core/installs.ts';
 import { cachedGithubVersion } from '../version-check.ts';
 import { runHeadless } from '../headless/run.ts';
-import { clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump } from '../headless/peer.ts';
+import { writeStatus } from '../core/status.ts';
+import { claimPluginSession, clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump, type HostedPeer } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
-import { acpCommand, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
+import { acpCommand, canonicalRunAgent, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
 
 export interface RunArgs {
@@ -97,15 +99,23 @@ export async function runCommand(argv: string[]): Promise<number> {
     console.log(listRuns());
     return 0;
   }
-  if (!parsed.agent || !isAgent(parsed.agent)) {
+  const agent = canonicalRunAgent(parsed.agent);
+  if (!agent) {
     console.error(
-      `Unknown agent ${JSON.stringify(parsed.agent ?? '')}. Known: ${harnesses().map((harness) => harness.agent).join(', ')}.\n` +
+      `Unknown agent ${JSON.stringify(parsed.agent ?? '')}. Known: ${harnesses().map((harness) => harness.agent).join(', ')} (agy is antigravity).\n` +
         'Run `telepathy run --list` to see how each one starts.',
     );
     return 1;
   }
-  const harness = harnessByAgent(parsed.agent);
+  const harness = harnessByAgent(agent);
   if (!harness) return 1;
+  if (harness.agent === 'antigravity' && (parsed.headless || parsed.acp)) {
+    const auth = ensureAgyApiKey();
+    if (!auth.ok) {
+      console.error(auth.warning);
+      return 1;
+    }
+  }
   if (!(await prepare(harness.agent, parsed.install))) return 1;
   const cwd = parsed.cwd ? path.resolve(parsed.cwd) : process.cwd();
   const name = parsed.name;
@@ -180,11 +190,33 @@ function missingAcp(acp: AcpLaunch): number {
   return missing(acpCommand(acp), 'Install it, or run without --acp where a native plane exists.');
 }
 
+/** `telepathy run copilot --resume <id>` (and `-r`). The id is the harness session, not the peer name. */
+export function explicitResume(userArgs: string[]): string | undefined {
+  for (let i = 0; i < userArgs.length; i++) {
+    const arg = userArgs[i];
+    if (arg === '--resume' || arg === '-r') {
+      const value = userArgs[i + 1];
+      if (value && !value.startsWith('-')) return value;
+    } else if (arg.startsWith('--resume=')) {
+      const value = arg.slice('--resume='.length);
+      if (value) return value;
+    }
+  }
+  return undefined;
+}
+
 async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string[], cwd: string, name?: string): Promise<number> {
   const acp = harness.acp;
   if (!acp) return 1;
   const pluginPeer = pluginInstalled(harness.agent);
-  const resume = !pluginPeer && name ? recallHarnessSession(namedPeerId(harness.agent, name).peerId) : undefined;
+  const named = name ? namedPeerId(harness.agent, name) : undefined;
+  // The plugin's peer is keyed by the harness session. Skipping the load when the plugin is installed
+  // starts a new session and a new peer id, even though `--name` is the same.
+  const resume = explicitResume(userArgs) ?? (named ? recallHarnessSession(named.peerId) : undefined);
+  let hosted: HostedPeer | undefined;
+  let sessionId = '';
+  // Set once session/new or session/load returns, before the first prompt. The callback runs later.
+  let pluginId: string | undefined;
   const session = await startAcpSession({
     agent: harness.agent,
     bin,
@@ -195,14 +227,25 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
     env: launchEnv(harness.agent, name),
     emit: (line) => process.stdout.write(line.endsWith('\n') ? line : line + '\n'),
     stream: (text) => process.stdout.write(text),
+    onTurnSettled: () => {
+      const id = hosted?.peerId ?? pluginId ?? pluginInboxPeerId(harness.agent, name, sessionId);
+      if (id) writeStatus(id, 'idle');
+    },
   });
+  sessionId = session.sessionId;
+  noteMissedCopilotResume(harness.agent, resume, session);
+  if (pluginPeer && session.child.pid) {
+    pluginId = claimPluginSession(harness.agent, session.child.pid, session.sessionId, cwd, name);
+    writeStatus(pluginId, 'idle');
+  }
   // The installed plugin is the named peer. A second host registration shows up beside it.
   // The host still pumps that peer's inbox: an idle ACP session has no other delivery path.
-  const hosted = pluginPeer ? undefined : registerHostedPeer(harness.agent, cwd, name);
-  if (hosted) rememberHarnessSession(hosted.peerId, session.sessionId);
+  hosted = pluginPeer ? undefined : registerHostedPeer(harness.agent, cwd, name);
+  const memoryPeer = hosted?.peerId ?? named?.peerId;
+  if (memoryPeer) rememberHarnessSession(memoryPeer, session.sessionId);
   const stopPump = startInboxPump(
-    hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
-    (text, stillPending) => session.prompt(text, stillPending),
+    hosted?.peerId ?? pluginId ?? (() => pluginInboxPeerId(harness.agent, name, session.sessionId)),
+    (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
   );
   const shutdown = () => session.close();
   process.on('SIGTERM', shutdown);

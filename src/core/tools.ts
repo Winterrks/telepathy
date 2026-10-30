@@ -31,7 +31,7 @@ export const TOOLS = {
   list_peers: {
     title: 'List reachable agent sessions',
     description:
-      'List the coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI…) that you can message with send_message, with their address, [ref] and working directory.',
+      'List the coding-agent sessions on this machine (Claude Code, Codex, Antigravity…) that you can message with send_message, with their address, [ref] and working directory.',
     args: {},
   },
   send_message: {

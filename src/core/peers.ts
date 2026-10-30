@@ -32,6 +32,10 @@ export interface SessionRecord {
   codexHome?: string;
   /** When this session was first registered: a Codex thread has no process of its own to tell. */
   startedAt?: string;
+  /** Antigravity surface, from the transcript path (`app`, `cli`, or `ide`). */
+  surface?: 'app' | 'cli' | 'ide';
+  /** `transcript.jsonl` for this Antigravity conversation, when a hook reported it. */
+  transcriptPath?: string;
   updatedAt: string;
   /**
    * When this process was first seen to be gone. Inbox files newer than this were written after the session
@@ -154,6 +158,29 @@ export function claimSessionOwner(id: string, pid: number): boolean {
   return owners[0]?.pid === pid;
 }
 
+/**
+ * Leaves `pid` as the only owner. `telepathy run copilot` used to claim npm's launcher and the real
+ * CLI both, and list_peers then called that one session a duplicate.
+ */
+export function focusSessionOwner(id: string, pid: number): void {
+  const record: OwnerRecord = { pid, procStart: procStart(pid), at: new Date().toISOString() };
+  writeJsonAtomic(ownersFile(id), [record]);
+  const session = readSession(id);
+  if (!session || session.pid === pid) return;
+  writeJsonAtomic(path.join(peerDir(id), 'session.json'), { ...session, pid, procStart: record.procStart });
+}
+
+/**
+ * Points a pid-keyed directory at the session peer and moves its inbox, without claiming ownership.
+ * This is the same `link.json` the hook writes once the session id is known.
+ */
+export function linkAgentProcess(agent: Agent, pid: number, sessionPeer: string): void {
+  const from = peerId(agent, pid);
+  if (from === sessionPeer) return;
+  writeJsonAtomic(linkFile(agent, pid), { id: sessionPeer });
+  moveInbox(from, sessionPeer);
+}
+
 /** True when this process should deliver inbound messages. A second process on the same session does not. */
 export function isDeliveryOwner(id: string, pid: number): boolean {
   const owners = sessionOwners(id);
@@ -204,12 +231,25 @@ const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 
 export const defaultCodexHome = () => configuredEnv('CODEX_HOME') || path.join(os.homedir(), '.codex');
+
+/** Copilot's event log. `COPILOT_HOME` relocates it; the default is `~/.copilot`. */
+export function copilotEventsFile(sessionId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = configuredEnv('COPILOT_HOME', env) || path.join(os.homedir(), '.copilot');
+  return path.join(home, 'session-state', sessionId, 'events.jsonl');
+}
 export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 export function registerSession(
   agent: Agent,
   pid: number,
-  fields: { sessionId?: string; cwd?: string; source: SessionRecord['source']; codexHome?: string },
+  fields: {
+    sessionId?: string;
+    cwd?: string;
+    source: SessionRecord['source'];
+    codexHome?: string;
+    surface?: SessionRecord['surface'];
+    transcriptPath?: string;
+  },
   id = sessionPeerId(agent, pid, fields.sessionId),
 ): SessionRecord {
   const file = path.join(peerDir(id), 'session.json');
@@ -224,6 +264,8 @@ export function registerSession(
     ...fields,
     startedAt: (previous?.sessionId === fields.sessionId && previous?.startedAt) || now,
     updatedAt: now,
+    surface: fields.surface ?? previous?.surface,
+    transcriptPath: fields.transcriptPath ?? previous?.transcriptPath,
   };
   // A resume is a live process again. Mail written after the previous process exited is not in flight.
   if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);

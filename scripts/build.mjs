@@ -20,6 +20,7 @@ await build({
     opencode: path.join(root, 'src', 'opencode.ts'),
     'update-all': path.join(root, 'src', 'update-all.ts'),
     delivery: path.join(root, 'src', 'delivery.ts'),
+    sidecar: path.join(root, 'src', 'sidecar.ts'),
   },
   outdir: path.join(pluginDir, 'dist'),
   outExtension: { '.js': '.mjs' },
@@ -45,7 +46,6 @@ const MANIFESTS = [
   'plugin/.github/plugin/plugin.json',
   'plugin/.cursor-plugin/plugin.json',
   'plugin/.devin-plugin/plugin.json',
-  'gemini-extension.json',
   'qwen-extension.json',
   '.kimi-plugin/plugin.json',
 ];
@@ -70,7 +70,7 @@ write('plugin/AGENTS.md', guideText('devin') + '\n'); // Devin CLI loads a plugi
 write('antigravity/rules/AGENTS.md', guideText('antigravity') + '\n');
 
 // Folders that agents install on their own get their own copies: Antigravity installs antigravity/ alone,
-// and Gemini CLI only finds skills in skills/ at the extension root.
+// and Qwen Code only finds skills in skills/ at the extension root.
 const copyDir = (from, to) => {
   fs.rmSync(path.join(root, to), { recursive: true, force: true });
   fs.cpSync(path.join(root, from), path.join(root, to), { recursive: true });

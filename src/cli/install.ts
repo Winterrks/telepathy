@@ -3,13 +3,24 @@ import os from 'node:os';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import { agentLabel, isAgent } from '../core/agents.ts';
-import { findInstalls } from '../core/installs.ts';
+import {
+  enableAntigravitySidecar,
+  geminiConfigFile,
+  leftoverGeminiExtension,
+  LEFTOVER_GEMINI_NOTE,
+  removeLeftoverGeminiExtension,
+} from '../core/antigravity.ts';
+import { findInstalls, outsideIsolatedHome } from '../core/installs.ts';
 import { runHarnessCommand } from '../update-all.ts';
 import { detectedHarnesses, harnessByAgent, harnesses, OPENCODE_SPEC, type CommandStep, type Harness } from './harnesses.ts';
 
 export function parseOnly(value: string | undefined): Agent[] | undefined {
   if (!value) return undefined;
-  const ids = value.split(',').map((part) => part.trim()).filter(Boolean);
+  const ids = value
+    .split(',')
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((id) => (id === 'agy' ? 'antigravity' : id));
   const bad = ids.filter((id) => !isAgent(id));
   if (bad.length) throw new Error(`Unknown agent in --only: ${bad.join(', ')}. Known: ${harnesses().map((h) => h.agent).join(', ')}`);
   return ids as Agent[];
@@ -70,14 +81,18 @@ function describe(harness: Harness): string {
  * Installs telepathy into every detected harness, each with that harness's own command.
  * `--only` limits the set. Already-installed copies are left alone.
  */
-export async function installAll(options: { dryRun?: boolean; only?: Agent[]; log?: (line: string) => void } = {}): Promise<number> {
+export async function installAll(
+  options: { dryRun?: boolean; only?: Agent[]; removeLegacy?: boolean; log?: (line: string) => void } = {},
+): Promise<number> {
   const log = options.log ?? ((line: string) => console.log(line));
-  const chosen = (options.only ? options.only.map((id) => harnessByAgent(id)).filter((h): h is Harness => !!h) : detectedHarnesses()).filter(
-    (harness) => !options.only || options.only.includes(harness.agent),
-  );
-  const present = options.only ? chosen : detectedHarnesses().filter((harness) => !options.only || options.only.includes(harness.agent));
+  const requested = options.only?.length ? options.only.flatMap((id) => {
+    const harness = harnessByAgent(id);
+    return harness ? [harness] : [];
+  }) : undefined;
+  const present = requested ?? detectedHarnesses();
   if (!present.length) {
     log(options.only ? `No harness in --only was recognized.` : 'No supported agent CLI is on PATH.');
+    removeLegacyGemini(options, log);
     return options.only ? 1 : 0;
   }
   let failed = false;
@@ -89,6 +104,7 @@ export async function installAll(options: { dryRun?: boolean; only?: Agent[]; lo
       continue;
     }
     if (alreadyInstalled(harness.agent) && harness.install.kind !== 'manual') {
+      if (harness.agent === 'antigravity' && !options.dryRun) enableSidecarIfInScope(log);
       log(`- ${label}: already installed${options.dryRun ? `; would run ${how}` : ''}`);
       continue;
     }
@@ -111,14 +127,47 @@ export async function installAll(options: { dryRun?: boolean; only?: Agent[]; lo
       continue;
     }
     const result = await runSteps(harness.install.steps);
-    if (result.ok) log(`- ${label}: installed. ${harness.install.note ?? ''}`.trim());
+    if (result.ok) {
+      if (harness.agent === 'antigravity') enableSidecarIfInScope(log);
+      log(`- ${label}: installed. ${harness.install.note ?? ''}`.trim());
+    }
     else {
       const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'failed';
       log(`- ${label}: failed: ${tail}`);
       failed = true;
     }
   }
+  removeLegacyGemini(options, log);
   return failed ? 1 : 0;
+}
+
+/** Enables the App sidecar only when its config file is inside the active home. */
+function enableSidecarIfInScope(log: (line: string) => void): void {
+  const file = geminiConfigFile();
+  if (outsideIsolatedHome(path.dirname(file))) {
+    log(`- Antigravity sidecar: left unchanged. ${file} is outside this TELEPATHY_HOME.`);
+    return;
+  }
+  enableAntigravitySidecar();
+}
+
+/** Removes the old Gemini extension only when `install --remove-legacy` asked for it. */
+function removeLegacyGemini(
+  options: { dryRun?: boolean; removeLegacy?: boolean },
+  log: (line: string) => void,
+): void {
+  if (!options.removeLegacy) return;
+  const dir = leftoverGeminiExtension();
+  if (!dir) {
+    log('No leftover Gemini CLI extension.');
+    return;
+  }
+  if (options.dryRun) {
+    log(`Would remove leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
+    return;
+  }
+  removeLeftoverGeminiExtension();
+  log(`Removed leftover Gemini CLI extension at ${dir}. ${LEFTOVER_GEMINI_NOTE}`);
 }
 
 /** Installs one harness before `telepathy run` execs it. A manual install is a warning, not a failure. */
@@ -139,6 +188,7 @@ export async function ensureInstalled(agent: Agent): Promise<{ ok: boolean; note
     const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'install failed';
     return { ok: false, note: tail };
   }
+  if (agent === 'antigravity') enableSidecarIfInScope((line) => process.stderr.write(`telepathy: ${line}\n`));
   if (harness.install.note) process.stderr.write(`telepathy: ${harness.install.note}\n`);
   if (!alreadyInstalled(agent) && harness.install.kind === 'commands') {
     process.stderr.write('telepathy: the install command finished, but no copy is visible on disk yet. Starting anyway.\n');

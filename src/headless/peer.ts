@@ -1,11 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import type { Agent } from '../core/agents.ts';
+import { isAgentProcess, type Agent } from '../core/agents.ts';
 import { archiveSettled, formatAsUserTurn, pendingMessages } from '../core/messages.ts';
-import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
-import { isAlive, procStart } from '../core/proc.ts';
+import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, withdrawnDir, writeJsonAtomic } from '../core/paths.ts';
+import { clearProcessListCache, commandLines, descendantPids, isAlive, procStart, processTable, resolveCopilotPid } from '../core/proc.ts';
 import {
+  copilotEventsFile,
+  focusSessionOwner,
+  linkAgentProcess,
   notePeerExit,
+  peerId,
   readPeer,
   readSession,
   registerListener,
@@ -144,6 +148,78 @@ export function registerHostedPeer(agent: Agent, cwd: string, name?: string): Ho
   return { peerId, slug: slug || sessionId, address: peer?.address ?? `${agent}:${slug || sessionId}` };
 }
 
+/**
+ * The harness session is known as soon as `session/new` or `session/load` returns, before Copilot's
+ * hook runs. Register that peer now. Otherwise the plugin's server lists `copilot-<pid>` and a send
+ * sits there until the first prompt, while the pump watches `copilot-<session id>`.
+ * The listener is this process: it pumps the inbox into the live session.
+ *
+ * npm Copilot's ACP child is `node …/.bin/copilot`. The real CLI is that process's child, and the
+ * plugin server registers `copilot-<real pid>` with the same name. Claim the real pid, and point
+ * every other `copilot-<pid>` in the tree at the session, without making the launcher an owner.
+ */
+export function claimPluginSession(agent: Agent, childPid: number, sessionId: string, cwd: string, name?: string): string {
+  if (agent === 'copilot') return claimCopilotSession(childPid, sessionId, cwd, name);
+  const id = sessionPeerId(agent, childPid, sessionId);
+  registerSession(agent, childPid, { sessionId, cwd, source: 'plugin' });
+  if (name) registerStableName(agent, id, name);
+  registerListener(agent, childPid, id);
+  return id;
+}
+
+function claimCopilotSession(spawnedPid: number, sessionId: string, cwd: string, name?: string): string {
+  const id = bindCopilotSession(spawnedPid, sessionId, cwd, name);
+  const home = process.env.TELEPATHY_HOME;
+  // The plugin server can start just after session/new. A second look links that pid too.
+  for (const ms of [200, 800]) {
+    const timer = setTimeout(() => {
+      try {
+        if (process.env.TELEPATHY_HOME !== home) return;
+        if (!readSession(id)) return;
+        bindCopilotSession(spawnedPid, sessionId, cwd, name);
+      } catch {
+        // the hook still links the real pid on the first prompt
+      }
+    }, ms);
+    timer.unref();
+  }
+  return id;
+}
+
+function bindCopilotSession(spawnedPid: number, sessionId: string, cwd: string, name?: string): string {
+  clearProcessListCache();
+  const agentPid = resolveCopilotPid(spawnedPid);
+  const id = sessionPeerId('copilot', agentPid, sessionId);
+  const previous = readSession(id);
+  registerSession('copilot', agentPid, {
+    sessionId,
+    cwd: cwd || previous?.cwd,
+    source: previous?.source === 'hook' ? 'hook' : 'plugin',
+    transcriptPath: previous?.transcriptPath || copilotEventsFile(sessionId),
+  });
+  // registerSession appends. Drop the launcher if an earlier pass claimed it.
+  focusSessionOwner(id, agentPid);
+  if (name) registerStableName('copilot', id, name);
+  registerListener('copilot', agentPid, id);
+  linkCopilotPlaceholders(spawnedPid, agentPid, id);
+  return id;
+}
+
+/** `link.json` on the launcher and any other `copilot-<pid>` under it, so they are not a second peer. */
+function linkCopilotPlaceholders(spawnedPid: number, agentPid: number, sessionPeer: string): void {
+  const lines = commandLines(0);
+  const table = processTable(0);
+  for (const pid of descendantPids(spawnedPid)) {
+    if (pid === agentPid) continue;
+    const info = table.get(pid);
+    const line = lines.get(pid) ?? '';
+    const looksCopilot = !!info && isAgentProcess('copilot', info.comm, () => line);
+    const listed = fs.existsSync(peerDir(peerId('copilot', pid)));
+    if (pid !== spawnedPid && !looksCopilot && !listed) continue;
+    linkAgentProcess('copilot', pid, sessionPeer);
+  }
+}
+
 /** Peer id `--name` will use, before this process registers. Used to resume the harness session. */
 export function namedPeerId(agent: Agent, name: string): { peerId: string; slug: string } {
   const slug = slugify(name) || `${agent}-headless`;
@@ -155,12 +231,6 @@ function appendTranscript(peerId: string, text: string): void {
   fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), text }) + '\n');
 }
 
-/**
- * Injects inbox messages one at a time. `inject` receives a check it must run immediately before the
- * irreversible submit (stdin write, turn, HTTP prompt, or `session/prompt`). The marker is written only
- * after `inject` accepts, and only if the inbox file is still there: `fail()` withdraws that file, and a
- * withdrawn send must not become a success or stay queued.
- */
 /**
  * The plugin's peer, when the host did not register one of its own. A stable name matches `identity.json`.
  * A harness session id matches `session.json`. Either is the inbox the host pumps.
@@ -185,12 +255,20 @@ export function pluginInboxPeerId(agent: Agent, name?: string, sessionId?: strin
     }
     if (sessionId && session.sessionId === sessionId) bySession = id;
   }
-  return byName ?? bySession;
+  // The harness session is the inbox this host is driving. A second peer that only shares the name
+  // (the pid placeholder, or a previous run) must not take the pump.
+  return bySession ?? byName;
 }
 
+/**
+ * Injects inbox messages one at a time. `inject` receives checks it must run immediately before the
+ * irreversible submit (stdin write, turn, HTTP prompt, or `session/prompt`). The delivery marker is
+ * written after `inject` accepts. A hook that already archived the inbox file is not a recall.
+ * `fail()` moves the file to `withdrawn/`, and that copy must not become a success or stay queued.
+ */
 export function startInboxPump(
   peerId: string | (() => string | undefined),
-  inject: (text: string, stillPending: () => boolean) => Promise<boolean>,
+  inject: (text: string, stillPending: () => boolean, withdrawn?: () => boolean) => Promise<boolean>,
 ): () => void {
   const resolve = typeof peerId === 'function' ? peerId : () => peerId;
   const done = new Set<string>();
@@ -206,19 +284,26 @@ export function startInboxPump(
       for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
         const file = path.join(inboxDir(id), `${msg.id}.json`);
-        if (!fs.existsSync(file)) {
+        const withdrawnFile = path.join(withdrawnDir(id), `${msg.id}.json`);
+        const pending = () => fs.existsSync(file);
+        const withdrawn = () => fs.existsSync(withdrawnFile);
+        if (!pending()) {
           done.add(msg.id);
           continue;
         }
         const text = formatAsUserTurn(msg);
-        const ok = await inject(text, () => fs.existsSync(file));
-        if (!fs.existsSync(file)) {
+        const ok = await inject(text, pending, withdrawn);
+        if (withdrawn()) {
           done.add(msg.id);
           continue;
         }
-        if (!ok) return;
+        if (!ok) {
+          if (!pending()) done.add(msg.id);
+          else return;
+          continue;
+        }
         appendTranscript(id, text);
-        archiveSettled(id, msg.id);
+        if (pending()) archiveSettled(id, msg.id);
         done.add(msg.id);
       }
     } catch {

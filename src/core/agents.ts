@@ -1,7 +1,7 @@
 import path from 'node:path';
 
 /**
- * Every agent telepathy knows. The id is what addresses and refs start with (`gemini:api`, `gemini-4242`),
+ * Every agent telepathy knows. The id is what addresses and refs start with (`antigravity:docs`, `codex-4242`),
  * so it must stay short, lowercase and free of `:`.
  */
 export const AGENT_IDS = [
@@ -9,7 +9,6 @@ export const AGENT_IDS = [
   'codex',
   'opencode',
   'kilo',
-  'gemini',
   'qwen',
   'copilot',
   'cursor',
@@ -26,7 +25,7 @@ export type Agent = (typeof AGENT_IDS)[number];
 
 export interface AgentSpec {
   id: Agent;
-  /** Product name shown to models and people: "Gemini CLI". */
+  /** Product name shown to models and people: "Antigravity". */
   label: string;
   /**
    * Recognizes the agent's main process while walking up the process tree. `names` match the executable's
@@ -53,14 +52,6 @@ const SPECS: Record<Agent, AgentSpec> = {
   codex: { id: 'codex', label: 'Codex', names: ['codex'] },
   opencode: { id: 'opencode', label: 'OpenCode', names: ['opencode', '.opencode'], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: 'kilo', label: 'Kilo Code', names: ['kilo', 'kilocode'], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
-  gemini: {
-    id: 'gemini',
-    label: 'Gemini CLI',
-    names: ['gemini'],
-    script: /(^|[\s/])gemini(\.js)?(\s|$)/,
-    env: ['GEMINI_CLI'],
-    nextTurnHook: true,
-  },
   qwen: {
     id: 'qwen',
     label: 'Qwen Code',
@@ -95,6 +86,7 @@ const SPECS: Record<Agent, AgentSpec> = {
     nextTurnHook: true,
   },
   devin: { id: 'devin', label: 'Devin CLI', names: ['devin'], env: ['DEVIN_PLUGIN_ROOT', 'DEVIN_PROJECT_DIR'], nextTurnHook: true },
+  // One plugin for the App, CLI, and IDE. The CLI TUI is turn-boundary only. The App sidecar wakes idle chats.
   antigravity: { id: 'antigravity', label: 'Antigravity', names: ['agy', 'antigravity'], nextTurnHook: true },
   hermes: { id: 'hermes', label: 'Hermes Agent', names: ['hermes'], script: /(^|[\s/])hermes(\s|$)/ },
   openclaw: { id: 'openclaw', label: 'OpenClaw', names: ['openclaw'], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },

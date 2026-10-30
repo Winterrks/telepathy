@@ -88,8 +88,9 @@ export function withdrawEverywhere(peerId: string, messageId: string): 'withdraw
  * Moves every pending inbox message to the archive and returns the ones this call moved.
  * The rename is atomic, so when two consumers race for a message exactly one of them gets it.
  * A withdrawn or expired message is not returned. It stays in `withdrawn/`.
+ * Ids in `skip` stay in the inbox: the ACP host already submitted them as the prompt.
  */
-export function claimInbox(peerId: string): Message[] {
+export function claimInbox(peerId: string, skip?: ReadonlySet<string>): Message[] {
   let files: string[];
   try {
     files = fs.readdirSync(inboxDir(peerId)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -98,6 +99,9 @@ export function claimInbox(peerId: string): Message[] {
   }
   const claimed: Message[] = [];
   for (const file of files) {
+    const id = file.slice(0, -'.json'.length);
+    // The ACP host already submitted this id as the prompt. Leave it for that turn to archive.
+    if (skip?.has(id)) continue;
     const target = path.join(ensureDir(archiveDir(peerId)), file);
     try {
       fs.renameSync(path.join(inboxDir(peerId), file), target);

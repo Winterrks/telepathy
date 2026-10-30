@@ -1,0 +1,7 @@
+{
+  "description": "Wakes idle Antigravity App conversations when another session sends a telepathy message.",
+  "display_name": "Telepathy wake",
+  "command": "node",
+  "args": ["../../dist/sidecar.mjs"],
+  "restart_policy": "on-failure"
+}

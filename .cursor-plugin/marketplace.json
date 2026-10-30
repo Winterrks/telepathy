@@ -6,7 +6,7 @@
     {
       "name": "telepathy",
       "source": "./plugin",
-      "description": "Let Cursor, Claude Code, Codex, Gemini CLI, OpenCode and other sessions on this machine message each other."
+      "description": "Let Cursor, Claude Code, Codex, Antigravity, OpenCode and other sessions on this machine message each other."
     }
   ]
 }

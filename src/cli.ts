@@ -13,7 +13,7 @@ Usage:
   telepathy update [--dry-run]
   telepathy status
   telepathy doctor
-  telepathy install [--dry-run] [--only a,b]
+  telepathy install [--dry-run] [--only a,b] [--remove-legacy]
   telepathy config [auto-update on|off]
   telepathy run [--list] [--acp | --headless] [--install] [--name X] [--cwd D] <agent> [args...]
   telepathy ps
@@ -23,7 +23,7 @@ Usage:
   telepathy --version
 
 \`run\` execs the vendor CLI when that CLI can wake an idle session (Claude Code, Codex, OpenCode, Kilo).
-Gemini CLI and Copilot CLI start an ACP host instead. \`--acp\` forces ACP where a launcher exists.
+Copilot CLI starts an ACP host instead. \`agy\` is an alias for antigravity. \`--acp\` forces ACP where a launcher exists.
 \`--headless\` keeps a peer up until \`telepathy stop\`: Claude stream-json, Codex app-server,
 OpenCode serve, or ACP. \`--name\` reuses the same peer id after a restart.
 \`run\` does not install a plugin or edit a global config unless \`--install\` is passed.
@@ -56,10 +56,11 @@ async function main(argv: string[]): Promise<number> {
   }
   if (cmd === 'install') {
     const dryRun = rest.includes('--dry-run');
+    const removeLegacy = rest.includes('--remove-legacy');
     const onlyEq = rest.find((arg) => arg.startsWith('--only='));
     const onlyFlag = rest.indexOf('--only');
     const only = onlyEq ? parseOnly(onlyEq.slice('--only='.length)) : onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
-    return installAll({ dryRun, only });
+    return installAll({ dryRun, only, removeLegacy });
   }
   if (cmd === 'config') return configCommand(rest);
   if (cmd === 'run') return runCommand(rest);

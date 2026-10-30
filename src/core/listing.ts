@@ -43,6 +43,8 @@ function launchHint(peer: Peer): string | undefined {
 function deliveryHint(peer: Peer): string | undefined {
   const launch = launchHint(peer);
   if (launch) return launch;
+  // `telepathy run` pumps this session. The next-turn line would be wrong: the host wakes it.
+  if (peer.agent === 'copilot' && peer.hasListener) return 'the host delivers messages as they arrive';
   if (peer.agent === 'codex' || peer.hasListener) return undefined;
   if (peer.agent === 'claude' && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);

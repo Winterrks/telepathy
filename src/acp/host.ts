@@ -4,7 +4,9 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from '../core/agents.ts';
-import { installsInScope } from '../core/installs.ts';
+import { pluginInstalled } from '../cli/launch.ts';
+import { copilotLogHasMarker } from '../core/confirm.ts';
+import { copilotEventsFile, readSession, sessionPeerId } from '../core/peers.ts';
 import { VERSION } from '../core/version.ts';
 import { resolveArgvPath } from '../cli/entry.ts';
 import { LineRpc } from './rpc.ts';
@@ -25,6 +27,11 @@ export interface AcpLaunch {
   stream?: (text: string) => void;
   /** Raw child stderr, for the log file. */
   trace?: (line: string) => void;
+  /**
+   * No `session/prompt` is in flight. A Copilot turn the hook marked busy is idle again even when
+   * `agentStop` did not run.
+   */
+  onTurnSettled?: () => void;
 }
 
 export interface AcpSession {
@@ -40,7 +47,12 @@ export interface AcpSession {
   /** Stop reading stdin so a dead agent does not wait for Ctrl-D. */
   releaseStdin(): void;
   /** Resolves once the agent has accepted the turn, which may be before the turn finishes. */
-  prompt(text: string, stillPending?: () => boolean): Promise<boolean>;
+  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
+  /**
+   * True when `resumeSessionId` was loaded. False when that load failed or returned a different id,
+   * including a Copilot session that was stopped before it ever had a turn.
+   */
+  resumed: boolean;
   close(): void;
   exited: Promise<number>;
 }
@@ -59,7 +71,7 @@ interface McpServer {
  * The env array replaces the server's environment, so it carries the variables the user already has.
  */
 export function telepathyMcpServers(agent: Agent): McpServer[] {
-  if (installsInScope().some((install) => install.agent === agent)) return [];
+  if (pluginInstalled(agent)) return [];
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
   return [
@@ -108,9 +120,47 @@ function textOf(params: unknown): string {
 /**
  * Any `session/update` for this prompt's turn is delivery, including a turn that starts with a tool call.
  * Text-only updates missed those turns, and the 110s confirm then cancelled a prompt the agent already had.
+ * Copilot is the exception: a marker prompt is accepted only when the update echoes that marker.
  */
 function relevantUpdate(_params: unknown): boolean {
   return true;
+}
+
+const PROMPT_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/;
+
+function promptMarker(text: string): string | undefined {
+  const match = PROMPT_MARKER.exec(text);
+  return match ? `telepathy-id:${match[1]}` : undefined;
+}
+
+/**
+ * Copilot has the injected prompt when a `user.message` event carries its marker, or a `hook.start`
+ * whose `data.hookType` is `userPromptSubmitted`.
+ * sessionStart writes the same text as `initialPrompt` before that event exists.
+ */
+function copilotEventsHaveMarker(sessionId: string, marker: string): boolean {
+  const files = new Set<string>([copilotEventsFile(sessionId)]);
+  const recorded = readSession(sessionPeerId('copilot', 0, sessionId))?.transcriptPath;
+  if (recorded && !recorded.includes('${')) files.add(recorded);
+  for (const file of files) {
+    if (copilotLogHasMarker(file, marker)) return true;
+  }
+  return false;
+}
+
+/**
+ * Copilot does not save a session that never had a turn. A `--name` restart then starts a new one;
+ * say so instead of looking like the old session came back.
+ */
+export function noteMissedCopilotResume(
+  agent: Agent,
+  requested: string | undefined,
+  session: { resumed: boolean; sessionId: string },
+): void {
+  if (agent !== 'copilot' || !requested || session.resumed) return;
+  process.stderr.write(
+    `telepathy: Copilot did not resume ${requested} (it does not save a session that never had a turn). Started a new session ${session.sessionId}.\n`,
+  );
 }
 
 function summarize(value: unknown): string {
@@ -156,8 +206,13 @@ const AUTH_FAILURE = /not logged in|login required|authentication (?:failed|requ
  * Spawns an ACP agent and speaks initialize / session/new|load / session/prompt.
  * A prompt counts as accepted on the RPC result, on any `session/update` after the request
  * (including tool calls), or on `session/request_permission`.
+ * A Copilot prompt that carries `telepathy-id:` is accepted only when an update echoes that marker,
+ * when Copilot's `events.jsonl` contains it, or on `session/request_permission`. The RPC result
+ * alone is not enough, and the wait stays inside the sender's confirm budget: a withdraw ends it.
  * `stillPending` is checked again immediately before `session/prompt`. A send that `fail()` already withdrew
- * is not submitted. A prompt already on the wire and not yet accepted is cancelled.
+ * is not submitted. A prompt already on the wire is cancelled only when `withdrawn` says the sender
+ * recalled it. Copilot's userPromptSubmitted hook claims the inbox copy of a prompt this host just
+ * injected; that copy is no longer pending, and cancelling it drops the turn.
  */
 export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
@@ -359,12 +414,16 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
 
     const mcpServers = telepathyMcpServers(options.agent);
     let sessionId = options.resumeSessionId;
+    let resumed = false;
     if (sessionId) {
+      const wanted = sessionId;
       try {
         const loaded = await rpc.request('session/load', { sessionId, cwd: options.cwd, mcpServers });
-        sessionId = sessionIdOf(loaded) ?? sessionId;
+        sessionId = sessionIdOf(loaded) ?? wanted;
+        resumed = sessionId === wanted;
       } catch {
         sessionId = undefined;
+        resumed = false;
       }
     }
     if (!sessionId) {
@@ -382,10 +441,18 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     session = {
       sessionId,
       child,
+      resumed,
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text: string, stillPending: () => boolean = () => true): Promise<boolean> {
+      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean): Promise<boolean> {
+        // Callers that only know "still in the inbox" keep the old cancel. The inbox pump passes
+        // `withdrawn` so a hook claim is not treated as a recall.
+        const recalled = withdrawn ?? (() => !stillPending());
+        // Copilot logs the user message in events.jsonl after the first session/update. An update
+        // that does not echo this marker is not proof the prompt is in the session.
+        const marker = options.agent === 'copilot' ? promptMarker(text) : undefined;
+        const eventsProven = () => !!marker && copilotEventsHaveMarker(sessionId, marker);
         let resolveAccepted: (ok: boolean) => void = () => {};
         const accepted = new Promise<boolean>((resolve) => {
           resolveAccepted = resolve;
@@ -409,30 +476,52 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             rpc.notify('session/cancel', { sessionId });
           };
           const watch = setInterval(() => {
-            if (!settled && sent && !stillPending()) cancel();
+            if (settled || !sent) return;
+            if (recalled()) cancel();
+            else if (eventsProven()) finish(true);
           }, 25);
           try {
-            if (!stillPending()) {
+            if (!stillPending() || recalled()) {
               finish(false);
               return;
             }
             onUpdate = (params) => {
               previous(params);
-              if (relevantUpdate(params) && stillPending()) finish(true);
+              if (recalled()) return;
+              if (marker) {
+                if (textOf(params).includes(marker) || eventsProven()) finish(true);
+                return;
+              }
+              if (relevantUpdate(params)) finish(true);
             };
             acceptDelivery = () => {
-              if (stillPending()) finish(true);
+              if (!recalled()) finish(true);
             };
             sent = true;
-            if (!stillPending()) {
+            if (!stillPending() || recalled()) {
               finish(false);
               return;
             }
             await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
-            if (stillPending()) finish(true);
-            else {
+            if (recalled()) {
               cancel();
               finish(false);
+            } else if (!marker || eventsProven()) {
+              finish(true);
+            } else {
+              // The turn returned without an echo. Copilot may still flush events.jsonl.
+              // Stop when the marker appears or the sender withdraws the copy (the confirm abort).
+              while (!settled && !recalled()) {
+                if (eventsProven()) {
+                  finish(true);
+                  break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 25));
+              }
+              if (!settled) {
+                if (recalled()) cancel();
+                finish(false);
+              }
             }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
@@ -451,6 +540,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             onUpdate = previous;
             acceptDelivery = undefined;
             activeTurns = Math.max(0, activeTurns - 1);
+            if (activeTurns === 0) options.onTurnSettled?.();
             clearAsk();
             endText();
           }

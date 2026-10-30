@@ -51,6 +51,7 @@ export function makeSandbox(): Sandbox {
   };
   delete env.TELEPATHY_AGENT_PID;
   delete env.TELEPATHY_DEBUG;
+  delete env.COPILOT_HOME;
   // Production waits for a transcript. Tests assert the route's own status unless they opt in.
   env.TELEPATHY_CONFIRM_WAIT = '0';
   for (const key of [
