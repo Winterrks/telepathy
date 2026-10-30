@@ -134,7 +134,8 @@ function promptMarker(text: string): string | undefined {
 }
 
 /**
- * Copilot has the injected prompt when a `user.message` or `userPromptSubmitted` event carries its marker.
+ * Copilot has the injected prompt when a `user.message` event carries its marker, or a `hook.start`
+ * whose `data.hookType` is `userPromptSubmitted`.
  * sessionStart writes the same text as `initialPrompt` before that event exists.
  */
 function copilotEventsHaveMarker(sessionId: string, marker: string): boolean {

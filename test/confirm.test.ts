@@ -476,7 +476,10 @@ describe('transcript confirmation', () => {
       assert.equal(transcriptHasMarker(plain, onlyCustom), false);
       const fallback = path.join(home, '.copilot', 'session-state', 'sess-plain', 'events.jsonl');
       fs.mkdirSync(path.dirname(fallback), { recursive: true });
-      fs.writeFileSync(fallback, JSON.stringify({ type: 'userPromptSubmitted', prompt: onlyCustom }) + '\n');
+      fs.writeFileSync(
+        fallback,
+        JSON.stringify({ type: 'hook.start', data: { hookType: 'userPromptSubmitted', prompt: onlyCustom } }) + '\n',
+      );
       assert.equal(transcriptHasMarker(plain, onlyCustom), true);
     } finally {
       if (savedHome === undefined) delete process.env.HOME;

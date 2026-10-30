@@ -257,12 +257,12 @@ function copilotEventNames(record: unknown): string[] {
   const data = body.data;
   if (data && typeof data === 'object') {
     const nested = data as Record<string, unknown>;
-    for (const key of ['type', 'event', 'hook', 'hookEventName']) push(nested[key]);
+    for (const key of ['type', 'event', 'hook', 'hookEventName', 'hookType']) push(nested[key]);
   }
   return names;
 }
 
-/** True when a user.message or userPromptSubmitted line in this log carries `marker`. */
+/** True when a user.message line, or a hook.start whose hookType is userPromptSubmitted, carries `marker`. */
 export function copilotLogHasMarker(file: string, marker: string): boolean {
   const text = readTranscriptText(file);
   if (!text || !text.includes(marker)) return false;

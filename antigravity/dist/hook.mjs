@@ -2680,7 +2680,7 @@ function copilotEventNames(record) {
   const data = body.data;
   if (data && typeof data === "object") {
     const nested = data;
-    for (const key of ["type", "event", "hook", "hookEventName"]) push(nested[key]);
+    for (const key of ["type", "event", "hook", "hookEventName", "hookType"]) push(nested[key]);
   }
   return names;
 }
