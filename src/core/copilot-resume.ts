@@ -243,6 +243,11 @@ interface Confirm {
   conflict: boolean;
 }
 
+/** This session's own `session.resume`, newer than the process and in this cwd. A fresh session never writes one. */
+function matchingResume(snap: SessionSnap | undefined, cwd: string, processStartMs: number): boolean {
+  return !!snap?.resume && snap.resume.at > processStartMs && samePath(snap.resume.cwd, cwd);
+}
+
 function confirming(sessions: SessionSnap[], cwd: string, processStartMs: number): Confirm {
   const ids: string[] = [];
   let conflict = false;
@@ -302,6 +307,10 @@ export function detectResumedCopilotSession(input: CopilotResumeInput): CopilotR
     const resolved = resolveToken(flags.resume, sessions);
     if (resolved.ambiguous) return { state: 'skip' };
     if (!resolved.id) return unique.length ? { state: 'skip' } : { state: 'pending' };
+    const named = sessions.find((snap) => snap.id === resolved.id);
+    // A fresh `copilot` in this folder rewrites workspace.yaml and does not write session.resume.
+    // That file must not crowd out the session this argv named.
+    if (matchingResume(named, input.cwd, input.processStartMs)) return { state: 'resume', sessionId: resolved.id };
     if (!unique.length) return { state: 'pending' };
     if (unique.length === 1 && unique[0] === resolved.id) return { state: 'resume', sessionId: resolved.id };
     return { state: 'skip' };

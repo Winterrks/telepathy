@@ -770,7 +770,7 @@ function commandLines(maxAgeMs = 500) {
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync(psCommand(), ["-Ao", "pid=,args="], {
+    out = execFileSync(psCommand(), ["-ww", "-Ao", "pid=,args="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -787,7 +787,7 @@ function commandLines(maxAgeMs = 500) {
 }
 function psField(pid, field) {
   try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-ww", "-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }
@@ -32292,6 +32292,9 @@ function loadSessions(copilotHome2) {
   }
   return sessions;
 }
+function matchingResume(snap, cwd, processStartMs2) {
+  return !!snap?.resume && snap.resume.at > processStartMs2 && samePath(snap.resume.cwd, cwd);
+}
 function confirming(sessions, cwd, processStartMs2) {
   const ids = [];
   let conflict = false;
@@ -32344,6 +32347,8 @@ function detectResumedCopilotSession(input2) {
     const resolved = resolveToken(flags.resume, sessions);
     if (resolved.ambiguous) return { state: "skip" };
     if (!resolved.id) return unique.length ? { state: "skip" } : { state: "pending" };
+    const named = sessions.find((snap) => snap.id === resolved.id);
+    if (matchingResume(named, input2.cwd, input2.processStartMs)) return { state: "resume", sessionId: resolved.id };
     if (!unique.length) return { state: "pending" };
     if (unique.length === 1 && unique[0] === resolved.id) return { state: "resume", sessionId: resolved.id };
     return { state: "skip" };
@@ -33662,6 +33667,12 @@ function pluginInstalled(agent) {
   const installs = agent === "copilot" ? findInstalls() : installsInScope();
   return installs.some((install) => install.agent === agent);
 }
+function harnessProvidesMcp(agent) {
+  if (agent !== "copilot") return pluginInstalled(agent);
+  return findInstalls().some(
+    (install) => install.agent === "copilot" && install.dir.split(path11.sep).includes("installed-plugins")
+  );
+}
 function launchEnv(agent, name) {
   const env = { ...process.env, TELEPATHY_HOME: stateDir() };
   if (name && pluginInstalled(agent)) {
@@ -33771,8 +33782,8 @@ var LineRpc = class {
 };
 
 // src/acp/host.ts
-function telepathyMcpServers(agent) {
-  if (pluginInstalled(agent)) return [];
+function telepathyMcpServers(agent, env = process.env) {
+  if (harnessProvidesMcp(agent)) return [];
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, "mcp", "--agent", agent] : [entry.file, "--agent", agent];
   return [
@@ -33781,7 +33792,7 @@ function telepathyMcpServers(agent) {
       name: "telepathy",
       command: process.execPath,
       args,
-      env: Object.entries(process.env).filter((entry2) => typeof entry2[1] === "string").map(([name, value]) => ({ name, value }))
+      env: Object.entries(env).filter((item) => typeof item[1] === "string").map(([name, value]) => ({ name, value }))
     }
   ];
 }
@@ -34051,7 +34062,7 @@ async function startAcpSession(options) {
       clientInfo: { name: "telepathy", version: VERSION }
     });
     if (failure2 !== void 0) throw new Error(authMessage(options.bin, stderrTail));
-    const mcpServers = telepathyMcpServers(options.agent);
+    const mcpServers = telepathyMcpServers(options.agent, options.env ?? process.env);
     let sessionId = options.resumeSessionId;
     let resumed = false;
     if (sessionId) {

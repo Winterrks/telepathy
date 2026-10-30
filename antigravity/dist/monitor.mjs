@@ -215,7 +215,7 @@ function isSameProcess(pid, recordedStart) {
 }
 function psField(pid, field) {
   try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-ww", "-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }

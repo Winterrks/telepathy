@@ -12,7 +12,7 @@ import { inboxDir, peerDir, withdrawnDir } from '../src/core/paths.ts';
 import { listPeers, readPeer, registerPresence, registerSession } from '../src/core/peers.ts';
 import { processCwd } from '../src/core/codex-launch.ts';
 import { clearProcessListCache } from '../src/core/proc.ts';
-import { fakeAgent, killAndWait, makeSandbox, ROOT, type Sandbox } from './helpers.ts';
+import { fakeAgent, killAndWait, makeSandbox, ROOT, waitFor, type Sandbox } from './helpers.ts';
 
 const SESSION = '11111111-2222-4333-8444-555555555555';
 const OTHER = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee';
@@ -116,19 +116,27 @@ describe('resumed copilot is claimed before the first prompt', () => {
     assert.deepEqual(look('copilot --resume'), { state: 'resume', sessionId: SESSION });
   });
 
-  test('two post-start sessions, or an event and workspace that disagree, are not guessed', () => {
+  test('two post-start resumes are not guessed for --continue', () => {
     plant(home, SESSION, { cwd, resumeAt: fresh, workspaceAt: freshMtime });
     plant(home, OTHER, { cwd, resumeAt: fresh, workspaceAt: freshMtime });
     assert.deepEqual(look('copilot --continue'), { state: 'skip' });
+    assert.deepEqual(look('copilot --resume'), { state: 'skip' });
+    // The argv names one of them, and that session wrote session.resume.
+    assert.deepEqual(look(`copilot --resume=${SESSION}`), { state: 'resume', sessionId: SESSION });
     fs.rmSync(path.join(home, 'session-state', OTHER), { recursive: true, force: true });
     plant(home, OTHER, { cwd: '/elsewhere', resumeAt: fresh, workspaceAt: freshMtime, eventCwd: '/elsewhere' });
     // SESSION is the only cwd match, so this is still that resume.
     assert.deepEqual(look('copilot --continue'), { state: 'resume', sessionId: SESSION });
-    fs.rmSync(path.join(home, 'session-state'), { recursive: true, force: true });
+  });
+
+  test('an explicit resume ignores a fresh session that only rewrote workspace.yaml', () => {
     plant(home, SESSION, { cwd, resumeAt: fresh, workspaceAt: oldMtime });
-    plant(home, OTHER, { cwd, resumeAt: '2020-01-02T00:00:00.000Z', workspaceAt: freshMtime });
-    assert.deepEqual(look(`copilot --resume=${SESSION}`), { state: 'skip' });
+    plant(home, OTHER, { cwd, workspaceAt: freshMtime });
+    assert.deepEqual(look(`copilot --resume=${SESSION}`), { state: 'resume', sessionId: SESSION });
+    assert.deepEqual(look(`copilot --resume ${SESSION}`), { state: 'resume', sessionId: SESSION });
+    assert.deepEqual(look('copilot --resume=11111111-2222'), { state: 'resume', sessionId: SESSION });
     assert.deepEqual(look('copilot --continue'), { state: 'skip' });
+    assert.deepEqual(look('copilot --resume'), { state: 'skip' });
   });
 
   test('a resume token that matches two sessions is not resolved by the event', () => {
@@ -230,8 +238,11 @@ describe('resumed copilot is claimed before the first prompt', () => {
 
       const log = path.join(home, 'session-state', SESSION, 'events.jsonl');
       const pending = sendMessage(self, readPeer(id)?.address ?? '', 'lands on the next turn');
-      await new Promise((resolve) => setTimeout(resolve, 40));
-      const inbox = fs.readdirSync(inboxDir(id)).find((name) => name.endsWith('.json'));
+      const inbox = await waitFor(() => {
+        const dir = inboxDir(id);
+        if (!fs.existsSync(dir)) return undefined;
+        return fs.readdirSync(dir).find((name) => name.endsWith('.json'));
+      }, 2_000, 10);
       assert.ok(inbox);
       const messageId = inbox.slice(0, -'.json'.length);
       fs.appendFileSync(log, JSON.stringify({ type: 'user.message', data: { content: messageMarker(messageId) } }) + '\n');

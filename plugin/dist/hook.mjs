@@ -217,7 +217,7 @@ function commandLines(maxAgeMs = 500) {
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync(psCommand(), ["-Ao", "pid=,args="], {
+    out = execFileSync(psCommand(), ["-ww", "-Ao", "pid=,args="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -234,7 +234,7 @@ function commandLines(maxAgeMs = 500) {
 }
 function psField(pid, field) {
   try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-ww", "-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }

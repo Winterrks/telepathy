@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from '../core/agents.ts';
-import { pluginInstalled } from '../cli/launch.ts';
+import { harnessProvidesMcp } from '../cli/launch.ts';
 import { copilotLogHasMarker } from '../core/confirm.ts';
 import { copilotEventsFile, readSession, sessionPeerId } from '../core/peers.ts';
 import { VERSION } from '../core/version.ts';
@@ -70,8 +70,8 @@ interface McpServer {
  * leaves those settings in place. Copilot's behavior is unverified live (see the design note).
  * The env array replaces the server's environment, so it carries the variables the user already has.
  */
-export function telepathyMcpServers(agent: Agent): McpServer[] {
-  if (pluginInstalled(agent)) return [];
+export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = process.env): McpServer[] {
+  if (harnessProvidesMcp(agent)) return [];
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
   return [
@@ -80,8 +80,8 @@ export function telepathyMcpServers(agent: Agent): McpServer[] {
       name: 'telepathy',
       command: process.execPath,
       args,
-      env: Object.entries(process.env)
-        .filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+      env: Object.entries(env)
+        .filter((item): item is [string, string] => typeof item[1] === 'string')
         .map(([name, value]) => ({ name, value })),
     },
   ];
@@ -428,7 +428,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     });
     if (failure !== undefined) throw new Error(authMessage(options.bin, stderrTail));
 
-    const mcpServers = telepathyMcpServers(options.agent);
+    const mcpServers = telepathyMcpServers(options.agent, options.env ?? process.env);
     let sessionId = options.resumeSessionId;
     let resumed = false;
     if (sessionId) {

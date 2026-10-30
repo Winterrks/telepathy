@@ -27891,7 +27891,7 @@ function commandLines(maxAgeMs = 500) {
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync(psCommand(), ["-Ao", "pid=,args="], {
+    out = execFileSync(psCommand(), ["-ww", "-Ao", "pid=,args="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -27909,7 +27909,7 @@ function commandLines(maxAgeMs = 500) {
 var isStreamJsonClaude = (pid) => /--input-format[=\s]+stream-json/.test(commandLine(pid) ?? "");
 function psField(pid, field) {
   try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-ww", "-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }
@@ -30844,6 +30844,9 @@ function loadSessions(copilotHome2) {
   }
   return sessions;
 }
+function matchingResume(snap, cwd, processStartMs2) {
+  return !!snap?.resume && snap.resume.at > processStartMs2 && samePath(snap.resume.cwd, cwd);
+}
 function confirming(sessions, cwd, processStartMs2) {
   const ids = [];
   let conflict = false;
@@ -30896,6 +30899,8 @@ function detectResumedCopilotSession(input2) {
     const resolved = resolveToken(flags.resume, sessions);
     if (resolved.ambiguous) return { state: "skip" };
     if (!resolved.id) return unique.length ? { state: "skip" } : { state: "pending" };
+    const named = sessions.find((snap) => snap.id === resolved.id);
+    if (matchingResume(named, input2.cwd, input2.processStartMs)) return { state: "resume", sessionId: resolved.id };
     if (!unique.length) return { state: "pending" };
     if (unique.length === 1 && unique[0] === resolved.id) return { state: "resume", sessionId: resolved.id };
     return { state: "skip" };

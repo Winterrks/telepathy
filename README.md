@@ -209,11 +209,14 @@ copilot plugin marketplace add Winterrks/telepathy && copilot plugin install tel
 
 Update: `copilot plugin update telepathy@telepathy`. Copilot CLI 1.0.105 or newer is required; 0.0.372 cannot load the plugin. Copilot asks for folder trust in each new directory, and it asks before a tool
 runs for the first time, telepathy's included. A plain `copilot` receives through its hooks at the next turn, including
-before the first prompt. `copilot --resume=<id>`, `copilot --resume <id>`, and `copilot --continue` reclaim that
-session's id and name when the MCP server starts, before the first prompt, when the process arguments agree with a
-`session.resume` event or a rewritten `workspace.yaml` for this directory and that signal is newer than the process.
-If the signals disagree, it stays `session-<pid>` until the first prompt. `telepathy run copilot` injects messages as
-they arrive. Leave that host with `/exit`, `/quit`, or Ctrl-C.
+before the first prompt. `copilot --resume=<id>` and `copilot --resume <id>` reclaim that session when it has its own
+`session.resume` for this directory, newer than the process. A fresh `copilot` in the same folder rewrites
+`workspace.yaml` and does not write `session.resume`, so that file does not block the named resume. `--continue` and a
+bare `--resume` still claim nothing when two sessions in the folder were touched after the process started. If the
+signals disagree, it stays `session-<pid>` until the first prompt. `telepathy run copilot` injects messages as they
+arrive. It also passes telepathy's MCP server when Copilot will not start one: a `plugin install` copy under
+`installed-plugins` starts the server, and the host does not add a second one. A plugin loaded with
+`plugin marketplace add <dir>` does not start it in ACP. Leave that host with `/exit`, `/quit`, or Ctrl-C.
 
 ### Qwen Code
 
@@ -470,12 +473,12 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   Antigravity registers from `SessionStart`'s `conversationId`, so a resume with `--conversation` is the same
   peer and `/fork` is a new one.
 - **A resumed Copilot keeps its id before the first prompt.** A fresh `copilot` is `session-<pid>` until sessionStart.
-  `copilot --resume=<id>`, `copilot --resume <id>`, and `copilot --continue` claim the previous id and name when the
-  MCP server starts, if the launch flags and one post-start signal for this working directory agree: a `session.resume`
-  line in `$COPILOT_HOME/session-state/<id>/events.jsonl` whose cwd matches, or a rewritten `workspace.yaml`. Two such
-  sessions, or an event and a workspace that name different sessions, stay on the pid until the first prompt. A send
-  before that prompt is delivered at the next turn when the turn falls inside the confirm window; otherwise it fails
-  and the copy is withdrawn. The sessionStart hook binds the same id and does not create a second peer.
+  `copilot --resume=<id>` and `copilot --resume <id>` claim that session when its own `session.resume` in
+  `$COPILOT_HOME/session-state/<id>/events.jsonl` is newer than the process and the cwd matches. Another session that
+  only rewrote `workspace.yaml` is not a second candidate. `--continue` and a bare `--resume` claim the one post-start
+  session for this cwd, and claim nothing when two sessions really compete. A send before the first prompt is delivered
+  at the next turn when the turn falls inside the confirm window; otherwise it fails and the copy is withdrawn. The
+  sessionStart hook binds the same id and does not create a second peer.
 - **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
   result. That is the mid-turn path. `codex queue` only runs the message after the turn ends, so it is the fallback
   when no further tool call happens. Whichever comes first wins: a message handed over mid-turn (or read with

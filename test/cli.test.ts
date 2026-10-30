@@ -450,6 +450,36 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
   }
 });
 
+test('a local Copilot marketplace does not start MCP, so the host injects the server once', async () => {
+  const w = world();
+  const home = w.env.HOME as string;
+  const plugin = path.join(home, 'dev-plugin');
+  fs.mkdirSync(path.join(plugin, '.github', 'plugin'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, '.github', 'plugin', 'plugin.json'), JSON.stringify({ name: 'telepathy', version: '0.9.0' }));
+  const copilotDir = path.join(home, '.copilot');
+  fs.mkdirSync(copilotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(copilotDir, 'settings.json'),
+    JSON.stringify({ extraKnownMarketplaces: { local: { source: { source: 'directory', path: plugin } } } }),
+  );
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
+    const created = w.readLog().find((entry) => entry.method === 'session/new');
+    const servers = (created?.params as { mcpServers?: { name?: string; command?: string; env?: { name: string; value: string }[] }[] })?.mcpServers;
+    assert.equal(servers?.length, 1);
+    assert.equal(servers?.[0]?.name, 'telepathy');
+    assert.equal(servers?.[0]?.command, process.execPath);
+    assert.equal(servers?.[0]?.env?.find((item) => item.name === 'TELEPATHY_NAME')?.value, 'gem');
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(started?.name, 'gem');
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
 test('an installed ACP harness gets an empty mcpServers list', async () => {
   const w = world();
   plantCopilot(w.env.HOME as string);
