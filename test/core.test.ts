@@ -1,16 +1,21 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
-import { findInstalls, isNewer } from '../src/core/installs.ts';
-import { formatAgo } from '../src/core/listing.ts';
-import { formatAsUserTurn, formatMonitorLine, type Message, newMessageId } from '../src/core/messages.ts';
-import { peerDir } from '../src/core/paths.ts';
-import { listPeers, type Peer, registerPresence, registerSession, resolvePeer, slugify } from '../src/core/peers.ts';
-import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, type Sandbox } from './helpers.ts';
+import { findInstalls, installsInScope, isNewer } from '../src/core/installs.ts';
+import { pluginInstalled } from '../src/cli/launch.ts';
+import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, dedupeCodexTuiProcs, isCodexExecCommand } from '../src/core/codex-launch.ts';
+import { formatAgo, describePeer } from '../src/core/listing.ts';
+import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
+import { clearProcessListCache, processTable } from '../src/core/proc.ts';
+import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
+import { inboxDir, peerDir } from '../src/core/paths.ts';
+import { isDeliveryOwner, listPeers, type Peer, readPeer, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
+import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, setCodexProcs, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
   id: `${agent}-${pid}`,
@@ -20,6 +25,89 @@ const peer = (agent: Agent, pid: number, name: string): Peer => ({
   address: `${agent}:${slugify(name)}`,
   hasListener: true,
   hasServer: true,
+});
+
+/** A live process whose children have the given trailing argv, so Claude's process tree can be classified. */
+function sessionWithChildren(commands: string[][]): ReturnType<typeof spawn> & { pid: number } {
+  const script = `
+    const { spawn } = require('node:child_process');
+    for (const args of ${JSON.stringify(commands)}) {
+      spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30)', '--', ...args], { stdio: 'ignore' });
+    }
+    setInterval(() => {}, 1 << 30);
+  `;
+  const child = spawn(process.execPath, ['-e', script], { stdio: 'ignore', detached: true });
+  return child as ReturnType<typeof spawn> & { pid: number };
+}
+
+function descendantCount(root: number): number {
+  const table = processTable(0);
+  const byParent = new Map<number, number[]>();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  let count = 0;
+  const stack = [...(byParent.get(root) ?? [])];
+  const seen = new Set<number>();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === undefined || seen.has(pid)) continue;
+    seen.add(pid);
+    count += 1;
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return count;
+}
+
+/** Writes Claude's session file as shell and returns the listing once that many children are visible. */
+async function shellListing(pid: number, children: number): Promise<string | undefined> {
+  const record = path.join(process.env.CLAUDE_CONFIG_DIR ?? '', 'sessions', `${pid}.json`);
+  fs.mkdirSync(path.dirname(record), { recursive: true });
+  fs.writeFileSync(record, JSON.stringify({ status: 'shell', statusUpdatedAt: Date.now() }));
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    if (descendantCount(pid) >= children) return statusText(peerStatus(peer('claude', pid, 'sdk')));
+    if (Date.now() > deadline) return statusText(peerStatus(peer('claude', pid, 'sdk')));
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  }
+}
+
+describe('opencode launch command line', () => {
+  // Importing the plugin starts the wake flusher. Point it at a temp home first so the real ~/.telepathy is untouched.
+  let home = '';
+  let opencodeLaunchFromAncestors: typeof import('../src/opencode.ts').opencodeLaunchFromAncestors;
+
+  before(async () => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-opencode-'));
+    process.env.TELEPATHY_HOME = home;
+    ({ opencodeLaunchFromAncestors } = await import('../src/opencode.ts'));
+  });
+
+  after(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  test('reads --session from this process before its parent', () => {
+    const args = new Map<number, string>([
+      [42, 'node /usr/local/bin/opencode --session ses_self'],
+      [7, 'opencode --continue --session ses_parent'],
+    ]);
+    const launch = opencodeLaunchFromAncestors(42, (pid) => args.get(pid), (pid) => (pid === 42 ? 7 : 1));
+    assert.equal(launch.sessionID, 'ses_self');
+    assert.equal(launch.continueLast, false);
+  });
+
+  test('reads --continue from the parent when this process has no flag', () => {
+    const launch = opencodeLaunchFromAncestors(
+      42,
+      (pid) => (pid === 42 ? 'node plugin.js' : 'opencode --continue'),
+      (pid) => (pid === 42 ? 7 : 1),
+    );
+    assert.equal(launch.sessionID, undefined);
+    assert.equal(launch.continueLast, true);
+  });
 });
 
 describe('slugify', () => {
@@ -40,7 +128,7 @@ describe('resolvePeer', () => {
     peer('codex', 103, 'Billing migration'),
     peer('claude', 201, 'billing-review'),
     peer('claude', 202, 'pi-server'),
-    peer('gemini', 301, 'docs'),
+    peer('qwen', 301, 'docs'),
     peer('pi', 401, 'ui'),
   ];
   const ok = (to: string) => {
@@ -57,7 +145,7 @@ describe('resolvePeer', () => {
     assert.equal(ok('Billing migration'), 'codex-103');
     assert.equal(ok('claude:billing'), 'claude-201');
     assert.equal(ok('billing-r'), 'claude-201');
-    assert.equal(ok('gemini:docs'), 'gemini-301');
+    assert.equal(ok('qwen:docs'), 'qwen-301');
     assert.equal(ok('pi-401'), 'pi-401');
     assert.equal(ok('pi:ui'), 'pi-401');
   });
@@ -74,6 +162,11 @@ describe('resolvePeer', () => {
     assert.match(r.error, /codex-102/);
     const prefix = resolvePeer('billing', peers);
     assert.ok('error' in prefix, 'a prefix shared by two agents must not resolve');
+    const bare = resolvePeer('codex:', peers);
+    assert.ok('error' in bare);
+    assert.match(bare.error, /3 sessions/);
+    const only = resolvePeer('codex:', [peer('codex', 101, 'solo')]);
+    assert.ok('peer' in only && only.peer.id === 'codex-101');
   });
 
   test('explains what is reachable when nothing matches', () => {
@@ -82,6 +175,23 @@ describe('resolvePeer', () => {
     assert.match(r.error, /No reachable session matches/);
     assert.match(r.error, /codex:billing-migration \[codex-103\]/);
   });
+
+  test('a ref matches ignoring case, and the exact id wins when both cases exist', () => {
+    const upper: Peer = { ...peer('antigravity', 1, 'Conv'), id: 'antigravity-convB' };
+    const lower: Peer = { ...peer('antigravity', 2, 'conv'), id: 'antigravity-convb' };
+    const folded = resolvePeer('ANTIGRAVITY-CONVB', [upper]);
+    assert.ok('peer' in folded);
+    if (!('peer' in folded)) return;
+    assert.equal(folded.peer.id, 'antigravity-convB');
+    const listed = resolvePeer('name [antigravity-convB]', [upper]);
+    assert.ok('peer' in listed && listed.peer.id === 'antigravity-convB');
+    const exact = resolvePeer('antigravity-convB', [upper, lower]);
+    assert.ok('peer' in exact && exact.peer.id === 'antigravity-convB');
+    const ambiguous = resolvePeer('antigravity-CONVB', [upper, lower]);
+    assert.ok('error' in ambiguous);
+    if (!('error' in ambiguous)) return;
+    assert.match(ambiguous.error, /2 sessions/);
+  });
 });
 
 describe('agents', () => {
@@ -89,7 +199,8 @@ describe('agents', () => {
   test('recognizes native binaries by name, scripts by command line, generic names by path', () => {
     assert.ok(isAgentProcess('codex', '/opt/homebrew/bin/codex', none));
     assert.ok(isAgentProcess('claude', 'claude', none));
-    assert.ok(isAgentProcess('gemini', '/opt/homebrew/opt/node/bin/node', () => 'node /opt/homebrew/bin/gemini --yolo'));
+    assert.ok(isAgentProcess('antigravity', 'agy', none));
+    assert.ok(isAgentProcess('antigravity', '/usr/local/bin/antigravity', none));
     assert.ok(isAgentProcess('qwen', 'node', () => 'node /opt/homebrew/lib/node_modules/@qwen-code/qwen-code/cli.js'));
     assert.ok(isAgentProcess('kimi', 'kimi-code', none)); // Kimi Code sets its process title
     assert.ok(isAgentProcess('cursor', 'node', () => 'node /Users/me/.local/share/cursor-agent/versions/2026.09.18/index.js'));
@@ -99,7 +210,7 @@ describe('agents', () => {
     assert.ok(!isAgentProcess('cursor', '/opt/homebrew/bi', cursorArgs, () => 'bash'));
     assert.ok(isAgentProcess('grok', '/Users/me/.grok/bin/agent', none));
     assert.ok(!isAgentProcess('cursor', '/Users/me/.grok/bin/agent', none));
-    assert.ok(!isAgentProcess('gemini', 'node', () => 'node /usr/lib/node_modules/some-mcp-server/index.js'));
+    assert.ok(!isAgentProcess('antigravity', 'node', () => 'node /usr/lib/node_modules/some-mcp-server/index.js'));
     assert.ok(!isAgentProcess('pi', 'node', () => 'node /tmp/pipeline.js'));
   });
 
@@ -120,7 +231,8 @@ describe('message formatting', () => {
 
   test('ids sort by send time', async () => {
     const a = newMessageId();
-    await new Promise((r) => setTimeout(r, 5));
+    const start = Date.now();
+    while (Date.now() === start) await new Promise((r) => setTimeout(r, 2));
     const b = newMessageId();
     assert.ok(a < b);
   });
@@ -138,6 +250,68 @@ describe('message formatting', () => {
     assert.ok(!line.includes('\n'));
     assert.match(line, /Schema migration finished\.\\nRebase on main is safe now\./);
     assert.match(line, /not your user/);
+  });
+
+  test('the Claude socket names the real sender, including Codex and OpenCode', () => {
+    const codex = formatForClaudeSocket({ ...msg, from: { id: 'codex-9', agent: 'codex', name: 'api', address: 'codex:api' } });
+    assert.match(codex, /from-name="Codex session codex:api \[codex-9\]"/);
+    assert.match(codex, /Message from Codex session codex:api \[codex-9\]/);
+    assert.ok(codex.startsWith('<cross-session-message '));
+    assert.ok(codex.endsWith('</cross-session-message>'));
+    const opencode = formatForClaudeSocket({
+      ...msg,
+      from: { id: 'opencode-4', agent: 'opencode', name: 'web', address: 'opencode:web' },
+    });
+    assert.match(opencode, /from-name="OpenCode session opencode:web \[opencode-4\]"/);
+    assert.doesNotMatch(opencode, /Another Claude session/);
+  });
+
+  test('a telepathy monitor is not a shell command, and any other command is', () => {
+    const monitor = 'node /plugins/telepathy/dist/monitor.mjs --agent claude';
+    const server = 'node /plugins/telepathy/dist/server.mjs --agent claude';
+    assert.equal(shellIsTelepathyMonitorOnly([monitor]), true);
+    assert.equal(shellIsTelepathyMonitorOnly([server, monitor]), true);
+    assert.equal(shellIsTelepathyMonitorOnly([monitor, 'sleep 30']), false);
+    assert.equal(shellIsTelepathyMonitorOnly([server]), false);
+    assert.equal(shellIsTelepathyMonitorOnly([]), false);
+    assert.equal(ignoredShellChild('ps aux', 10_000), true);
+    assert.equal(ignoredShellChild('"/usr/bin/ps"', 10_000), true);
+    assert.equal(ignoredShellChild('(ps)', undefined), true);
+    assert.equal(ignoredShellChild('node server.js', 100), true);
+    assert.equal(ignoredShellChild('node server.js', 5_000), false);
+    assert.equal(ignoredShellChild('node /plugins/telepathy/dist/monitor.mjs --agent claude', 100), false);
+  });
+
+  test('list_peers reports idle when the only live command is the telepathy monitor', async () => {
+    const prev = process.env.CLAUDE_CONFIG_DIR;
+    const prevTransient = process.env.TELEPATHY_TRANSIENT_CHILD_MS;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'um-claude-'));
+    process.env.CLAUDE_CONFIG_DIR = dir;
+    process.env.TELEPATHY_TRANSIENT_CHILD_MS = '1';
+    const monitor = sessionWithChildren([['monitor.mjs', '--agent', 'claude']]);
+    const other = sessionWithChildren([['sleep', '30']]);
+    const both = sessionWithChildren([
+      ['monitor.mjs', '--agent', 'claude'],
+      ['sleep', '30'],
+    ]);
+    try {
+      assert.equal(await shellListing(monitor.pid, 1), 'idle');
+      assert.equal(await shellListing(other.pid, 1), 'shell (not generating, but a command it started is still running)');
+      assert.equal(await shellListing(both.pid, 2), 'shell (not generating, but a command it started is still running)');
+    } finally {
+      for (const child of [monitor, other, both]) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          child.kill('SIGKILL');
+        }
+      }
+      if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prev;
+      if (prevTransient === undefined) delete process.env.TELEPATHY_TRANSIENT_CHILD_MS;
+      else process.env.TELEPATHY_TRANSIENT_CHILD_MS = prevTransient;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('monitor line points long messages to read_messages', () => {
@@ -181,11 +355,16 @@ describe('registry', () => {
   test('a reused pid is not mistaken for the old session', async () => {
     const agent = fakeAgent();
     try {
-      registerSession('gemini', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
-      const file = path.join(peerDir(`gemini-${agent.pid}`), 'session.json');
-      const record = JSON.parse(fs.readFileSync(file, 'utf8'));
-      record.procStart = 'Mon Jan  1 00:00:00 2001';
-      fs.writeFileSync(file, JSON.stringify(record));
+      registerSession('qwen', agent.pid, { sessionId: 't', cwd: '/w/x', source: 'hook' });
+      const stale = 'Mon Jan  1 00:00:00 2001';
+      const sessionFile = path.join(peerDir('qwen-t'), 'session.json');
+      const record = JSON.parse(fs.readFileSync(sessionFile, 'utf8')) as { procStart?: string };
+      record.procStart = stale;
+      fs.writeFileSync(sessionFile, JSON.stringify(record));
+      const ownersFile = path.join(peerDir('qwen-t'), 'owners.json');
+      const owners = JSON.parse(fs.readFileSync(ownersFile, 'utf8')) as { procStart?: string }[];
+      owners[0].procStart = stale;
+      fs.writeFileSync(ownersFile, JSON.stringify(owners));
       assert.equal(listPeers().length, 0);
     } finally {
       await killAndWait(agent);
@@ -211,6 +390,65 @@ describe('registry', () => {
       await killAndWait(agent);
     }
   });
+
+  test('a resumed session reclaims the same id, name, and inbox', async () => {
+    const first = fakeAgent();
+    const second = fakeAgent();
+    try {
+      registerSession('claude', first.pid, { sessionId: 'claude-sess', cwd: '/w/app', source: 'hook' });
+      const id = 'claude-claude-sess';
+      const firstPeer = readPeer(id);
+      assert.equal(firstPeer?.address, 'claude:app');
+      writeToInbox({
+        id: 'm-resume',
+        from: { id: 'codex-t', agent: 'codex', name: 'sender', address: 'codex:sender' },
+        to: { id, agent: 'claude', name: 'app', address: 'claude:app' },
+        body: 'waiting',
+        sentAt: new Date().toISOString(),
+      });
+      await killAndWait(first);
+      assert.equal(listPeers().some((p) => p.id === id), false);
+      assert.equal(fs.readdirSync(inboxDir(id)).length, 1);
+
+      fs.mkdirSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'sessions'), { recursive: true });
+      fs.writeFileSync(path.join(sb.env.CLAUDE_CONFIG_DIR, 'sessions', `${second.pid}.json`), JSON.stringify({ name: 'other-name-ab' }));
+      registerSession('claude', second.pid, { sessionId: 'claude-sess', cwd: '/w/elsewhere', source: 'hook' });
+      const again = readPeer(id);
+      assert.equal(again?.name, 'app');
+      assert.equal(again?.address, 'claude:app');
+      assert.equal(again?.pid, second.pid);
+      assert.equal(fs.readdirSync(inboxDir(id)).length, 1);
+      assert.equal(isDeliveryOwner(id, second.pid), true);
+    } finally {
+      await killAndWait(first);
+      await killAndWait(second);
+    }
+  });
+
+  test('two live processes on one session: the first owns delivery, and TELEPATHY_NAME still wins', async () => {
+    const a = fakeAgent();
+    const b = fakeAgent();
+    const prev = process.env.TELEPATHY_NAME;
+    try {
+      registerSession('claude', a.pid, { sessionId: 'same', cwd: '/w/a', source: 'hook' });
+      registerSession('claude', b.pid, { sessionId: 'same', cwd: '/w/b', source: 'hook' });
+      const peers = listPeers().filter((p) => p.sessionId === 'same');
+      assert.equal(peers.length, 1);
+      assert.equal(peers[0]?.duplicate, true);
+      assert.equal(peers[0]?.id, 'claude-same');
+      assert.equal(isDeliveryOwner('claude-same', a.pid), true);
+      assert.equal(isDeliveryOwner('claude-same', b.pid), false);
+      process.env.TELEPATHY_NAME = 'chosen';
+      registerStableName('claude', 'claude-same');
+      assert.equal(readPeer('claude-same')?.address, 'claude:chosen');
+    } finally {
+      if (prev === undefined) delete process.env.TELEPATHY_NAME;
+      else process.env.TELEPATHY_NAME = prev;
+      await killAndWait(a);
+      await killAndWait(b);
+    }
+  });
+
 });
 
 describe('Codex threads in a shared host process', () => {
@@ -252,7 +490,7 @@ describe('Codex threads in a shared host process', () => {
       if (next) await killAndWait(next);
     }
     // A lock file that no process holds (Codex crashed) is no session either, once the lsof result cached for a second expires.
-    await new Promise((r) => setTimeout(r, 1100));
+    await new Promise((r) => setTimeout(r, 1800));
     assert.equal(listPeers().length, 0);
   });
 
@@ -290,6 +528,374 @@ describe('Codex threads in a shared host process', () => {
       assert.deepEqual(listPeers().map((p) => p.id), [`codex-${C}`]);
     } finally {
       await killAndWait(daemon);
+    }
+  });
+});
+
+describe('Codex TUI launch', () => {
+  const T = '01a1176e-84cc-76c3-b84c-8e4da4d38c36';
+
+  test('an interactive command is a TUI, and resume keeps an explicit thread id', () => {
+    assert.deepEqual(codexTuiLaunch('/usr/local/bin/codex'), {});
+    assert.deepEqual(codexTuiLaunch('codex --sandbox workspace-write'), {});
+    assert.deepEqual(codexTuiLaunch('codex -m gpt-5.4 "look at the queue"'), {});
+    assert.deepEqual(codexTuiLaunch('codex resume'), {});
+    assert.deepEqual(codexTuiLaunch('codex resume --last'), {});
+    assert.deepEqual(codexTuiLaunch(`codex resume ${T}`), { threadId: T });
+    assert.deepEqual(codexTuiLaunch(`codex --remote unix:///tmp/codex.sock resume ${T}`), { threadId: T });
+    assert.deepEqual(codexTuiLaunch(`node /usr/local/bin/codex.js`), {});
+    assert.deepEqual(codexTuiLaunch(`codex fork ${T}`), {});
+    assert.equal(codexTuiLaunch('codex app-server --listen stdio'), undefined);
+    assert.equal(codexTuiLaunch('codex exec --full-auto hello'), undefined);
+    assert.equal(codexTuiLaunch('codex e hello'), undefined);
+    assert.equal(codexTuiLaunch('codex queue --thread abc'), undefined);
+    assert.equal(codexTuiLaunch('codex login'), undefined);
+    assert.equal(codexTuiLaunch('codex plugin add telepathy@telepathy'), undefined);
+    assert.equal(codexTuiLaunch('codex mcp-server'), undefined);
+    assert.equal(codexTuiLaunch('codex cloud'), undefined);
+    assert.equal(codexTuiLaunch('codex hello'), undefined);
+    assert.deepEqual(codexTuiLaunch('codex "Fix the bug"'), {});
+    const chatgpt =
+      '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api';
+    assert.equal(codexTuiLaunch(chatgpt), undefined);
+    assert.equal(isCodexExecCommand('codex exec --full-auto hello'), true);
+    assert.equal(isCodexExecCommand('codex e hello'), true);
+    assert.equal(isCodexExecCommand(`codex exec resume ${T}`), true);
+    assert.equal(isCodexExecCommand('codex app-server --listen stdio'), false);
+    assert.equal(isCodexExecCommand(chatgpt), false);
+    assert.equal(isCodexExecCommand('codex'), false);
+    assert.equal(codexTuiLaunch('node /opt/telepathy/dist/server.mjs --agent codex'), undefined);
+    assert.equal(codexTuiLaunch('bash -c codex'), undefined);
+  });
+
+  test('an npm node wrapper and its native codex child are one peer', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const wrapper = fakeAgent();
+    const child = fakeAgent();
+    const wrapperArgs = 'node /usr/local/lib/node_modules/@openai/codex/bin/codex.js';
+    const childArgs = '/usr/local/lib/node_modules/@openai/codex/codex';
+    try {
+      const deduped = dedupeCodexTuiProcs(
+        [
+          { pid: wrapper.pid, args: wrapperArgs },
+          { pid: child.pid, args: childArgs },
+        ],
+        (pid) => (pid === child.pid ? wrapper.pid : undefined),
+      );
+      assert.deepEqual(deduped.map((proc) => proc.pid), [child.pid]);
+      assert.deepEqual(deduped[0]?.wrapperPids, [wrapper.pid]);
+
+      setCodexProcs(sb, [{ pid: wrapper.pid, args: wrapperArgs, cwd: '/work/app' }]);
+      assert.ok(listPeers().some((peer) => peer.id === `codex-${wrapper.pid}`));
+
+      setCodexProcs(sb, [
+        { pid: wrapper.pid, args: wrapperArgs, cwd: '/work/app', ppid: 1 },
+        { pid: child.pid, args: childArgs, cwd: '/work/app', ppid: wrapper.pid },
+      ]);
+      const peers = listPeers().filter((peer) => peer.agent === 'codex' && (peer.pid === wrapper.pid || peer.pid === child.pid));
+      assert.deepEqual(peers.map((peer) => peer.pid), [child.pid]);
+      const link = JSON.parse(fs.readFileSync(path.join(sb.home, 'peers', `codex-${wrapper.pid}`, 'link.json'), 'utf8')) as { id: string };
+      assert.equal(link.id, `codex-${child.pid}`);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(wrapper);
+      await killAndWait(child);
+      sb.cleanup();
+    }
+  });
+
+  test('a launched Codex with no thread stays its own row when another session appears', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const tui = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a12026-d630-7370-90eb-ec83c96df383';
+    try {
+      setCodexProcs(sb, [{ pid: tui.pid, args: '/usr/local/bin/codex', cwd: '/work/app' }]);
+      const listed = listPeers().find((p) => p.id === `codex-${tui.pid}`);
+      assert.ok(listed);
+      assert.equal(listed.sessionId, undefined);
+      assert.equal(listed.address, named('codex', 'app', tui.pid));
+      assert.match(describePeer(listed), /no thread yet/);
+      assert.equal(listPeers().some((p) => p.sessionId === thread), false);
+
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.ok(after.some((p) => p.id === `codex-${tui.pid}`));
+      const bound = after.find((p) => p.id === `codex-${thread}`);
+      assert.ok(bound);
+      assert.notEqual(bound.address, listed.address);
+      assert.equal(fs.existsSync(path.join(sb.home, 'peers', `codex-${tui.pid}`, 'link.json')), false);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('two unprompted Codex windows in one directory stay two rows when a thread appears', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const a = fakeAgent();
+    const b = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a0b3be-0955-74c0-a260-f68625685956';
+    try {
+      setCodexProcs(sb, [
+        { pid: a.pid, args: 'codex', cwd: '/work/app' },
+        { pid: b.pid, args: 'codex', cwd: '/work/app' },
+      ]);
+      assert.equal(listPeers().filter((p) => p.agent === 'codex' && !p.sessionId).length, 2);
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.equal(after.filter((p) => !p.sessionId).length, 2);
+      const bound = after.find((p) => p.sessionId === thread);
+      assert.ok(bound);
+      assert.notEqual(bound.address, named('codex', 'app', a.pid));
+      assert.notEqual(bound.address, named('codex', 'app', b.pid));
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(a);
+      await killAndWait(b);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('a window in another directory is not treated as the new thread', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const tui = fakeAgent();
+    const daemon = fakeAgent();
+    const thread = '01a11b03-f89f-7273-a33b-f530a64cc9c0';
+    try {
+      setCodexProcs(sb, [{ pid: tui.pid, args: 'codex', cwd: '/work/other' }]);
+      listPeers();
+      registerSession('codex', daemon.pid, { sessionId: thread, cwd: '/work/app', source: 'hook', codexHome: sb.codexHome });
+      const after = listPeers();
+      assert.ok(after.some((p) => p.id === `codex-${tui.pid}`));
+      assert.ok(after.some((p) => p.id === `codex-${thread}`));
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(tui);
+      await killAndWait(daemon);
+      sb.cleanup();
+    }
+  });
+
+  test('codex resume of an id is that thread before a hook, and the name survives the next resume', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    fs.mkdirSync(path.join(sb.codexHome, 'thread-writer-locks'), { recursive: true });
+    const thread = '01a13000-aaaa-7000-8000-000000000001';
+    const first = fakeAgent();
+    try {
+      setCodexProcs(sb, [{ pid: first.pid, args: `codex resume ${thread}`, cwd: '/work/kept' }]);
+      const listed = listPeers();
+      assert.deepEqual(listed.map((p) => p.id), [`codex-${thread}`]);
+      assert.equal(listed[0]?.address, named('codex', 'kept', thread));
+      assert.equal(listed[0]?.sessionId, thread);
+      const address = listed[0]?.address;
+
+      const second = fakeAgent();
+      try {
+        setCodexProcs(sb, [{ pid: second.pid, args: `codex resume ${thread}`, cwd: '/work/elsewhere' }]);
+        await killAndWait(first);
+        const again = listPeers();
+        assert.deepEqual(again.map((p) => p.id), [`codex-${thread}`]);
+        assert.equal(again[0]?.address, address);
+      } finally {
+        await killAndWait(second);
+      }
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(first);
+      sb.cleanup();
+    }
+  });
+
+  test('the ChatGPT helper and an app-bundle parent are hidden, and a foreign CODEX_HOME is still listed', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    delete process.env.CODEX_HOME;
+    const helper = fakeAgent();
+    const bundled = fakeAgent();
+    const foreign = fakeAgent();
+    const own = fakeAgent();
+    const chatgpt =
+      '/Applications/ChatGPT.app/Contents/Resources/codex -c forced_login_method="chatgpt" exec-server --remote https://codex-cloud-environments.chatgpt.com/api';
+    const foreignHome = '/tmp/other-codex-home';
+    try {
+      setCodexProcs(sb, [
+        { pid: helper.pid, args: chatgpt, cwd: '/Users/example' },
+        { pid: bundled.pid, args: 'codex', cwd: '/Users/example', parent: '/Applications/ChatGPT.app/Contents/MacOS/ChatGPT' },
+        { pid: foreign.pid, args: 'codex', cwd: '/work/foreign', codexHome: foreignHome },
+        { pid: own.pid, args: 'codex', cwd: '/work/own', parent: '/bin/zsh', codexHome: sb.codexHome },
+      ]);
+      const ids = () => listPeers().map((p) => p.id);
+      assert.equal(ids().includes(`codex-${helper.pid}`), false);
+      assert.equal(ids().includes(`codex-${bundled.pid}`), false);
+      assert.equal(ids().includes(`codex-${foreign.pid}`), true);
+      assert.equal(ids().includes(`codex-${own.pid}`), true);
+      const foreignSession = JSON.parse(
+        fs.readFileSync(path.join(sb.home, 'peers', `codex-${foreign.pid}`, 'session.json'), 'utf8'),
+      ) as { codexHome?: string };
+      assert.equal(foreignSession.codexHome, foreignHome);
+      process.env.CODEX_HOME = sb.codexHome;
+      assert.equal(ids().includes(`codex-${foreign.pid}`), true);
+      assert.equal(readPeer(`codex-${foreign.pid}`)?.codexHome, foreignHome);
+      for (const pid of [helper.pid, bundled.pid]) {
+        assert.equal(fs.existsSync(path.join(sb.home, 'peers', `codex-${pid}`, 'session.json')), false);
+      }
+    } finally {
+      setCodexProcs(sb, []);
+      process.env.CODEX_HOME = sb.codexHome;
+      await killAndWait(helper);
+      await killAndWait(bundled);
+      await killAndWait(foreign);
+      await killAndWait(own);
+      sb.cleanup();
+    }
+  });
+
+  test('a busy process table does not spawn ps once per process', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'um-ps-'));
+    const log = path.join(dir, 'ps.log');
+    const bin = path.join(dir, 'ps');
+    fs.writeFileSync(
+      bin,
+      `#!/usr/bin/env node
+const fs = require('fs');
+const argv = process.argv.slice(2);
+fs.appendFileSync(process.env.PS_LOG, JSON.stringify(argv) + '\\n');
+const joined = argv.join(' ');
+const noise = 600;
+if (joined.includes('pid=,args=')) {
+  let out = '2500000 codex\\n2500001 codex\\n10 /bin/zsh\\n11 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\\n';
+  for (let i = 0; i < noise; i++) out += (3000000 + i) + ' node worker-' + i + '\\n';
+  process.stdout.write(out);
+} else if (joined.includes('lstart')) {
+  let out = '2500000 10 Wed Oct 28 12:00:00 2026 codex\\n2500001 11 Wed Oct 28 12:00:00 2026 codex\\n10 1 Wed Oct 28 12:00:00 2026 /bin/zsh\\n11 1 Wed Oct 28 12:00:00 2026 /Applications/ChatGPT.app/Contents/MacOS/ChatGPT\\n';
+  for (let i = 0; i < noise; i++) out += (3000000 + i) + ' 1 Wed Oct 28 12:00:00 2026 node\\n';
+  process.stdout.write(out);
+} else if (joined.includes('-E')) {
+  process.stdout.write('2500000 CODEX_HOME=/tmp/codex-from-ps /usr/local/bin/codex\\n');
+} else {
+  process.stderr.write('unexpected ps ' + joined + '\\n');
+  process.exit(1);
+}
+`,
+    );
+    fs.chmodSync(bin, 0o755);
+    const prevPs = process.env.TELEPATHY_PS_BIN;
+    const prevProcs = process.env.TELEPATHY_CODEX_PROCS;
+    const prevLog = process.env.PS_LOG;
+    delete process.env.TELEPATHY_CODEX_PROCS;
+    process.env.TELEPATHY_PS_BIN = bin;
+    process.env.PS_LOG = log;
+    clearProcessListCache();
+    clearCodexTuiCache();
+    try {
+      const procs = codexTuiProcesses();
+      assert.equal(procs.length, 1);
+      assert.equal(procs[0]?.pid, 2500000);
+      assert.equal(procs[0]?.codexHome, '/tmp/codex-from-ps');
+      const calls = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean);
+      assert.ok(calls.length <= 4, calls.join('\n'));
+      const envCalls = calls.filter((call) => call.includes('-E'));
+      assert.equal(envCalls.length, 1);
+      assert.match(envCalls[0] ?? '', /2500000/);
+      assert.doesNotMatch(envCalls[0] ?? '', /2500001/);
+      assert.doesNotMatch(envCalls[0] ?? '', /3000000/);
+      codexTuiProcesses();
+      const again = fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean);
+      assert.equal(again.length, calls.length);
+    } finally {
+      clearProcessListCache();
+      clearCodexTuiCache();
+      if (prevPs === undefined) delete process.env.TELEPATHY_PS_BIN;
+      else process.env.TELEPATHY_PS_BIN = prevPs;
+      if (prevProcs === undefined) delete process.env.TELEPATHY_CODEX_PROCS;
+      else process.env.TELEPATHY_CODEX_PROCS = prevProcs;
+      if (prevLog === undefined) delete process.env.PS_LOG;
+      else process.env.PS_LOG = prevLog;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a hook-registered codex exec is reachable without a writer lock, and offline once it exits', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    fs.mkdirSync(path.join(sb.codexHome, 'thread-writer-locks'), { recursive: true });
+    const bin = path.join(path.dirname(sb.home), 'codex');
+    fs.writeFileSync(bin, '#!/bin/sh\nsleep 30\n');
+    fs.chmodSync(bin, 0o755);
+    const thread = '01a14000-bbbb-7000-8000-000000000002';
+    const helperThread = '01a14000-bbbb-7000-8000-000000000004';
+    const exec = spawn(bin, ['exec', '--full-auto', 'ship it'], { stdio: 'ignore' });
+    const daemon = spawn(bin, ['app-server'], { stdio: 'ignore' });
+    const helper = spawn(bin, ['exec-server', '--remote', 'https://codex-cloud-environments.chatgpt.com/api'], { stdio: 'ignore' });
+    try {
+      registerSession('codex', exec.pid!, { sessionId: thread, cwd: '/work/execd', source: 'hook', codexHome: sb.codexHome });
+      const listed = listPeers().find((p) => p.id === `codex-${thread}`);
+      assert.ok(listed, 'exec stays listed while its process holds the thread');
+      assert.equal(listed?.sessionId, thread);
+      registerSession('codex', daemon.pid!, {
+        sessionId: '01a14000-bbbb-7000-8000-000000000003',
+        cwd: '/work/execd',
+        source: 'hook',
+        codexHome: sb.codexHome,
+      });
+      registerSession('codex', helper.pid!, {
+        sessionId: helperThread,
+        cwd: '/work/execd',
+        source: 'hook',
+        codexHome: sb.codexHome,
+      });
+      assert.equal(
+        listPeers().some((p) => p.sessionId === '01a14000-bbbb-7000-8000-000000000003'),
+        false,
+        'app-server without a writer lock is not a live thread',
+      );
+      assert.equal(
+        listPeers().some((p) => p.sessionId === helperThread),
+        false,
+        'exec-server is not an exec thread',
+      );
+    } finally {
+      await killAndWait(exec);
+      await killAndWait(daemon);
+      await killAndWait(helper);
+    }
+    assert.equal(listPeers().some((p) => p.id === `codex-${thread}`), false);
+    sb.cleanup();
+  });
+
+  test('app-server and exec are not sessions', async () => {
+    const sb = makeSandbox();
+    process.env.TELEPATHY_HOME = sb.home;
+    process.env.CODEX_HOME = sb.codexHome;
+    const daemon = fakeAgent();
+    const exec = fakeAgent();
+    try {
+      setCodexProcs(sb, [
+        { pid: daemon.pid, args: 'codex app-server --listen stdio' },
+        { pid: exec.pid, args: 'codex exec --full-auto ship it' },
+      ]);
+      assert.deepEqual(listPeers(), []);
+    } finally {
+      setCodexProcs(sb, []);
+      await killAndWait(daemon);
+      await killAndWait(exec);
+      sb.cleanup();
     }
   });
 });
@@ -344,7 +950,9 @@ describe('ListAgents rows', () => {
 describe('installed copies', () => {
   test('each agent\'s install is found where that agent keeps it, with its version', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-installs-'));
-    const saved = Object.fromEntries(['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'].map((k) => [k, process.env[k]]));
+    const saved = Object.fromEntries(
+      ['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'COPILOT_HOME', 'TELEPATHY_HOME'].map((k) => [k, process.env[k]]),
+    );
     const write = (file: string, content: string) => {
       fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
       fs.writeFileSync(path.join(base, file), content);
@@ -357,6 +965,8 @@ describe('installed copies', () => {
         XDG_DATA_HOME: path.join(base, '.local', 'share'),
         CLAUDE_CONFIG_DIR: path.join(base, '.claude'),
         CODEX_HOME: path.join(base, '.codex'),
+        COPILOT_HOME: path.join(base, '.copilot'),
+        TELEPATHY_HOME: path.join(base, '.telepathy'),
       });
       assert.deepEqual(findInstalls(), []);
       write(
@@ -378,7 +988,6 @@ describe('installed copies', () => {
       assert.deepEqual(found, {
         claude: '0.6.0@telepathy',
         codex: '0.10.0@telepathy', // the newest folder, compared as versions, not text
-        gemini: '0.4.4',
         qwen: '0.4.3',
         copilot: '0.4.2@telepathy',
         devin: '0.4.1',
@@ -393,6 +1002,79 @@ describe('installed copies', () => {
         else process.env[k] = v;
       }
       fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('copilot installs in COPILOT_HOME, local folders, --plugin-dir, and TELEPATHY_HOME all count', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-copilot-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'um-copilot-out-'));
+    const savedEnv = Object.fromEntries(
+      ['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'COPILOT_HOME', 'TELEPATHY_HOME'].map((k) => [k, process.env[k]]),
+    );
+    const savedArgv = process.argv;
+    const write = (file: string, content: string) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content);
+    };
+    const manifest = (version: string) => JSON.stringify({ name: 'telepathy', version });
+    const copilotHome = path.join(outside, 'copilot-home');
+    const telepathyHome = path.join(base, '.telepathy');
+    const localDir = path.join(base, 'local-plugin');
+    const disabledDir = path.join(base, 'disabled-plugin');
+    const pluginDir = path.join(base, 'argv-plugin');
+    const market = path.join(base, 'market', 'telepathy');
+    try {
+      Object.assign(process.env, {
+        HOME: base,
+        XDG_CACHE_HOME: path.join(base, '.cache'),
+        XDG_DATA_HOME: path.join(base, '.local', 'share'),
+        CLAUDE_CONFIG_DIR: path.join(base, '.claude'),
+        CODEX_HOME: path.join(base, '.codex'),
+        COPILOT_HOME: copilotHome,
+        TELEPATHY_HOME: telepathyHome,
+      });
+      write(path.join(copilotHome, 'installed-plugins', '_direct', 'src-abc', '.github', 'plugin', 'plugin.json'), manifest('0.9.1'));
+      write(path.join(localDir, '.github', 'plugin', 'plugin.json'), manifest('0.8.0'));
+      write(path.join(disabledDir, 'plugin.json'), manifest('9.9.9'));
+      write(
+        path.join(copilotHome, 'config.json'),
+        JSON.stringify({
+          installedPlugins: [
+            { name: 'telepathy', version: '0.8.0', cache_path: localDir, marketplace: 'local' },
+            { name: 'telepathy', enabled: false, cache_path: disabledDir, version: '9.9.9' },
+            { name: 'other', version: '1.0.0', cache_path: localDir },
+          ],
+        }),
+      );
+      write(path.join(pluginDir, 'plugin.json'), manifest('0.7.5'));
+      write(path.join(telepathyHome, '.copilot', 'installed-plugins', 'telepathy', 'telepathy', '.github', 'plugin', 'plugin.json'), manifest('0.6.0'));
+      write(path.join(market, '.github', 'plugin', 'plugin.json'), manifest('0.5.0'));
+      write(
+        path.join(base, '.github', 'copilot', 'settings.json'),
+        JSON.stringify({
+          extraKnownMarketplaces: { mine: { source: { source: 'directory', path: path.join(base, 'market') } } },
+          installed_plugins: [{ name: 'telepathy', version: '0.4.0', source: { source: 'local', path: path.join(base, 'missing-local') } }],
+        }),
+      );
+      process.argv = [process.argv[0] ?? 'node', 'telepathy', '--cwd', base, '--plugin-dir', pluginDir];
+
+      const found = findInstalls().filter((install) => install.agent === 'copilot');
+      const labels = found.map((install) => `${install.version}${install.marketplace ? `@${install.marketplace}` : ''}`).sort();
+      assert.deepEqual(labels, ['0.5.0', '0.6.0@telepathy', '0.7.5', '0.8.0', '0.9.1']);
+      assert.equal(found.some((install) => install.version === '9.9.9' || install.version === '0.4.0'), false);
+
+      const scoped = installsInScope().filter((install) => install.agent === 'copilot');
+      assert.equal(scoped.some((install) => install.version === '0.9.1'), false);
+      assert.equal(scoped.some((install) => install.version === '0.6.0'), true);
+      assert.equal(pluginInstalled('copilot'), true);
+    } finally {
+      process.argv = savedArgv;
+      for (const [k, v] of Object.entries(savedEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

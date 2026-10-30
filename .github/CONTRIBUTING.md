@@ -30,8 +30,8 @@ While testing, `TELEPATHY_DEBUG=1` logs hook, server, monitor and plugin activit
 - `src/server.ts` is the MCP server, `src/hook.ts` the hooks for every agent, `src/monitor.ts` Claude Code's
   monitor, and `src/opencode.ts` the OpenCode and Kilo Code plugin.
 - `scripts/build.mjs` bundles everything into `plugin/dist/` and writes each agent's generated files.
-- Manifests: `plugin/` (Claude Code, Codex, Copilot CLI, Cursor, Devin, Grok), the repo root (Gemini CLI, Qwen Code,
-  Kimi Code) and `antigravity/`.
+- Manifests: `plugin/` (Claude Code, Codex, Copilot CLI, Cursor, Devin, Grok), the repo root (Qwen Code,
+  Kimi Code) and `antigravity/` (App, CLI, and IDE).
 - `test/core.test.ts` covers the logic; `test/integration.test.ts` drives the built plugin, hooks, monitor and
   OpenCode plugin end to end.
 

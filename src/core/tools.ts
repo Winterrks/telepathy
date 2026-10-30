@@ -13,19 +13,31 @@ import { listPeers, type Peer } from './peers.ts';
 export interface ToolResult {
   text: string;
   isError?: boolean;
+  /**
+   * Machine-readable messages for clients that must not parse the status text. Empty means there is no message.
+   * `from` is the sender's address (`claude:name`).
+   */
+  structured?: { messages: StoredMessage[] };
+}
+
+export interface StoredMessage {
+  id: string;
+  from: string;
+  sentAt: string;
+  body: string;
 }
 
 export const TOOLS = {
   list_peers: {
     title: 'List reachable agent sessions',
     description:
-      'List the coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI…) that you can message with send_message, with their address, [ref] and working directory.',
+      'List the coding-agent sessions on this machine (Claude Code, Codex, Antigravity…) that you can message with send_message, with their address, [ref] and working directory.',
     args: {},
   },
   send_message: {
     title: 'Message another agent session',
     description:
-      "Message another coding-agent session on this machine (see list_peers). It doesn't share your context, so make the message self-contained.",
+      "Message another coding-agent session on this machine (see list_peers). It waits until the recipient's transcript shows the message, and it succeeds only then. It doesn't share your context, so make the message self-contained. For a session that is not Claude Code, use this tool rather than SendMessage.",
     args: {
       to: z.string().describe('Recipient address like "codex:fix-auth", or its [ref] like "codex-4242", from list_peers'),
       message: z.string().describe('The message text'),
@@ -34,7 +46,8 @@ export const TOOLS = {
   read_messages: {
     title: 'Read received messages',
     description:
-      'Read messages other agent sessions sent to this session: any not yet shown, or one by id (for the full text of a long message).',
+      'Read messages other agent sessions sent to this session: any not yet shown, or one by id (for the full text of a long message). ' +
+      'structuredContent.messages is the same messages as {id, from, sentAt, body}. An empty array means there is no message; the status text is not one.',
     args: {
       id: z.string().optional().describe('A message id such as "m-0mfx3k2a1-4f2a9c"'),
       limit: z.number().int().min(1).max(50).optional().describe('How many recent messages to show when none are new (default 3)'),
@@ -54,13 +67,20 @@ export async function sendMessageTool(self: Peer, to: string, message: string): 
 
 const render = (title: string, messages: Message[]) => [title, ...messages.map(formatForReading)].join('\n\n');
 
+const stored = (msg: Message): StoredMessage => ({ id: msg.id, from: msg.from.address, sentAt: msg.sentAt, body: msg.body });
+
 export function readMessagesTool(selfId: string, { id, limit }: { id?: string; limit?: number }): ToolResult {
   const fresh = claimInbox(selfId);
   if (id) {
     const msg = fresh.find((m) => m.id === id) ?? readArchived(selfId, id);
-    return msg ? { text: formatForReading(msg) } : { text: `No message with id ${id} was received by this session.`, isError: true };
+    return msg
+      ? { text: formatForReading(msg), structured: { messages: [stored(msg)] } }
+      : { text: `No message with id ${id} was received by this session.`, isError: true, structured: { messages: [] } };
   }
-  if (fresh.length) return { text: render(`${fresh.length} new message(s):`, fresh) };
+  if (fresh.length) return { text: render(`${fresh.length} new message(s):`, fresh), structured: { messages: fresh.map(stored) } };
   const recent = recentArchived(selfId, limit ?? 3);
-  return { text: recent.length ? render('No new messages. Most recent received:', recent) : 'No messages received yet.' };
+  return {
+    text: recent.length ? render('No new messages. Most recent received:', recent) : 'No messages received yet.',
+    structured: { messages: recent.map(stored) },
+  };
 }

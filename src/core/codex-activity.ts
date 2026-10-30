@@ -5,8 +5,8 @@ import path from 'node:path';
 const TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
 
 /**
- * `interrupted`: the last turn was aborted (Esc). Codex 0.156 then holds `codex queue` messages until the user sends
- * the next prompt, so the session is idle but won't wake for a message.
+ * `interrupted`: the last turn was aborted (Esc). Codex leaves `codex queue` paused after an interrupt (app-server
+ * commit 9341b38, 13 Aug 2026) and does not start those items. A send in that state fails immediately and writes nothing.
  */
 export type CodexActivity = 'busy' | 'idle' | 'interrupted';
 
@@ -16,7 +16,7 @@ const TURN_EVENTS: Record<string, CodexActivity> = { task_started: 'busy', task_
  * Codex writes each thread to `<codexHome>/sessions/YYYY/MM/DD/rollout-<time>-<threadId>.jsonl`, and a long
  * thread goes on in further segments, `rollout-<time>-<threadId>_<segmentId>.jsonl`. The newest one is current.
  */
-function findRollout(codexHome: string, threadId: string): string | undefined {
+export function findRollout(codexHome: string, threadId: string): string | undefined {
   const isRollout = (f: string) =>
     f.startsWith('rollout-') && (f.endsWith(`-${threadId}.jsonl`) || (f.includes(`-${threadId}_`) && f.endsWith('.jsonl')));
   const sorted = (dir: string) => {

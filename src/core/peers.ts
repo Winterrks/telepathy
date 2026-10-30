@@ -3,17 +3,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { AGENT_ALTERNATION, type Agent, agentLabel } from './agents.ts';
-import { ensureDir, inboxDir, peerDir, peersDir, readJson, writeJsonAtomic } from './paths.ts';
+import { configuredEnv, ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import { VERSION } from './version.ts';
+import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand, processCwd } from './codex-launch.ts';
 import { codexThreadLoaded } from './codex-threads.ts';
-import { isSameProcess, procStart } from './proc.ts';
+import { commandLine, isSameProcess, procStart } from './proc.ts';
 
 export { agentLabel };
 
 /**
  * The registry is one directory per session, `peers/<agent>-<key>/`, holding one file per writer
- * so no two processes ever write the same file. The key is the agent process's pid, except for Codex, whose
- * sessions go by their thread id (see sessionKey):
+ * so no two processes ever write the same file. The key is the harness's own session id when the hook,
+ * the tool call, or an environment variable reports one (so `claude --resume` keeps the id). A process that
+ * has not reported a session id yet is still keyed by its pid:
  *   session.json   SessionStart hook (or in-process plugin): session/thread id and cwd
  *   presence.json  MCP server (or in-process plugin): proves telepathy is loaded in that session
  *   listener.json  whatever wakes the session when a message arrives (Claude's monitor, an in-process
@@ -25,12 +27,21 @@ export interface SessionRecord {
   procStart?: string;
   sessionId?: string;
   cwd?: string;
-  /** Where the id came from: a SessionStart hook, the `_meta` of a Codex tool call, or an in-process plugin. */
-  source: 'hook' | 'meta' | 'plugin';
+  /** Where the id came from: a SessionStart hook, the `_meta` of a Codex tool call, an in-process plugin, or a Codex TUI seen in the process table before it has a thread. */
+  source: 'hook' | 'meta' | 'plugin' | 'process';
   codexHome?: string;
   /** When this session was first registered: a Codex thread has no process of its own to tell. */
   startedAt?: string;
+  /** Antigravity surface, from the transcript path (`app`, `cli`, or `ide`). */
+  surface?: 'app' | 'cli' | 'ide';
+  /** `transcript.jsonl` for this Antigravity conversation, when a hook reported it. */
+  transcriptPath?: string;
   updatedAt: string;
+  /**
+   * When this process was first seen to be gone. Inbox files newer than this were written after the session
+   * stopped and are not delivered on resume. Unset while a process is running.
+   */
+  exitedAt?: string;
 }
 
 export interface PresenceRecord {
@@ -80,24 +91,130 @@ export interface Peer {
    * written without the suffix, or one an older version handed out, keeps working.
    */
   aliases?: string[];
+  /**
+   * A name the user set (`TELEPATHY_NAME` or `--name`). It replaces the generated name, so the address is
+   * whatever the user chose. Unset when the session is still named from its folder or from Claude's own name.
+   */
+  stableName?: string;
+  /** Another live process claimed this same harness session. The first claimant owns delivery. */
+  duplicate?: boolean;
 }
 
 export const peerId = (agent: Agent, key: number | string) => `${agent}-${key}`;
 
 /**
- * Codex runs many threads in one process: since 0.161 every terminal session is a client of one shared app-server
- * daemon, which Codex replaces with a new process when it updates, and the ChatGPT app hosts all its threads in its
- * own app server. Hooks and MCP servers are children of that process, so its pid tells neither the sessions apart
- * nor a session across an update. A Codex session goes by its thread id instead, which also survives `codex resume`.
- * OpenCode 2 is alike (its background service hosts every session), and its plugin keys its sessions itself. Every
- * other agent runs one session per process and goes by its pid.
+ * Codex runs many threads in one process, and OpenCode's service hosts every session. Every harness that reports
+ * a durable session id is keyed by that id, not by the pid, so a resume (`claude --resume`, `codex resume`, an
+ * OpenCode session that continues) is the same peer and keeps its name. A process that has not reported an id
+ * yet is still keyed by its pid. A send to a session whose process is gone fails and writes nothing.
  */
-export const sessionKey = (agent: Agent, pid: number, sessionId: string | undefined): number | string =>
-  agent === 'codex' && sessionId ? sessionId : pid;
+export const sessionKey = (_agent: Agent, pid: number, sessionId: string | undefined): number | string =>
+  sessionToken(sessionId) ?? pid;
 
-/** The id of the session an agent process is running: `codex-<thread id>` for Codex, `<agent>-<pid>` otherwise. */
+/**
+ * Filesystem-safe form of a harness session id. UUIDs, Codex thread ids, and OpenCode `ses_` ids pass through.
+ * Undefined when the value is empty or too long to be a directory name.
+ */
+export function sessionToken(sessionId: string | undefined): string | undefined {
+  const trimmed = sessionId?.trim();
+  if (!trimmed || trimmed.length > 180) return undefined;
+  const safe = trimmed.replace(/[^A-Za-z0-9_-]/g, '_');
+  return /^[A-Za-z0-9]/.test(safe) ? safe : undefined;
+}
+
+/** The id of the session an agent process is running: `<agent>-<session id>` once that id is known, else `<agent>-<pid>`. */
 export const sessionPeerId = (agent: Agent, pid: number, sessionId: string | undefined) =>
   peerId(agent, sessionKey(agent, pid, sessionId));
+
+interface OwnerRecord {
+  pid: number;
+  procStart?: string;
+  at: string;
+}
+
+interface RememberedName {
+  name: string;
+}
+
+const ownersFile = (id: string) => path.join(peerDir(id), 'owners.json');
+const linkFile = (agent: Agent, pid: number) => path.join(peerDir(peerId(agent, pid)), 'link.json');
+const rememberedFile = (agent: Agent, sessionId: string) =>
+  path.join(stateDir(), 'identities', agent, `${sessionToken(sessionId)}.json`);
+
+/** Live processes that have claimed this session, oldest claimant first. The first one owns delivery. */
+export function sessionOwners(id: string): OwnerRecord[] {
+  const owners = readJson<OwnerRecord[]>(ownersFile(id)) ?? [];
+  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+}
+
+/** Records `pid` as a claimant. Returns whether this process is the one that owns delivery. */
+export function claimSessionOwner(id: string, pid: number): boolean {
+  const owners = sessionOwners(id);
+  if (!owners.some((owner) => owner.pid === pid)) {
+    owners.push({ pid, procStart: procStart(pid), at: new Date().toISOString() });
+    owners.sort((a, b) => a.at.localeCompare(b.at));
+    writeJsonAtomic(ownersFile(id), owners);
+  }
+  return owners[0]?.pid === pid;
+}
+
+/**
+ * Leaves `pid` as the only owner. `telepathy run copilot` used to claim npm's launcher and the real
+ * CLI both, and list_peers then called that one session a duplicate.
+ */
+export function focusSessionOwner(id: string, pid: number): void {
+  const record: OwnerRecord = { pid, procStart: procStart(pid), at: new Date().toISOString() };
+  writeJsonAtomic(ownersFile(id), [record]);
+  const session = readSession(id);
+  if (!session || session.pid === pid) return;
+  writeJsonAtomic(path.join(peerDir(id), 'session.json'), { ...session, pid, procStart: record.procStart });
+}
+
+/**
+ * Points a pid-keyed directory at the session peer and moves its inbox, without claiming ownership.
+ * This is the same `link.json` the hook writes once the session id is known.
+ */
+export function linkAgentProcess(agent: Agent, pid: number, sessionPeer: string): void {
+  const from = peerId(agent, pid);
+  if (from === sessionPeer) return;
+  writeJsonAtomic(linkFile(agent, pid), { id: sessionPeer });
+  moveInbox(from, sessionPeer);
+}
+
+/** True when this process should deliver inbound messages. A second process on the same session does not. */
+export function isDeliveryOwner(id: string, pid: number): boolean {
+  const owners = sessionOwners(id);
+  return owners.length === 0 || owners[0]?.pid === pid;
+}
+
+/** The canonical peer id this process was linked to once its session id was known. */
+export function linkedPeerId(agent: Agent, pid: number): string | undefined {
+  const link = readJson<{ id?: unknown }>(linkFile(agent, pid));
+  return typeof link?.id === 'string' ? link.id : undefined;
+}
+
+/**
+ * Remembers `name` the first time this harness session is seen. A later call keeps the stored name, so an
+ * OpenCode process can carry the name it showed while it was still keyed by pid.
+ */
+export function keepSessionName(agent: Agent, sessionId: string, name: string): string {
+  return rememberName(agent, sessionId, name);
+}
+
+function rememberName(agent: Agent, sessionId: string, generated: string): string {
+  const token = sessionToken(sessionId);
+  if (!token) return generated;
+  const file = rememberedFile(agent, sessionId);
+  const existing = readJson<RememberedName>(file);
+  if (existing?.name) return existing.name;
+  writeJsonAtomic(file, { name: generated } satisfies RememberedName);
+  return generated;
+}
+
+function rememberedName(agent: Agent, sessionId: string | undefined): string | undefined {
+  if (!sessionId || !sessionToken(sessionId)) return undefined;
+  return readJson<RememberedName>(rememberedFile(agent, sessionId))?.name;
+}
 
 export function markToolHook(id: string): void {
   const file = path.join(peerDir(id), 'tool-hook.json');
@@ -113,39 +230,117 @@ const AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 /** A ref like `claude-4242`, a Codex thread's `codex-01a1176e-84cc-76c3-b84c-8e4da4d38c36`, or `opencode-ses_edfc…`. */
 const REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
 
-export const defaultCodexHome = () => process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+export const defaultCodexHome = () => configuredEnv('CODEX_HOME') || path.join(os.homedir(), '.codex');
+
+/** Copilot's event log. `COPILOT_HOME` relocates it; the default is `~/.copilot`. */
+export function copilotEventsFile(sessionId: string, env: NodeJS.ProcessEnv = process.env): string {
+  const home = configuredEnv('COPILOT_HOME', env) || path.join(os.homedir(), '.copilot');
+  return path.join(home, 'session-state', sessionId, 'events.jsonl');
+}
 export const claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');
 
 export function registerSession(
   agent: Agent,
   pid: number,
-  fields: { sessionId?: string; cwd?: string; source: SessionRecord['source']; codexHome?: string },
+  fields: {
+    sessionId?: string;
+    cwd?: string;
+    source: SessionRecord['source'];
+    codexHome?: string;
+    surface?: SessionRecord['surface'];
+    transcriptPath?: string;
+  },
   id = sessionPeerId(agent, pid, fields.sessionId),
 ): SessionRecord {
   const file = path.join(peerDir(id), 'session.json');
   const previous = readJson<SessionRecord>(file);
   const now = new Date().toISOString();
+  const owner = fields.sessionId ? claimSessionOwner(id, pid) : true;
+  const primary = fields.sessionId ? sessionOwners(id)[0] : undefined;
   const record: SessionRecord = {
     agent,
-    pid,
-    procStart: procStart(pid),
+    pid: primary?.pid ?? pid,
+    procStart: primary?.procStart ?? procStart(pid),
     ...fields,
     startedAt: (previous?.sessionId === fields.sessionId && previous?.startedAt) || now,
     updatedAt: now,
+    surface: fields.surface ?? previous?.surface,
+    transcriptPath: fields.transcriptPath ?? previous?.transcriptPath,
   };
+  // A resume is a live process again. Mail written after the previous process exited is not in flight.
+  if (previous?.exitedAt) dropInboxAfter(id, previous.exitedAt);
   writeJsonAtomic(file, record);
-  if (fields.sessionId) adoptHeldMessages(agent, id, fields.sessionId);
+  if (fields.sessionId && sessionToken(fields.sessionId)) {
+    const key = sessionToken(fields.sessionId) as string;
+    const carried = agent === 'codex' ? carryLaunchedCodexName(fields.sessionId) : undefined;
+    rememberName(agent, fields.sessionId, carried ?? displayName(agent, pid, key, fields.cwd ?? previous?.cwd));
+    if (peerId(agent, pid) !== id) {
+      writeJsonAtomic(linkFile(agent, pid), { id });
+      if (owner) moveInbox(peerId(agent, pid), id);
+    }
+    adoptHeldMessages(agent, id, fields.sessionId);
+  }
   return record;
 }
 
-/** How long unread messages of a session that exited wait for the session to be resumed. */
+/**
+ * Records that this session's process is gone, once. A later resume uses the time to drop mail that was written
+ * after the process exited. Mail written before it stays: that copy was already in flight.
+ */
+export function notePeerExit(id: string, at = new Date().toISOString()): void {
+  const session = readSession(id);
+  if (!session || session.exitedAt) return;
+  writeJsonAtomic(path.join(peerDir(id), 'session.json'), { ...session, exitedAt: at });
+}
+
+/** Removes inbox files sent after `exitedAt`. Files with no `sentAt` stay. */
+function dropInboxAfter(id: string, exitedAt: string): void {
+  const cutoff = Date.parse(exitedAt);
+  if (Number.isNaN(cutoff)) return;
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(inboxDir(id));
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    const msg = readJson<{ sentAt?: string }>(path.join(inboxDir(id), file));
+    const sent = Date.parse(msg?.sentAt ?? '');
+    if (Number.isNaN(sent) || sent <= cutoff) continue;
+    try {
+      fs.rmSync(path.join(inboxDir(id), file), { force: true });
+    } catch {
+      // claimed by the resuming process
+    }
+  }
+}
+
+function moveInbox(fromId: string, toId: string): void {
+  if (fromId === toId) return;
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(inboxDir(fromId));
+  } catch {
+    return;
+  }
+  for (const file of files) {
+    try {
+      fs.renameSync(path.join(inboxDir(fromId), file), path.join(ensureDir(inboxDir(toId)), file));
+    } catch {
+      // taken by another consumer
+    }
+  }
+}
+
+/** How long a pid-only directory with unread mail outlives the process. Session-keyed directories use `SESSION_KEEP_MS`. */
 const HOLD_MS = 60 * 60_000;
 
 /**
- * How long the record of a session keyed by its id outlives its last registration while nothing runs it. Codex reloads
- * every thread into a new daemon when it updates, and `codex resume` reloads one, both without a hook until the next
- * prompt; a restarted OpenCode service takes its sessions back (see the plugin). Keeping the record makes the session
- * reachable again as soon as it runs.
+ * How long a session-keyed directory outlives the process. A resume reclaims the same id and name. Mail that was
+ * already in the inbox is still there, except a send that failed, which moves its copy to `withdrawn/`. A send
+ * while the process is gone writes nothing: this window is not a mailbox.
+ * Codex reloads a thread into a new daemon without a hook until the next prompt, and a restarted OpenCode service
+ * takes its sessions back, so the directory has to still be here when that process starts.
  */
 const SESSION_KEEP_MS = 24 * 60 * 60_000;
 
@@ -175,8 +370,8 @@ function holdsUnread(id: string, now = Date.now()): boolean {
 }
 
 /**
- * A resumed session (`claude --resume`) runs in a new process, so it gets a new `<agent>-<pid>` id. Unread messages
- * left in the inbox of an exited process that ran the same session move to the new one. (A Codex thread keeps its id.)
+ * A session that used to be keyed by pid (an older telepathy) still has unread mail under that directory. A resume
+ * that reports the same harness session id picks the mail up onto `<agent>-<session id>`.
  */
 function adoptHeldMessages(agent: Agent, selfId: string, sessionId: string): void {
   let names: string[];
@@ -227,6 +422,58 @@ export function registerListener(agent: Agent, pid: number, id = peerId(agent, p
   const record: ListenerRecord = { pid: process.pid, procStart: procStart(process.pid), startedAt: new Date().toISOString() };
   writeJsonAtomic(path.join(peerDir(id), 'listener.json'), record);
 }
+
+/**
+ * The stable name for this process, from `--name` or `TELEPATHY_NAME`. Empty after slugify means unset.
+ * `explicit` wins over the environment, so a server flag is not ignored when the variable is also set.
+ */
+export function configuredStableName(explicit?: string): string | undefined {
+  const raw = explicit?.trim() || configuredEnv('TELEPATHY_NAME');
+  if (!raw) return undefined;
+  return slugify(raw) || undefined;
+}
+
+/**
+ * Records `name` on this peer and moves unread messages off a dead peer that used the same name. A live peer
+ * with the same name is left alone: that is a duplicate session, reported when peers are listed.
+ */
+export function registerStableName(agent: Agent, id: string, explicit?: string): void {
+  const name = configuredStableName(explicit);
+  if (!name) return;
+  writeJsonAtomic(path.join(peerDir(id), 'identity.json'), { name, pid: process.pid, at: new Date().toISOString() });
+  adoptStableInbox(agent, id, name);
+}
+
+function adoptStableInbox(agent: Agent, selfId: string, stableName: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name === selfId || !name.startsWith(`${agent}-`)) continue;
+    const ident = readJson<{ name?: string }>(path.join(peerDir(name), 'identity.json'));
+    if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
+    let files: string[] = [];
+    try {
+      files = fs.readdirSync(inboxDir(name));
+    } catch {
+      continue;
+    }
+    for (const file of files) {
+      try {
+        fs.renameSync(path.join(inboxDir(name), file), path.join(ensureDir(inboxDir(selfId)), file));
+      } catch {
+        // taken by another consumer
+      }
+    }
+  }
+}
+
+/** Another live peer using this one's configured name. */
+export const sameStableName = (a: Peer, b: Peer) =>
+  !!a.stableName && a.id !== b.id && a.agent === b.agent && a.stableName === b.stableName;
 
 export function readSession(id: string): SessionRecord | undefined {
   return readJson<SessionRecord>(path.join(peerDir(id), 'session.json'));
@@ -293,8 +540,10 @@ function displayName(agent: Agent, pid: number, key: string, cwd: string | undef
 }
 
 /** A session keyed by its id (a Codex thread, an OpenCode 2 session) rather than by the pid of the process hosting it. */
-const isSessionKeyed = (peer: Pick<Peer, 'agent' | 'id' | 'sessionId'>) =>
-  !!peer.sessionId && peer.id === peerId(peer.agent, peer.sessionId);
+const isSessionKeyed = (peer: Pick<Peer, 'agent' | 'id' | 'sessionId'>) => {
+  const token = sessionToken(peer.sessionId);
+  return !!token && peer.id === peerId(peer.agent, token);
+};
 
 /** A Codex session keyed by its thread. */
 const isThreadKeyed = (peer: Pick<Peer, 'agent' | 'id' | 'sessionId'>) => peer.agent === 'codex' && isSessionKeyed(peer);
@@ -303,15 +552,50 @@ const isThreadKeyed = (peer: Pick<Peer, 'agent' | 'id' | 'sessionId'>) => peer.a
  * Whether the session still runs: its process for most agents; for a Codex thread, whether a Codex process still has
  * it loaded, whichever process that is by now; for an OpenCode 2 session, its service and recent use.
  */
+/**
+ * `telepathy run --headless` keeps the peer alive for as long as that supervisor process does, including a Codex
+ * thread the writer-lock scan would call unloaded. A dead pid falls through to the harness's own check.
+ */
+function hostedSupervisorAlive(peer: Peer): boolean {
+  const rec = readJson<{ pid?: number; procStart?: string }>(path.join(peerDir(peer.id), 'hosted.json'));
+  return !!rec && typeof rec.pid === 'number' && isSameProcess(rec.pid, rec.procStart);
+}
+
+/**
+ * `codex exec` is not a TUI: the allowlist rejects a subcommand-shaped first token, so the process scan never
+ * lists it. Hooks still register its thread on that process. A shared daemon's writer lock is the signal for a
+ * TUI thread; an exec that never took a lock is alive exactly while the exec process that registered it is.
+ * `exec-server` does not count, so the ChatGPT.app helper stays offline even if a hook recorded it.
+ */
+function codexExecAlive(peer: Peer): boolean {
+  const session = readSession(peer.id);
+  if (!session || (session.source !== 'hook' && session.source !== 'meta')) return false;
+  const owners = sessionOwners(peer.id);
+  const pid = owners[0]?.pid ?? session.pid;
+  const started = owners[0]?.procStart ?? session.procStart;
+  if (!isSameProcess(pid, started)) return false;
+  const args = commandLine(pid);
+  return !!args && isCodexExecCommand(args);
+}
+
 export function isPeerAlive(peer: Peer | undefined, now = Date.now()): boolean {
   if (!peer) return false;
+  if (hostedSupervisorAlive(peer)) return true;
   if (isThreadKeyed(peer)) {
     const loaded = codexThreadLoaded(peer.codexHome ?? defaultCodexHome(), peer.sessionId as string);
-    if (loaded !== undefined) return loaded;
+    // A lock the daemon holds is the usual signal. `codex resume <id>` is already that thread while the lock
+    // file is still absent, and the TUI's command line names it. An unloaded thread with no such window stays hidden.
+    if (loaded === true) return true;
+    if (loaded === false) return codexTuiNamesThread(peer.sessionId as string) || codexExecAlive(peer);
   }
   if (isSessionKeyed(peer)) {
-    if (!isSameProcess(peer.pid, readSession(peer.id)?.procStart)) return false;
-    return peer.agent === 'codex' || now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
+    const owner = sessionOwners(peer.id)[0];
+    const pid = owner?.pid ?? peer.pid;
+    const started = owner?.procStart ?? readSession(peer.id)?.procStart;
+    if (!isSameProcess(pid, started)) return false;
+    // OpenCode and Kilo keep every session the service ever opened. A session counts only while it is in use.
+    if (peer.agent === 'opencode' || peer.agent === 'kilo') return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
+    return true;
   }
   return isSameProcess(peer.pid, peer.procStart);
 }
@@ -329,10 +613,19 @@ export function readPeer(id: string): Peer | undefined {
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
-  const name = displayName(agent, pid, m[2], cwd);
-  const sessionKeyed = !!session?.sessionId && m[2] === session.sessionId;
-  // Other names that also reach it: the bare folder name, and a Codex thread's title (what older versions called it).
-  const aliases = [cwd ? slugify(path.basename(cwd)) : '', agent === 'codex' ? slugify(codexThreadName(codexHome, session?.sessionId) ?? '') : ''];
+  const generated = displayName(agent, pid, m[2], cwd);
+  const identity = readJson<{ name?: string }>(path.join(dir, 'identity.json'));
+  const stable = identity?.name && slugify(identity.name) === identity.name ? identity.name : undefined;
+  // The name chosen the first time this harness session was seen. A resume keeps it. TELEPATHY_NAME wins.
+  const name = stable || rememberedName(agent, session?.sessionId) || generated;
+  const sessionKeyed = !!session?.sessionId && m[2] === sessionToken(session.sessionId);
+  // Other names that also reach it: the bare folder name, a Codex thread's title (what older versions called it),
+  // and the generated suffix name while a configured name is the address.
+  const aliases = [
+    cwd ? slugify(path.basename(cwd)) : '',
+    agent === 'codex' ? slugify(codexThreadName(codexHome, session?.sessionId) ?? '') : '',
+    stable ? slugify(generated) : '',
+  ];
   return {
     id,
     agent,
@@ -346,6 +639,8 @@ export function readPeer(id: string): Peer | undefined {
     codexHome,
     name,
     address: `${agent}:${slugify(name) || id}`,
+    stableName: stable,
+    duplicate: sessionOwners(id).length > 1,
     hasListener: !!listener && isSameProcess(listener.pid, listener.procStart),
     hasServer: !!presence && isSameProcess(presence.serverPid, undefined),
     version: presence?.version,
@@ -357,6 +652,7 @@ export function readPeer(id: string): Peer | undefined {
 
 /** Live peers, with registrations of exited sessions removed along the way. */
 export function listPeers(): Peer[] {
+  observeLaunchedCodex();
   let names: string[] = [];
   try {
     names = fs.readdirSync(peersDir());
@@ -371,18 +667,154 @@ export function listPeers(): Peer[] {
     const pid = peer?.pid ?? (/^\d+$/.test(m[2]) ? Number(m[2]) : undefined);
     if (pid === undefined) continue; // not registered yet
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, undefined)) {
-      // The session is gone (or its pid was reused). Unread messages wait an hour for it to be resumed.
+      // The session is gone (or its pid was reused). The directory can stay so a resume reclaims the id and any
+      // mail that was already in flight. It is not a mailbox for a new send.
+      if (peer) notePeerExit(name);
       if (!holdsUnread(name) && !keepsSession(peer)) fs.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     // A live process whose hook/server hasn't registered yet isn't reachable, but its files stay.
     if (peer) peers.push(peer);
   }
-  // A Codex session is reachable only by its thread. A registration by process pid without one is a server of an
-  // older telepathy (or one that hasn't seen a tool call yet); one that names a thread registered by thread is a
-  // duplicate.
+  // A Codex daemon pid that names a thread already registered by that thread is a duplicate. A pid with no thread
+  // at all is hidden too, unless this process saw the interactive TUI and recorded it as `source: 'process'`
+  // (no thread yet). The app-server daemon is not that TUI.
   const threads = new Set(peers.filter(isThreadKeyed).map((p) => p.sessionId));
-  return peers.filter((p) => p.agent !== 'codex' || isThreadKeyed(p) || (!!p.sessionId && !threads.has(p.sessionId)));
+  const ids = new Set(peers.map((p) => p.id));
+  return peers.filter((p) => {
+    if (p.agent === 'codex' && !isThreadKeyed(p) && !!p.sessionId && threads.has(p.sessionId)) return false;
+    const link = readJson<{ id?: unknown }>(path.join(peerDir(p.id), 'link.json'));
+    // The pid directory is only a pointer once the session id is known. The session directory is the peer.
+    if (typeof link?.id === 'string' && link.id !== p.id && ids.has(link.id)) return false;
+    return p.agent !== 'codex' || isThreadKeyed(p) || (!!p.sessionId && !threads.has(p.sessionId)) || isLaunchedCodexTui(p);
+  });
+}
+
+/** A Codex TUI registered from the process table before any thread id exists. */
+function isLaunchedCodexTui(peer: Peer): boolean {
+  return peer.agent === 'codex' && !peer.sessionId && readSession(peer.id)?.source === 'process';
+}
+
+function launchedTuis(): { pid: number; cwd?: string; threadId?: string }[] {
+  const tuis: { pid: number; cwd?: string; threadId?: string }[] = [];
+  for (const proc of codexTuiProcesses()) {
+    if (!isSameProcess(proc.pid, proc.start)) continue;
+    const launch = codexTuiLaunch(proc.args);
+    if (!launch) continue;
+    tuis.push({ pid: proc.pid, cwd: proc.cwd || processCwd(proc.pid), threadId: launch.threadId });
+  }
+  return tuis;
+}
+
+function codexTuiNamesThread(threadId: string): boolean {
+  return launchedTuis().some((tui) => tui.threadId === threadId);
+}
+
+/**
+ * The pid-keyed name of the TUI whose command line names this thread, and a `link.json` so that row disappears
+ * once the thread peer is live. A fresh TUI is not linked from the working directory: a hosted `codex:acpx`
+ * session in the same folder is a different process.
+ */
+function carryLaunchedCodexName(sessionId: string): string | undefined {
+  const chosen = launchedTuis().find((tui) => tui.threadId === sessionId);
+  if (!chosen) return undefined;
+  const threadPeer = sessionPeerId('codex', chosen.pid, sessionId);
+  const pidKey = peerId('codex', chosen.pid);
+  if (pidKey !== threadPeer) {
+    writeJsonAtomic(linkFile('codex', chosen.pid), { id: threadPeer });
+    moveInbox(pidKey, threadPeer);
+  }
+  const placeholder = readPeer(pidKey);
+  return placeholder && !placeholder.sessionId ? placeholder.name : undefined;
+}
+
+/**
+ * Registers interactive Codex TUIs that have not been through SessionStart or a tool call. The plugin MCP server
+ * and the hooks start per thread, and a TUI's startup thread often has neither a hook nor a writer lock, so the
+ * process table is what makes the window visible. `codex resume <uuid>` is registered as that thread immediately.
+ */
+function observeLaunchedCodex(): void {
+  for (const proc of codexTuiProcesses()) {
+    if (!isSameProcess(proc.pid, proc.start)) continue;
+    const launch = codexTuiLaunch(proc.args);
+    if (!launch) continue;
+    const cwd = proc.cwd || processCwd(proc.pid);
+    if (launch.threadId && sessionToken(launch.threadId)) {
+      observeResumedCodex(proc, launch.threadId, cwd);
+      continue;
+    }
+    observeUnpromptedCodex(proc, cwd);
+  }
+}
+
+function observeResumedCodex(proc: CodexTuiProc, threadId: string, cwd: string | undefined): void {
+  const id = sessionPeerId('codex', proc.pid, threadId);
+  const existing = readSession(id);
+  const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
+  const home = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
+  if (!existing?.sessionId || !hostAlive || (proc.codexHome && existing.codexHome !== proc.codexHome)) {
+    registerSession('codex', proc.pid, {
+      sessionId: threadId,
+      cwd: cwd ?? existing?.cwd,
+      source: existing?.source === 'hook' || existing?.source === 'meta' ? existing.source : 'process',
+      codexHome: home,
+    });
+  }
+  if (peerId('codex', proc.pid) !== id) writeJsonAtomic(linkFile('codex', proc.pid), { id });
+  linkCodexWrappers(proc, id);
+}
+
+/** The npm/node wrapper is the same window. Point its row at the native process so listPeers keeps one. */
+function linkCodexWrappers(proc: CodexTuiProc, id: string): void {
+  for (const wrapperPid of proc.wrapperPids ?? []) {
+    const wrapperId = peerId('codex', wrapperPid);
+    if (wrapperId === id) continue;
+    if (!fs.existsSync(path.join(peerDir(wrapperId), 'session.json'))) continue;
+    writeJsonAtomic(linkFile('codex', wrapperPid), { id });
+  }
+}
+
+function observeUnpromptedCodex(proc: CodexTuiProc, cwd: string | undefined): void {
+  const id = peerId('codex', proc.pid);
+  const link = linkedPeerId('codex', proc.pid);
+  if (link && link !== id) {
+    const linked = readPeer(link);
+    if (linked && isPeerAlive(linked)) return;
+  }
+  const existing = readSession(id);
+  const home = proc.codexHome || existing?.codexHome || defaultCodexHome();
+  if (
+    existing?.source === 'process' &&
+    existing.pid === proc.pid &&
+    isSameProcess(proc.pid, existing.procStart) &&
+    existing.codexHome === home &&
+    (existing.cwd || !cwd)
+  ) {
+    linkCodexWrappers(proc, id);
+    return;
+  }
+  registerSession('codex', proc.pid, { cwd, source: 'process', codexHome: home });
+  linkCodexWrappers(proc, id);
+}
+
+/**
+ * Session-keyed peers whose process has exited but whose record is still inside the keep window. `listPeers` does
+ * not show them. `sendMessage` resolves the name so it can say the session is offline. It does not write an inbox.
+ */
+export function keptPeers(): Peer[] {
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(peersDir());
+  } catch {
+    return [];
+  }
+  const kept: Peer[] = [];
+  for (const name of names) {
+    const peer = readPeer(name);
+    if (!peer || !isSessionKeyed(peer) || isPeerAlive(peer) || !keepsSession(peer)) continue;
+    kept.push(peer);
+  }
+  return kept;
 }
 
 /**
@@ -451,9 +883,16 @@ export function resolvePeer(to: string, peers: Peer[]): Resolution {
   const qAgent = AGENT_PREFIX_RE.exec(q)?.[1] ?? (REF_RE.test(q) ? q.slice(0, q.lastIndexOf('-')) : undefined);
   const sameAgent = (p: Peer) => !qAgent || p.agent === qAgent;
 
+  // Refs keep the session id's own capitals (`antigravity-convB`). The query is lowercased for the
+  // other comparisons, so the id is compared on both sides. An exact id still wins when two ids
+  // differ only by case.
+  const byId = peers.filter((p) => p.id.toLowerCase() === q);
+  const exactId = byId.filter((p) => p.id === query);
   return (
-    pick(peers.filter((p) => p.id === q), 'matches') ??
+    pick(exactId.length ? exactId : byId, 'matches') ??
     pick(peers.filter((p) => p.address.toLowerCase() === q), 'matches') ??
+    // `codex:` with nothing after the colon is that agent when only one of its sessions is up.
+    pick(q.endsWith(':') && qAgent && qSlug === '' ? peers.filter((p) => p.agent === qAgent) : [], 'matches') ??
     pick(peers.filter((p) => sameAgent(p) && (slugsOf(p).includes(qSlug) || p.name.toLowerCase() === q)), 'matches') ??
     pick(peers.filter((p) => sameAgent(p) && qSlug !== '' && slugsOf(p).some((s) => s.startsWith(qSlug))), 'is a prefix of') ?? {
       error:

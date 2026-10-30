@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { archiveDir, ensureDir, inboxDir, readJson, writeJsonAtomic } from './paths.ts';
+import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir, writeJsonAtomic } from './paths.ts';
 import { agentLabel, type Peer, peerRef } from './peers.ts';
 import type { Agent } from './proc.ts';
 
@@ -21,6 +21,11 @@ export interface Message {
   /** For a message to Codex: its item in Codex's own queue, which delivers it as a turn, and that queue's thread. */
   codexQueueId?: string;
   codexThreadId?: string;
+  /**
+   * Epoch ms after which this copy must not be handed to the recipient.
+   * The sender's confirm deadline. A later retry, including one that already claimed the inbox, stops.
+   */
+  deliverBy?: number;
 }
 
 export const MAX_MESSAGE_CHARS = 100_000;
@@ -43,11 +48,49 @@ export function archiveMessage(msg: Message): void {
   pruneArchive(msg.to.id);
 }
 
+/** True when the sender already withdrew this id, or its confirm deadline has passed. */
+export function deliveryBlocked(peerId: string, msg: Message, now = Date.now()): boolean {
+  if (fs.existsSync(path.join(withdrawnDir(peerId), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === 'number' && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+
+/**
+ * Moves an inbox or archive copy into `withdrawn/` and removes both sources.
+ * The withdrawn file is the marker a later send checks. A missing id is left missing.
+ */
+export function withdrawEverywhere(peerId: string, messageId: string): 'withdrawn' | 'claimed' | 'missing' {
+  const file = `${messageId}.json`;
+  const dest = path.join(ensureDir(withdrawnDir(peerId)), file);
+  const sources = [path.join(inboxDir(peerId), file), path.join(archiveDir(peerId), file)];
+  if (!fs.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs.renameSync(src, dest);
+        break;
+      } catch {
+        // not in this directory, or the other racer took it
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs.existsSync(src)) fs.rmSync(src, { force: true });
+    } catch {
+      // still held
+    }
+  }
+  if (fs.existsSync(dest)) return 'withdrawn';
+  if (sources.some((src) => fs.existsSync(src))) return 'claimed';
+  return 'missing';
+}
+
 /**
  * Moves every pending inbox message to the archive and returns the ones this call moved.
  * The rename is atomic, so when two consumers race for a message exactly one of them gets it.
+ * A withdrawn or expired message is not returned. It stays in `withdrawn/`.
+ * Ids in `skip` stay in the inbox: the ACP host already submitted them as the prompt.
  */
-export function claimInbox(peerId: string): Message[] {
+export function claimInbox(peerId: string, skip?: ReadonlySet<string>): Message[] {
   let files: string[];
   try {
     files = fs.readdirSync(inboxDir(peerId)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -56,6 +99,9 @@ export function claimInbox(peerId: string): Message[] {
   }
   const claimed: Message[] = [];
   for (const file of files) {
+    const id = file.slice(0, -'.json'.length);
+    // The ACP host already submitted this id as the prompt. Leave it for that turn to archive.
+    if (skip?.has(id)) continue;
     const target = path.join(ensureDir(archiveDir(peerId)), file);
     try {
       fs.renameSync(path.join(inboxDir(peerId), file), target);
@@ -63,7 +109,12 @@ export function claimInbox(peerId: string): Message[] {
       continue; // another consumer claimed it first
     }
     const msg = readJson<Message>(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId, msg)) {
+      withdrawEverywhere(peerId, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId);
   return claimed;
@@ -77,7 +128,17 @@ export function pendingMessages(peerId: string): Message[] {
   } catch {
     return [];
   }
-  return files.map((f) => readJson<Message>(path.join(inboxDir(peerId), f))).filter((m): m is Message => !!m);
+  const pending: Message[] = [];
+  for (const file of files) {
+    const msg = readJson<Message>(path.join(inboxDir(peerId), file));
+    if (!msg) continue;
+    if (deliveryBlocked(peerId, msg)) {
+      withdrawEverywhere(peerId, msg.id);
+      continue;
+    }
+    pending.push(msg);
+  }
+  return pending;
 }
 
 /** Moves one message from the inbox to the archive without handing it to anyone. */
@@ -86,6 +147,22 @@ export function archivePending(peerId: string, id: string): void {
     fs.renameSync(path.join(inboxDir(peerId), `${id}.json`), path.join(ensureDir(archiveDir(peerId)), `${id}.json`));
   } catch {
     // already claimed
+  }
+}
+
+/**
+ * Moves a message into the archive from the inbox or from `withdrawn/`. A marker that arrives in the grace
+ * window has already been withdrawn; that copy is still the delivery and belongs in the archive.
+ */
+export function archiveSettled(peerId: string, id: string): void {
+  const dest = path.join(ensureDir(archiveDir(peerId)), `${id}.json`);
+  for (const dir of [inboxDir(peerId), withdrawnDir(peerId)]) {
+    try {
+      fs.renameSync(path.join(dir, `${id}.json`), dest);
+      return;
+    } catch {
+      // not in this directory
+    }
   }
 }
 
@@ -133,14 +210,34 @@ const describeSender = (from: Party) => `${agentLabel(from.agent)} session ${pee
  * up where the user's own prompts do, so the header says plainly that another agent wrote it, mirroring how
  * Claude Code labels cross-session messages.
  */
+/** A token copied into every delivered rendering so a transcript search can prove this message arrived. */
+export const messageMarker = (id: string) => `telepathy-id:${id}`;
+
 export function formatAsUserTurn(msg: Message): string {
   return [
     `[telepathy] Message from ${describeSender(msg.from)}.`,
+    messageMarker(msg.id),
     `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` +
       `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`,
     '',
     msg.body,
   ].join('\n');
+}
+
+/**
+ * Socket body for Claude. Claude wraps a socket post as "Another Claude session sent a message" and reads
+ * `from-name` on this tag for the sender it shows. The name is the real harness and peer, so a Codex or
+ * OpenCode sender is not labeled as Claude.
+ */
+export function formatForClaudeSocket(msg: Message): string {
+  const name = `${agentLabel(msg.from.agent)} session ${peerRef(msg.from)}`
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .replace(/["<>]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+  const body = formatAsUserTurn(msg).replace(/<(\/?cross-session-message\b)/gi, '<\\$1');
+  return `<cross-session-message from-name="${name}">\n${body}\n</cross-session-message>`;
 }
 
 /**
@@ -170,7 +267,7 @@ export function formatForContext(messages: Message[], { lead: withLead = true, i
 /** One stdout line for the Claude Code monitor; each line becomes one notification for Claude. */
 export function formatMonitorLine(msg: Message, inlineLimit = 4000): string {
   const header =
-    `[telepathy] New message ${msg.id} from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
+    `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
     `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
   const flat = (s: string) => s.replace(/\r\n|\r|\n/g, '\\n');
   if (msg.body.length <= inlineLimit) {
@@ -187,6 +284,7 @@ export function formatMonitorLine(msg: Message, inlineLimit = 4000): string {
 export function formatForReading(msg: Message): string {
   return [
     `--- ${msg.id} · from ${describeSender(msg.from)} · ${msg.sentAt}`,
+    messageMarker(msg.id),
     `(reply with send_message to: "${msg.from.address}")`,
     msg.body,
   ].join('\n');

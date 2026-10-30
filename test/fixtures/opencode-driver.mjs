@@ -3,9 +3,71 @@
 import readline from 'node:readline';
 
 const [pluginPath, directory] = process.argv.slice(2);
+// The live OpenCode process keeps `--session` on `ps` after dropping it from `process.argv`.
+if (process.env.OPENCODE_TEST_HIDE_ARGV === '1') {
+  for (const flag of ['--session', '-s', '--continue', '-c', '--fork', '--fork-session']) {
+    const at = process.argv.indexOf(flag);
+    if (at < 0) continue;
+    const next = process.argv[at + 1];
+    process.argv.splice(at, next && !next.startsWith('-') ? 2 : 1);
+  }
+}
+if (process.env.OPENCODE_TEST_SESSION) process.argv.push('--session', process.env.OPENCODE_TEST_SESSION);
 const mod = await import(pluginPath);
 const print = (value) => process.stdout.write(JSON.stringify(value) + '\n');
-const client = { session: { promptAsync: async (options) => print({ prompt: options }) } };
+const listMode = process.env.OPENCODE_TEST_LIST;
+// SDK methods read `this`. An unbound `create` or `select` throws the live error.
+const session = {
+  _sdk: true,
+  promptAsync(options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ prompt: options });
+  },
+};
+if (listMode) {
+  // 'hang' never resolves. Plugin init must return without awaiting it.
+  // `id` or `id:updatedMs`, comma-separated.
+  session.list = function () {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    if (listMode === 'hang') return new Promise(() => {});
+    return Promise.resolve(
+      listMode
+        .split(',')
+        .filter(Boolean)
+        .map((item) => {
+          const [id, updated] = item.split(':');
+          return updated ? { id, time: { updated: Number(updated) } } : { id };
+        }),
+    );
+  };
+}
+if (process.env.OPENCODE_TEST_CREATE) {
+  session.create = function () {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    return { id: process.env.OPENCODE_TEST_CREATE };
+  };
+  session.select = function (options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ selected: options.sessionID ?? options.body?.sessionID });
+  };
+}
+// OpenCode 1.19.5's plugin client publishes tui.session.select. selectSession is absent on that client.
+const tui = {
+  _sdk: true,
+  publish(options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ published: options?.body ?? options });
+    return { data: true };
+  },
+};
+if (process.env.OPENCODE_TEST_SELECT === '1') {
+  tui.selectSession = function (options) {
+    if (this?._sdk !== true) throw new TypeError("undefined is not an object (evaluating 'this._client')");
+    print({ selectSession: options });
+    return { data: true };
+  };
+}
+const client = { session, tui };
 const hooks = await mod.default.server({ client, directory });
 print({ ready: process.pid, tools: Object.keys(hooks.tool) });
 
