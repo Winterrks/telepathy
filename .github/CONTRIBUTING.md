@@ -26,9 +26,11 @@ While testing, `TELEPATHY_DEBUG=1` logs hook, server, monitor and plugin activit
 ## Where things are
 
 - `src/core/`: the shared logic. Agent detection (`agents.ts`), the session registry (`peers.ts`), message storage
-  and delivery (`messages.ts`, `deliver.ts`), the tools (`tools.ts`) and the guide every agent gets (`guide.ts`).
+  and delivery (`messages.ts`, `deliver.ts`), the inbox wait (`inbox-wait.ts`), the tools (`tools.ts`) and the
+  guide every agent gets (`guide.ts`).
 - `src/server.ts` is the MCP server, `src/hook.ts` the hooks for every agent, `src/monitor.ts` Claude Code's
-  monitor, and `src/opencode.ts` the OpenCode and Kilo Code plugin.
+  monitor (also what Grok Build starts), `src/grok-delivery.ts` Grok's inbox notifications, and `src/opencode.ts`
+  the OpenCode and Kilo Code plugin.
 - `scripts/build.mjs` bundles everything into `plugin/dist/` and writes each agent's generated files.
 - Manifests: `plugin/` (Claude Code, Codex, Copilot CLI, Cursor, Devin, Grok), the repo root (Qwen Code,
   Kimi Code) and `antigravity/` (App, CLI, and IDE).

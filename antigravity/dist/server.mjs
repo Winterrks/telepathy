@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path19 from "node:path";
+import path20 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path20) {
-  if (!path20)
+function getElementAtPath(obj, path21) {
+  if (!path21)
     return obj;
-  return path20.reduce((acc, key) => acc?.[key], obj);
+  return path21.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path20, issues) {
+function prefixIssues(path21, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path20);
+    iss.path.unshift(path21);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path20 = []) => {
+  const processError = (error63, path21 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
       } else {
-        const fullpath = [...path20, ...issue2.path];
+        const fullpath = [...path21, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path20 = []) => {
+  const processError = (error63, path21 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path20, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path20, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
       } else {
-        const fullpath = [...path20, ...issue2.path];
+        const fullpath = [...path21, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path20 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path20) {
+  const path21 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path21) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path20 = ref.slice(1).split("/").filter(Boolean);
-  if (path20.length === 0) {
+  const path21 = ref.slice(1).split("/").filter(Boolean);
+  if (path21.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path20[0] === defsKey) {
-    const key = path20[1] === void 0 ? void 0 : decodeJSONPointerSegment(path20[1]);
+  if (path21[0] === defsKey) {
+    const key = path21[1] === void 0 ? void 0 : decodeJSONPointerSegment(path21[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path20 = issue2.path.map(String);
-      const key = path20.length > 0 ? path20.join(".") : "_meta";
-      if (path20.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path21 = issue2.path.map(String);
+      const key = path21.length > 0 ? path21.join(".") : "_meta";
+      if (path21.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path20, reachable) => {
+  const visit2 = (node2, path21, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path20.length === 0) return `${pathName(path20)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path21.length === 0) return `${pathName(path21)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path20)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path20)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path21)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path21)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path20)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path21)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path20,
+        path: path21,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path20, key], reachable);
+      const fault$1 = visit2(child, [...path21, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path20, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path21, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path20) {
-  return path20.length === 0 ? "<root>" : path20.join(".");
+function pathName(path21) {
+  return path21.length === 0 ? "<root>" : path21.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path20, vendor, unsupported) {
+function walkProperty(node2, path21, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path20, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path20}.${key}`);
-  } else unsupported.push(`${path20}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path21}.${key}`);
+  } else unsupported.push(`${path21}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path20 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path20}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path21 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path21}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path20 ? `${path20}.${key}` : key;
+    const childPath = path21 ? `${path21}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -28415,6 +28415,20 @@ function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
   };
   writeJsonAtomic(path5.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
 }
+function registerListener(agent, pid, id = peerId(agent, pid)) {
+  const record2 = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  writeJsonAtomic(path5.join(peerDir(id), "listener.json"), record2);
+}
+function listenerPid(id) {
+  return readJson(path5.join(peerDir(id), "listener.json"))?.pid;
+}
+function clearListener(id) {
+  const file2 = path5.join(peerDir(id), "listener.json");
+  try {
+    if (readJson(file2)?.pid === process.pid) fs5.rmSync(file2, { force: true });
+  } catch {
+  }
+}
 function configuredStableName(explicit) {
   const raw = explicit?.trim() || configuredEnv("TELEPATHY_NAME");
   if (!raw) return void 0;
@@ -30261,7 +30275,10 @@ function guideLines(agent, opts = {}) {
   ];
   if (opts.monitorCommand) {
     lines.push(
-      `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
+      `- IMPORTANT: on Grok Build, your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand} Do not also call wait_for_messages: that call would take messages the monitor prints and block the turn. If a listener is already registered, wait_for_messages returns immediately and claims nothing.`
+    );
+    lines.push(
+      "- IMPORTANT: on Grok Bot there is no monitor tool, so do not start that command. Call wait_for_messages with timeoutMs 300000 (or the longest the client allows) and, whenever it returns, handle what it found and call it again. A result that says no messages arrived only means the wait ended."
     );
   }
   if (opts.waiterCommand) {
@@ -30579,16 +30596,83 @@ function startClaudeSocketWatcher(id, ownerPid) {
   };
 }
 
+// src/core/inbox-wait.ts
+import fs13 from "node:fs";
+import path14 from "node:path";
+function recordAccepted(peerId2, messages) {
+  if (!messages.length) return;
+  const file2 = path14.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  const chunk = messages.map((msg) => JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text: formatForReading(msg) })).join("\n") + "\n";
+  fs13.appendFileSync(file2, chunk);
+}
+function waitForInbox(peerId2, timeoutMs, signal) {
+  const ready = claimInbox(peerId2);
+  if (ready.length) {
+    recordAccepted(peerId2, ready);
+    return Promise.resolve({ messages: ready, reason: "message" });
+  }
+  if (signal?.aborted) return Promise.resolve({ messages: [], reason: "cancelled" });
+  if (timeoutMs <= 0) return Promise.resolve({ messages: [], reason: "timeout" });
+  return new Promise((resolve) => {
+    let settled = false;
+    let watcher;
+    let poll;
+    let timer2;
+    const finish = (messages, reason) => {
+      if (settled) return;
+      settled = true;
+      recordAccepted(peerId2, messages);
+      clearTimeout(timer2);
+      clearInterval(poll);
+      try {
+        watcher?.close();
+      } catch {
+      }
+      signal?.removeEventListener("abort", onAbort);
+      resolve({ messages, reason });
+    };
+    const check2 = () => {
+      const messages = claimInbox(peerId2);
+      if (messages.length) finish(messages, "message");
+    };
+    const onAbort = () => {
+      const messages = claimInbox(peerId2);
+      finish(messages, messages.length ? "message" : "cancelled");
+    };
+    try {
+      ensureDir(inboxDir(peerId2));
+      watcher = fs13.watch(inboxDir(peerId2), check2);
+      watcher.on("error", () => {
+        try {
+          watcher?.close();
+        } catch {
+        }
+        watcher = void 0;
+      });
+    } catch {
+      watcher = void 0;
+    }
+    poll = setInterval(check2, 100);
+    poll.unref();
+    timer2 = setTimeout(() => {
+      const messages = claimInbox(peerId2);
+      finish(messages, messages.length ? "message" : "timeout");
+    }, timeoutMs);
+    timer2.unref();
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 // src/core/deliver.ts
 import crypto4 from "node:crypto";
-import fs13 from "node:fs";
-import path15 from "node:path";
+import fs14 from "node:fs";
+import path16 from "node:path";
 
 // src/core/status.ts
-import path14 from "node:path";
+import path15 from "node:path";
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path14.join(peerDir(id), "status.json");
+var statusFile = (id) => path15.join(peerDir(id), "status.json");
 function recorded(id) {
   const record2 = readJson(statusFile(id));
   const at = record2 ? Date.parse(record2.at) : Number.NaN;
@@ -30596,7 +30680,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record2 = readJson(path14.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path15.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   let status = record2.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -30693,7 +30777,7 @@ var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path16.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -30713,7 +30797,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto4.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs13.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs14.existsSync(path16.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self2, to, body) {
   const ownsClock = beginToolCall();
   try {
@@ -30785,7 +30869,7 @@ async function sendMessage(self2, to, body) {
   }
 }
 async function routeDelivery(recipient, message) {
-  if (fs13.existsSync(path15.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs14.existsSync(path16.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -30946,6 +31030,9 @@ function inboxStatus(recipient) {
   const ref = peerRef(recipient);
   if (peerStatus(recipient)?.status === "waiting") return waitingNote(ref, recipient.hasListener ? "delivered to" : "stored for");
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
+  if (recipient.agent === "grok") {
+    return `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`;
+  }
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
@@ -30978,6 +31065,9 @@ function deliveryHint(peer) {
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);
     if (inbound !== "hold" && inbound !== "refuse") return "sees messages through its inbox socket";
+  }
+  if (peer.agent === "grok") {
+    return "no listener: Grok Bot receives via wait_for_messages; Grok Build via its monitor or next turn";
   }
   if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return "sees messages at its next turn";
   return "no listener: it reads messages only via read_messages";
@@ -31017,6 +31107,9 @@ function formatPeerList(self2, peers) {
 }
 
 // src/core/tools.ts
+var DEFAULT_WAIT_MS = 45e3;
+var MAX_WAIT_MS = 50 * 6e4;
+var ALREADY_LISTENING = "A listener is already delivering this session's messages. Leave it running; wait_for_messages would take messages that listener prints and block the turn.";
 var TOOLS = {
   list_peers: {
     title: "List reachable agent sessions",
@@ -31037,6 +31130,13 @@ var TOOLS = {
     args: {
       id: external_exports.string().optional().describe('A message id such as "m-0mfx3k2a1-4f2a9c"'),
       limit: external_exports.number().int().min(1).max(50).optional().describe("How many recent messages to show when none are new (default 3)")
+    }
+  },
+  wait_for_messages: {
+    title: "Wait for incoming messages",
+    description: `Wait until another session messages this one, then return those messages (same rendering as read_messages). Blocks until a message arrives or timeoutMs elapses (default ${DEFAULT_WAIT_MS}, max ${MAX_WAIT_MS}). Grok Bot has no other wake: call this with a long timeoutMs (for example 300000) when the client allows it, handle the result, and call it again. A result with no messages only means this wait ended. Grok Build already wakes from its monitor tool: do not also call this. If a listener is already registered, the tool returns immediately and claims nothing.`,
+    args: {
+      timeoutMs: external_exports.number().int().min(0).max(MAX_WAIT_MS).optional().describe(`How long to wait, in milliseconds. 0 returns immediately. Default ${DEFAULT_WAIT_MS}. Maximum ${MAX_WAIT_MS}.`)
     }
   }
 };
@@ -31063,23 +31163,140 @@ function readMessagesTool(selfId, { id, limit }) {
     structured: { messages: recent.map(stored) }
   };
 }
+function formatWaitResult(messages, reason, timeoutMs) {
+  if (messages.length) {
+    return { text: render(`${messages.length} new message(s):`, messages), structured: { messages: messages.map(stored) } };
+  }
+  const text = reason === "cancelled" ? "Wait cancelled before a message arrived. Call wait_for_messages again to keep listening." : timeoutMs <= 0 ? "No messages waiting. Call wait_for_messages again to keep listening." : `No messages arrived within ${timeoutMs}ms. Call wait_for_messages again to keep listening.`;
+  return { text, structured: { messages: [] } };
+}
+
+// src/grok-delivery.ts
+import fs15 from "node:fs";
+var INBOX_URI = "telepathy://inbox";
+function attachGrokDelivery(server, currentId) {
+  server.registerResource(
+    "inbox",
+    INBOX_URI,
+    {
+      title: "Telepathy inbox",
+      description: "Messages other sessions have sent here and that nothing has claimed yet. Reading does not claim them; wait_for_messages or read_messages does.",
+      mimeType: "application/json"
+    },
+    async (uri2) => ({
+      contents: [
+        {
+          uri: uri2.href,
+          mimeType: "application/json",
+          text: JSON.stringify(
+            pendingMessages(currentId()).map((m) => ({ id: m.id, from: m.from.address, sentAt: m.sentAt, body: m.body }))
+          )
+        }
+      ]
+    })
+  );
+  server.server.registerCapabilities({ resources: { subscribe: true }, logging: {} });
+  const subscribed = /* @__PURE__ */ new Set();
+  server.server.setRequestHandler("resources/subscribe", (request) => {
+    subscribed.add(request.params.uri);
+    return {};
+  });
+  server.server.setRequestHandler("resources/unsubscribe", (request) => {
+    subscribed.delete(request.params.uri);
+    return {};
+  });
+  const announced = /* @__PURE__ */ new Set();
+  let watcher;
+  let announcing = false;
+  let again = false;
+  const announceOnce = async () => {
+    if (!server.isConnected()) return;
+    const selfId = currentId();
+    if (readPeer(selfId)?.hasListener) return;
+    const pending = pendingMessages(selfId);
+    const pendingIds = new Set(pending.map((m) => m.id));
+    for (const id of announced) if (!pendingIds.has(id)) announced.delete(id);
+    const fresh = pending.filter((m) => !announced.has(m.id));
+    if (!fresh.length) return;
+    for (const m of fresh) announced.add(m.id);
+    const note = `[telepathy] ${fresh.length} new message(s) waiting (${fresh.map((m) => m.id).join(", ")}). Call wait_for_messages to claim them.`;
+    debugLog("server", `grok inbox notify ${fresh.map((m) => m.id).join(",")}`);
+    if (subscribed.has(INBOX_URI)) {
+      try {
+        await server.server.sendResourceUpdated({ uri: INBOX_URI });
+      } catch {
+      }
+    }
+    try {
+      await server.sendLoggingMessage({ level: "info", logger: "telepathy", data: note });
+    } catch {
+    }
+  };
+  const announce = async () => {
+    if (announcing) {
+      again = true;
+      return;
+    }
+    announcing = true;
+    try {
+      do {
+        again = false;
+        await announceOnce();
+      } while (again);
+    } finally {
+      announcing = false;
+    }
+  };
+  let watched;
+  const watch = () => {
+    const selfId = currentId();
+    ensureDir(inboxDir(selfId));
+    if (watcher && watched === selfId) return;
+    try {
+      watcher?.close();
+    } catch {
+    }
+    watcher = void 0;
+    if (watched !== selfId) announced.clear();
+    watched = selfId;
+    try {
+      watcher = fs15.watch(inboxDir(selfId), () => void announce());
+      watcher.on("error", () => {
+        try {
+          watcher?.close();
+        } catch {
+        }
+        watcher = void 0;
+      });
+      watcher.unref();
+    } catch {
+      watcher = void 0;
+    }
+  };
+  watch();
+  const poll = setInterval(() => {
+    watch();
+    void announce();
+  }, 2e3);
+  poll.unref();
+}
 
 // src/auto-update.ts
 import { spawn as spawn4 } from "node:child_process";
-import fs15 from "node:fs";
-import path18 from "node:path";
+import fs17 from "node:fs";
+import path19 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/update-all.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs14 from "node:fs";
+import fs16 from "node:fs";
 import os6 from "node:os";
-import path17 from "node:path";
+import path18 from "node:path";
 
 // src/version-check.ts
-import path16 from "node:path";
+import path17 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path16.join(stateDir(), "github-version.json");
+var cacheFile = () => path17.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -31147,19 +31364,19 @@ function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path17.join(process.env.XDG_CACHE_HOME || path17.join(os6.homedir(), ".cache"), install.agent, "packages");
-  const relative = path17.relative(packages, install.dir).split(path17.sep);
-  const entry = path17.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path17.join(path17.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs14.renameSync(entry, aside);
+  const packages = path18.join(process.env.XDG_CACHE_HOME || path18.join(os6.homedir(), ".cache"), install.agent, "packages");
+  const relative = path18.relative(packages, install.dir).split(path18.sep);
+  const entry = path18.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path18.join(path18.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs16.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs14.rmSync(aside, { recursive: true, force: true });
+    fs16.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs14.rmSync(entry, { recursive: true, force: true });
-  fs14.renameSync(aside, entry);
+  fs16.rmSync(entry, { recursive: true, force: true });
+  fs16.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
@@ -31247,13 +31464,13 @@ function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path18.join(stateDir(), "config.json"));
+  const cfg = readJson(path19.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path18.join(stateDir(), "auto-update.json");
-var logFile = () => path18.join(stateDir(), "auto-update.log");
+var stampFile = () => path19.join(stateDir(), "auto-update.json");
+var logFile = () => path19.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -31264,7 +31481,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs15.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs17.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -31272,10 +31489,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path18.dirname(fileURLToPath2(import.meta.url));
+  const dir = path19.dirname(fileURLToPath2(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path18.join(dir, name);
-    if (fs15.existsSync(candidate)) return candidate;
+    const candidate = path19.join(dir, name);
+    if (fs17.existsSync(candidate)) return candidate;
   }
   return fileURLToPath2(import.meta.url);
 }
@@ -31306,15 +31523,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path19.dirname(path19.dirname(fileURLToPath3(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path19.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path19.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path20.dirname(path20.dirname(fileURLToPath3(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path20.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path20.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path19.join(path19.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
+    const monitor = path20.join(path20.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {
@@ -31379,7 +31596,9 @@ async function startMcpServer() {
   const server = new McpServer(
     { name: "telepathy", version: VERSION },
     {
-      capabilities: { tools: {} },
+      // Grok Bot has no host-owned wake. Logging and resource updates are a best-effort side channel;
+      // wait_for_messages, registered below, is what actually returns the message.
+      capabilities: agent === "grok" ? { tools: {}, resources: { subscribe: true }, logging: {} } : { tools: {} },
       // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
       // using-telepathy skill, loaded on demand.
       instructions: guideText(agent, {
@@ -31447,6 +31666,57 @@ ${notes.join("\n")}` } : result;
       return text(withSetupNotes(selfId2, readMessagesTool(selfId2, { id, limit })));
     }
   );
+  if (agent === "grok") {
+    const waits = /* @__PURE__ */ new Map();
+    const heldByOther = (selfId2) => {
+      const peer = readPeer(selfId2);
+      return !!peer?.hasListener && listenerPid(selfId2) !== process.pid;
+    };
+    server.registerTool(
+      "wait_for_messages",
+      {
+        title: TOOLS.wait_for_messages.title,
+        description: TOOLS.wait_for_messages.description,
+        inputSchema: external_exports.object(TOOLS.wait_for_messages.args),
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+      },
+      async ({ timeoutMs }, ctx) => {
+        const selfId2 = selfIdFor(ctx.mcpReq._meta);
+        const timeout = timeoutMs ?? DEFAULT_WAIT_MS;
+        if (heldByOther(selfId2)) return text({ text: ALREADY_LISTENING });
+        if (ctx.mcpReq.signal.aborted) return text(withSetupNotes(selfId2, formatWaitResult([], "cancelled", timeout)));
+        const token = ctx.mcpReq._meta?.progressToken;
+        const progressToken = typeof token === "string" || typeof token === "number" ? token : void 0;
+        const started = Date.now();
+        const tell = (message) => {
+          if (progressToken === void 0) return Promise.resolve();
+          return ctx.mcpReq.notify({ method: "notifications/progress", params: { progressToken, progress: Date.now() - started, message } }).catch(() => void 0);
+        };
+        waits.set(selfId2, (waits.get(selfId2) ?? 0) + 1);
+        registerListener(agent, agentPid, selfId2);
+        const progress = setInterval(() => {
+          void tell(`Still waiting for telepathy messages (${Math.round((Date.now() - started) / 1e3)}s).`);
+        }, 1e4);
+        progress.unref();
+        await tell("Waiting for telepathy messages.");
+        try {
+          const result = await waitForInbox(selfId2, timeout, ctx.mcpReq.signal);
+          debugLog("server", `wait_for_messages ${result.reason} for ${selfId2}: ${result.messages.length}`);
+          return text(withSetupNotes(selfId2, formatWaitResult(result.messages, result.reason, timeout)));
+        } finally {
+          clearInterval(progress);
+          const left = (waits.get(selfId2) ?? 1) - 1;
+          if (left <= 0) {
+            waits.delete(selfId2);
+            clearListener(selfId2);
+          } else {
+            waits.set(selfId2, left);
+          }
+        }
+      }
+    );
+    attachGrokDelivery(server, boundId);
+  }
   await server.connect(new StdioServerTransport());
 }
 

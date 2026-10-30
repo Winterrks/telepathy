@@ -10,11 +10,14 @@ import { findInstalls, installsInScope, isNewer } from '../src/core/installs.ts'
 import { pluginInstalled } from '../src/cli/launch.ts';
 import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, dedupeCodexTuiProcs, isCodexExecCommand } from '../src/core/codex-launch.ts';
 import { formatAgo, describePeer } from '../src/core/listing.ts';
-import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
+import { waitForInbox } from '../src/core/inbox-wait.ts';
+import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, messageMarker, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
 import { clearProcessListCache, processTable } from '../src/core/proc.ts';
 import { ignoredShellChild, peerStatus, shellIsTelepathyMonitorOnly, statusText } from '../src/core/status.ts';
-import { inboxDir, peerDir } from '../src/core/paths.ts';
-import { isDeliveryOwner, listPeers, type Peer, readPeer, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
+import { inboxDir, peerDir, withdrawnDir, writeJsonAtomic } from '../src/core/paths.ts';
+import { clearListener, isDeliveryOwner, listPeers, listenerPid, type Peer, readPeer, registerListener, registerPresence, registerSession, registerStableName, resolvePeer, slugify } from '../src/core/peers.ts';
+import { sendMessage } from '../src/core/deliver.ts';
+import { ALREADY_LISTENING, formatWaitResult } from '../src/core/tools.ts';
 import { fakeAgent, fakeCodexHost, hostReady, killAndWait, makeSandbox, named, setCodexProcs, type Sandbox } from './helpers.ts';
 
 const peer = (agent: Agent, pid: number, name: string): Peer => ({
@@ -1075,6 +1078,174 @@ describe('installed copies', () => {
       }
       fs.rmSync(base, { recursive: true, force: true });
       fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('waitForInbox', () => {
+  let sb: Sandbox;
+  let prevHome: string | undefined;
+  const self = 'grok-waittest';
+  const message = (body: string): Message => ({
+    id: newMessageId(),
+    from: { id: 'claude-1', agent: 'claude', name: 'web', address: 'claude:web' },
+    to: { id: self, agent: 'grok', name: 'bot', address: 'grok:bot' },
+    body,
+    sentAt: new Date().toISOString(),
+  });
+
+  before(() => {
+    sb = makeSandbox();
+    prevHome = process.env.TELEPATHY_HOME;
+    process.env.TELEPATHY_HOME = sb.home;
+  });
+  after(() => {
+    if (prevHome === undefined) delete process.env.TELEPATHY_HOME;
+    else process.env.TELEPATHY_HOME = prevHome;
+    sb.cleanup();
+  });
+
+  test('returns a message that is already waiting', async () => {
+    writeToInbox(message('already'));
+    const result = await waitForInbox(self, 5_000);
+    assert.equal(result.reason, 'message');
+    assert.deepEqual(result.messages.map((m) => m.body), ['already']);
+    assert.equal((await waitForInbox(self, 0)).reason, 'timeout');
+    assert.match(formatWaitResult(result.messages, 'message', 0).text, /^1 new message\(s\):/);
+    assert.match(formatWaitResult([], 'timeout', 0).text, /No messages waiting/);
+    assert.match(formatWaitResult([], 'timeout', 200).text, /No messages arrived within 200ms/);
+    assert.match(formatWaitResult([], 'cancelled', 200).text, /Wait cancelled/);
+    assert.match(ALREADY_LISTENING, /claims nothing|would take messages/);
+  });
+
+  test('returns a message that arrives while waiting, and reports timeout and cancel', async () => {
+    const waiting = waitForInbox(self, 2_000);
+    setTimeout(() => writeToInbox(message('later')), 30);
+    const arrived = await waiting;
+    assert.equal(arrived.reason, 'message');
+    assert.equal(arrived.messages[0]?.body, 'later');
+
+    const timed = await waitForInbox(self, 150);
+    assert.deepEqual(timed, { messages: [], reason: 'timeout' });
+
+    const ac = new AbortController();
+    const cancelling = waitForInbox(self, 2_000, ac.signal);
+    setTimeout(() => ac.abort(), 20);
+    const cancelled = await cancelling;
+    assert.deepEqual(cancelled, { messages: [], reason: 'cancelled' });
+  });
+
+  test('an abort after a message lands still returns the message', async () => {
+    const ac = new AbortController();
+    const waiting = waitForInbox(self, 2_000, ac.signal);
+    setTimeout(() => {
+      writeToInbox(message('in time'));
+      ac.abort();
+    }, 20);
+    const result = await waiting;
+    assert.equal(result.reason, 'message');
+    assert.equal(result.messages[0]?.body, 'in time');
+  });
+
+  test('clearListener removes only this process registration', () => {
+    registerListener('grok', process.pid, self);
+    assert.equal(listenerPid(self), process.pid);
+    clearListener(self);
+    assert.equal(listenerPid(self), undefined);
+
+    writeJsonAtomic(path.join(peerDir(self), 'listener.json'), { pid: 1, startedAt: new Date().toISOString() });
+    clearListener(self);
+    assert.equal(listenerPid(self), 1);
+    fs.rmSync(peerDir(self), { recursive: true, force: true });
+  });
+
+  test('a parked wait confirms delivery, and a failed confirm leaves nothing for a later wait', async () => {
+    const saved = {
+      wait: process.env.TELEPATHY_CONFIRM_WAIT,
+      abort: process.env.TELEPATHY_CONFIRM_ABORT_MS,
+      grace: process.env.TELEPATHY_CONFIRM_GRACE_MS,
+      poll: process.env.TELEPATHY_CONFIRM_POLL_MS,
+    };
+    const grokProc = fakeAgent();
+    const claudeProc = fakeAgent();
+    const grokId = `grok-${grokProc.pid}`;
+    const claudeId = `claude-${claudeProc.pid}`;
+    registerPresence('grok', grokProc.pid, { cwd: '/work/bot' });
+    registerSession('grok', grokProc.pid, { cwd: '/work/bot', source: 'hook' });
+    registerPresence('claude', claudeProc.pid, { cwd: '/work/web' });
+    registerSession('claude', claudeProc.pid, { cwd: '/work/web', source: 'hook' });
+    const from = readPeer(claudeId);
+    const to = readPeer(grokId);
+    assert.ok(from && to);
+    process.env.TELEPATHY_CONFIRM_WAIT = '1';
+    process.env.TELEPATHY_CONFIRM_ABORT_MS = '2000';
+    process.env.TELEPATHY_CONFIRM_GRACE_MS = '400';
+    process.env.TELEPATHY_CONFIRM_POLL_MS = '20';
+    try {
+      const waiting = waitForInbox(grokId, 5_000);
+      const sent = await sendMessage(from, to.address, 'confirmed hello');
+      const got = await waiting;
+      assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+      if (!sent.ok) return;
+      assert.match(sent.status, new RegExp(`transcript shows ${messageMarker(sent.message.id)}`));
+      assert.equal(got.reason, 'message');
+      assert.equal(got.messages[0]?.body, 'confirmed hello');
+      const transcript = fs.readFileSync(path.join(peerDir(grokId), 'delivery-transcript.jsonl'), 'utf8');
+      assert.match(transcript, new RegExp(messageMarker(sent.message.id)));
+      assert.equal(fs.existsSync(path.join(inboxDir(grokId), `${sent.message.id}.json`)), false);
+      assert.equal(fs.existsSync(path.join(withdrawnDir(grokId), `${sent.message.id}.json`)), false);
+
+      process.env.TELEPATHY_CONFIRM_ABORT_MS = '300';
+      process.env.TELEPATHY_CONFIRM_GRACE_MS = '200';
+      const failed = await sendMessage(from, to.address, 'too late');
+      assert.equal(failed.ok, false);
+      if (failed.ok) return;
+      assert.match(failed.error, /Message failed/);
+      assert.match(failed.error, /withdrawn/);
+      const later = await waitForInbox(grokId, 80);
+      assert.deepEqual(later, { messages: [], reason: 'timeout' });
+      assert.equal(
+        fs.existsSync(inboxDir(grokId)) && fs.readdirSync(inboxDir(grokId)).some((f) => f.endsWith('.json')),
+        false,
+      );
+      assert.equal(fs.readdirSync(withdrawnDir(grokId)).some((f) => f.endsWith('.json')), true);
+    } finally {
+      await killAndWait(grokProc);
+      await killAndWait(claudeProc);
+      const restore = (key: string, value: string | undefined) => {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      };
+      restore('TELEPATHY_CONFIRM_WAIT', saved.wait);
+      restore('TELEPATHY_CONFIRM_ABORT_MS', saved.abort);
+      restore('TELEPATHY_CONFIRM_GRACE_MS', saved.grace);
+      restore('TELEPATHY_CONFIRM_POLL_MS', saved.poll);
+    }
+  });
+
+  test('an offline session fails immediately and a later wait sees nothing', async () => {
+    const grokProc = fakeAgent();
+    const claudeProc = fakeAgent();
+    const grokId = 'grok-gone-1';
+    registerPresence('grok', grokProc.pid, { cwd: '/work/gone' }, grokId);
+    registerSession('grok', grokProc.pid, { sessionId: 'gone-1', cwd: '/work/gone', source: 'hook' });
+    registerPresence('claude', claudeProc.pid, { cwd: '/work/web' });
+    registerSession('claude', claudeProc.pid, { cwd: '/work/web', source: 'hook' });
+    const from = readPeer(`claude-${claudeProc.pid}`);
+    const to = readPeer(grokId);
+    assert.ok(from && to);
+    await killAndWait(grokProc);
+    try {
+      const sent = await sendMessage(from, to.address, 'nobody home');
+      assert.equal(sent.ok, false);
+      if (sent.ok) return;
+      assert.match(sent.error, /offline/);
+      assert.match(sent.error, /Nothing was left/);
+      assert.equal(fs.existsSync(inboxDir(grokId)) && fs.readdirSync(inboxDir(grokId)).some((f) => f.endsWith('.json')), false);
+      const later = await waitForInbox(grokId, 50);
+      assert.deepEqual(later, { messages: [], reason: 'timeout' });
+    } finally {
+      await killAndWait(claudeProc);
     }
   });
 });

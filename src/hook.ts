@@ -259,8 +259,8 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
 }
 
 /**
- * Whether something else already wakes this session with its messages: Claude's plugin monitor, or the monitor Grok
- * runs with its monitor tool. Then the hooks stay out of its way.
+ * Whether something else is already delivering this session's messages: Claude's plugin monitor, the monitor
+ * Grok Build starts, or a Grok Bot wait_for_messages call. Then the hooks stay out of its way.
  */
 const hasListener = (selfId: string) => readPeer(selfId)?.hasListener ?? false;
 

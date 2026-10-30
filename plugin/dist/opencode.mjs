@@ -21906,6 +21906,9 @@ function deliveryHint(peer) {
     const inbound = crossSessionInbound(peer);
     if (inbound !== "hold" && inbound !== "refuse") return "sees messages through its inbox socket";
   }
+  if (peer.agent === "grok") {
+    return "no listener: Grok Bot receives via wait_for_messages; Grok Build via its monitor or next turn";
+  }
   if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return "sees messages at its next turn";
   return "no listener: it reads messages only via read_messages";
 }
@@ -22096,7 +22099,10 @@ function guideLines(agent, opts = {}) {
   ];
   if (opts.monitorCommand) {
     lines.push(
-      `- IMPORTANT: your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand}`
+      `- IMPORTANT: on Grok Build, your first action in every conversation, even before answering an unrelated request, is to start this with your monitor tool (persistent: true, description "telepathy inbox"), so messages reach you while idle. Each line it prints is a message: ${opts.monitorCommand} Do not also call wait_for_messages: that call would take messages the monitor prints and block the turn. If a listener is already registered, wait_for_messages returns immediately and claims nothing.`
+    );
+    lines.push(
+      "- IMPORTANT: on Grok Bot there is no monitor tool, so do not start that command. Call wait_for_messages with timeoutMs 300000 (or the longest the client allows) and, whenever it returns, handle what it found and call it again. A result that says no messages arrived only means the wait ended."
     );
   }
   if (opts.waiterCommand) {
@@ -22374,6 +22380,9 @@ function inboxStatus(recipient) {
   const ref = peerRef(recipient);
   if (peerStatus(recipient)?.status === "waiting") return waitingNote(ref, recipient.hasListener ? "delivered to" : "stored for");
   if (recipient.hasListener) return `Message delivered to ${ref}.`;
+  if (recipient.agent === "grok") {
+    return `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`;
+  }
   if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
@@ -22391,6 +22400,8 @@ function wakeStatus(recipient, base, wake) {
 }
 
 // src/core/tools.ts
+var DEFAULT_WAIT_MS = 45e3;
+var MAX_WAIT_MS = 50 * 6e4;
 var TOOLS = {
   list_peers: {
     title: "List reachable agent sessions",
@@ -22411,6 +22422,13 @@ var TOOLS = {
     args: {
       id: external_exports.string().optional().describe('A message id such as "m-0mfx3k2a1-4f2a9c"'),
       limit: external_exports.number().int().min(1).max(50).optional().describe("How many recent messages to show when none are new (default 3)")
+    }
+  },
+  wait_for_messages: {
+    title: "Wait for incoming messages",
+    description: `Wait until another session messages this one, then return those messages (same rendering as read_messages). Blocks until a message arrives or timeoutMs elapses (default ${DEFAULT_WAIT_MS}, max ${MAX_WAIT_MS}). Grok Bot has no other wake: call this with a long timeoutMs (for example 300000) when the client allows it, handle the result, and call it again. A result with no messages only means this wait ended. Grok Build already wakes from its monitor tool: do not also call this. If a listener is already registered, the tool returns immediately and claims nothing.`,
+    args: {
+      timeoutMs: external_exports.number().int().min(0).max(MAX_WAIT_MS).optional().describe(`How long to wait, in milliseconds. 0 returns immediately. Default ${DEFAULT_WAIT_MS}. Maximum ${MAX_WAIT_MS}.`)
     }
   }
 };

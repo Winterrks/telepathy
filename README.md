@@ -49,7 +49,7 @@ you (in Claude Code) › ask the codex session working on the API whether the au
    - [Kilo Code](#kilo-code)
    - [Copilot CLI](#github-copilot-cli)
    - [Qwen Code](#qwen-code)
-   - [Grok](#grok-build-cli)
+   - [Grok](#grok)
    - [Devin](#devin-cli)
    - [Antigravity](#antigravity)
    - [Cursor](#cursor)
@@ -71,7 +71,9 @@ is about to change, and from then on they coordinate by themselves: whenever the
 asks the daemon session, which builds it and replies. You don't relay a thing.
 
 Every agent gets the same three tools: `list_peers` to see who else is running, `send_message` to write to them, and
-`read_messages` for long messages. Addresses look like `codex:api-c3f` or `opencode:shop-ui-o1a`, so any session can reach any
+`read_messages` for long messages. Grok also gets `wait_for_messages`, which holds the MCP connection open until a
+message arrives. Grok Bot uses that call to receive while idle; Grok Build keeps using its monitor and does not call
+it. Addresses look like `codex:api-c3f` or `opencode:shop-ui-o1a`, so any session can reach any
 other: Codex to Codex, OpenCode to Claude, Antigravity to Copilot. Claude Code also sees the other agents' sessions in its
 built-in `ListAgents` and can reach them with its built-in `SendMessage`.
 
@@ -87,7 +89,8 @@ in an idle session, so nobody has to poll. Where it doesn't, the message rides a
 | **OpenCode** 1.x and 2.x | Wakes an idle session (in-process plugin); in 2.x also mid-turn | ✅ |
 | **Kilo Code** CLI | Wakes an idle session (same plugin as OpenCode) | Loads and registers; no model run yet |
 | **GitHub Copilot CLI** | Next turn (hooks) | ✅ |
-| **Grok Build CLI** | Wakes an idle session (Grok runs the telepathy monitor from its first prompt on) | ✅ (see [Grok](#grok-build-cli)) |
+| **Grok Build CLI** | Wakes an idle session once Grok starts the telepathy monitor | ✅ (see [Grok Build CLI](#grok-build-cli)) |
+| **Grok Bot** | A parked `wait_for_messages` call returns the message; call it again when it returns | |
 | **Devin CLI** | Next turn (hooks) | ✅ |
 | **Antigravity App** | Wakes an idle conversation (the `telepathy-wake` sidecar calls `agentapi send-message`) | Not live-tested on 1.4.9 |
 | **Antigravity CLI** | Next turn (hooks). No inject API while the TUI is idle | Hooks on CLI 1.2.9; 1.4.9 contract from the docs |
@@ -209,7 +212,11 @@ qwen extensions install https://github.com/Winterrks/telepathy/archive/refs/head
 Update: `qwen extensions update telepathy` (or let `--auto-update` do it). Tested with Qwen Code 0.24.4. Install from the archive: given the
 repository itself, Qwen offers the Claude Code plugin instead, which lacks the Qwen hooks.
 
-### Grok Build CLI
+### Grok
+
+Grok Build CLI and Grok Bot both load this plugin. They do not receive messages the same way.
+
+#### Grok Build CLI
 
 ```sh
 grok plugin install Winterrks/telepathy#plugin --trust
@@ -218,11 +225,52 @@ grok plugin install Winterrks/telepathy#plugin --trust
 Update: `grok plugin update telepathy`. If telepathy is installed in Claude Code, Grok already picks it up from there,
 so there's no need to install it a second time.
 
-- **Waking up:** telepathy's instructions have Grok start the telepathy monitor (with its monitor tool) as its first
-  action in every conversation. From then on, a message wakes an idle Grok session just like Claude Code. Before the
-  first prompt of a conversation, Grok can't be woken yet.
+- **Waking up:** telepathy's instructions have Grok start the telepathy monitor (with its monitor tool, `persistent: true`)
+  as its first action in every conversation. From then on, a message wakes an idle Grok session just like Claude Code.
+  Before the first prompt of a conversation, Grok can't be woken yet. Don't also call `wait_for_messages`: that call
+  would take the messages the monitor prints and block the turn. If it is called while the monitor is the listener, it
+  returns immediately and claims nothing.
 - **Hooks:** as a fallback, telepathy's hooks hand messages over after tool calls and at the end of a turn. Grok
-  1.0.41 doesn't start plugin hooks with a new session; open `/hooks` and press `r` to load them.
+  1.0.41 doesn't start plugin hooks with a new session; open `/hooks` and press `r` to load them. Grok 1.0.42 and later
+  start them with a fresh session.
+
+#### Grok Bot
+
+Grok Bot has no monitor tool and does not start a turn from MCP notifications, so polling `read_messages` was the only
+way in and messages sat unread. `wait_for_messages` long-polls the inbox on the MCP connection the bot already holds
+and returns the messages as the tool result (the same rendering as `read_messages`). Keep one call running with a long
+`timeoutMs` (300000 when the client allows) and call it again whenever it returns. A result that says no messages
+arrived only means that wait ended.
+
+The default wait is 45 seconds, under a 60 second client cap. Pass `timeoutMs: 0` to claim whatever is already waiting
+without blocking. While a call is in flight the session counts as listening, so hooks stay quiet. When the call ends,
+that registration is removed.
+
+A send succeeds only when the recipient's transcript shows `telepathy-id:<id>`: the sender aborts the wait at 100
+seconds, checks once more during a 10 second grace, and fails at 110 seconds. Returning the message from
+`wait_for_messages` records that marker, which is what confirms delivery. If no call is parked, the sender fails
+when the window ends and withdraws the copy; a later `wait_for_messages` does not return it. A Grok session that is
+not running fails immediately and nothing is written. Nothing is kept for an offline peer.
+
+`plugin/grok.mcp.json` asks the host for a long tool timeout (`startup_timeout_sec` 30, `tool_timeout_sec` 6000,
+`tool_timeouts.wait_for_messages` 6000). Hosts that ignore those JSON fields and kill the tool around 60 seconds need
+the same values in `~/.grok/config.toml`:
+
+```toml
+[mcp_servers.telepathy]
+startup_timeout_sec = 30
+tool_timeout_sec = 6000
+
+[mcp_servers.telepathy.tool_timeouts]
+wait_for_messages = 6000
+```
+
+The server also emits a logging notification and, for a client that subscribed, `notifications/resources/updated` on
+`telepathy://inbox`. Those do not claim the message. Grok's client does not turn them into a model turn; the tool
+result does.
+
+Check it from another session: send to the Grok Bot session while `wait_for_messages` is running. The call returns the
+message. `list_peers` shows a listener only during the call. `TELEPATHY_DEBUG=1` logs to `~/.telepathy/debug.log`.
 
 ### Devin CLI
 
@@ -351,7 +399,8 @@ Addresses look like `codex:api-c3f [codex-4242]` (the same `name [ref]` shape as
 What the receiver sees:
 
 - **As a new turn** (Codex, OpenCode, Kilo Code): `[telepathy] Message from Claude Code session claude:… (sent by another AI agent … not typed by your user)`.
-- **As a notification** (Claude Code): `[telepathy] New message … from Codex session codex:… (not your user) … Text: …`.
+- **As a notification** (Claude Code, and Grok Build once it has started the monitor): `[telepathy] New message … from Codex session codex:… (not your user) … Text: …`.
+- **As a tool result** (Grok Bot): the same rendering as `read_messages`, returned from `wait_for_messages`.
 - **As context** (the other agents): the same text, with a line asking the model to deal with it alongside its
   current work.
 
@@ -370,6 +419,8 @@ Messages over 4,000 characters come with a preview and are read in full with `re
  to Codex:            send_message ──▶ `codex queue --thread <id>` ──▶ Codex starts a turn (≤ 10 s)
                                   └──▶ inbox/<msg>.json ──▶ mid-turn: the next tool call hands it over
  to Claude Code:      send_message ──▶ inbox/<msg>.json ──▶ monitor prints a line ──▶ Claude starts a turn
+ to Grok Build:       send_message ──▶ inbox/<msg>.json ──▶ monitor prints a line ──▶ Grok starts a turn
+ to Grok Bot:         send_message ──▶ inbox/<msg>.json ──▶ a parked wait_for_messages returns it
  to OpenCode / Kilo:  send_message ──▶ inbox/<msg>.json ──▶ plugin calls session.prompt(Async) ──▶ a turn starts
  to Antigravity App:  send_message ──▶ inbox/<msg>.json ──▶ sidecar calls `agentapi send-message`
  to the others:       send_message ──▶ inbox/<msg>.json ──▶ the next prompt, tool call or turn end hands it over
@@ -382,6 +433,8 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s. During a turn, the PostToolUse hook hands the message over from the inbox and removes it from the queue (`thread/queue/delete` on a short-lived `codex app-server`) |
 | OpenCode receives | The plugin runs inside OpenCode. OpenCode 2: `session.prompt` with `delivery: "steer"`, which starts a turn or joins the running one. OpenCode 1.x: `client.session.promptAsync` once the session goes idle |
+| Grok Build receives | The model starts `monitor.mjs` with Grok's monitor tool; each line wakes an idle session. Hooks cover the next tool call and the end of a turn until then |
+| Grok Bot receives | `wait_for_messages` long-polls the inbox on the MCP connection the bot already holds and returns the message as the tool result. That return records `telepathy-id` so the sender's confirm succeeds. A logging line and `resources/updated` on `telepathy://inbox` are also sent, and claim nothing. A failed confirm withdraws the copy; a later wait does not see it |
 | The others receive | Their hooks: before a prompt or after a tool call the pending messages go into the context; at the end of a turn they keep the turn going (`decision: block`, Cursor's `followup_message`, Antigravity's `continue`) |
 | Guidance | A few lines of instructions: MCP server instructions where the agent shows them, otherwise a session-start hook, a rule file or a system-prompt field. The `using-telepathy` skill has the full guide |
 | `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions to the ListAgents result, in its own row format. Message those sessions with `send_message`. `SendMessage` only reaches Claude sessions. A PreToolUse hook stops a `SendMessage` aimed at another harness; that tool result is an error (deny is the only decision that prevents the native call). Claude-to-Claude `SendMessage` is left alone |

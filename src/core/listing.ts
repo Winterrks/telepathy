@@ -50,6 +50,9 @@ function deliveryHint(peer: Peer): string | undefined {
     const inbound = crossSessionInbound(peer);
     if (inbound !== 'hold' && inbound !== 'refuse') return 'sees messages through its inbox socket';
   }
+  if (peer.agent === 'grok') {
+    return 'no listener: Grok Bot receives via wait_for_messages; Grok Build via its monitor or next turn';
+  }
   if (agentSpec(peer.agent).nextTurnHook && peer.hookRan) return 'sees messages at its next turn';
   return 'no listener: it reads messages only via read_messages';
 }
