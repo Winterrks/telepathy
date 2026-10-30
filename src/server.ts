@@ -4,25 +4,41 @@ import { McpServer } from '@modelcontextprotocol/server';
 import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
+import { beginToolCall, endToolCall } from './core/confirm.ts';
 import { debugLog } from './core/debug.ts';
-import { setupNotes } from './core/setup.ts';
+import { unseenSetupNotes } from './core/setup.ts';
 import { guideText } from './core/guide.ts';
+import { recordClaudeSocket, startClaudeSocketWatcher } from './core/claude-socket.ts';
+import { startWakeFlusher } from './core/wake.ts';
 import {
   codexThreadsOf,
   defaultCodexHome,
+  isDeliveryOwner,
+  linkedPeerId,
   peerId,
   readSession,
   registerPresence,
   registerSession,
+  registerStableName,
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { VERSION } from './core/version.ts';
+import { scheduleAutoUpdate } from './auto-update.ts';
 
+/**
+ * The plugin MCP server. The standalone `server.mjs` bundle calls this immediately. The `telepathy` CLI
+ * calls it only for `telepathy mcp`, so importing this module does not take over stdio.
+ */
+export async function startMcpServer(): Promise<void> {
 const argv = process.argv.slice(2);
-const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
+const flag = (name: string) => {
+  const value = argv[argv.indexOf(name) + 1];
+  return value && !value.startsWith('--') ? value : undefined;
+};
+const { agent, pid: agentPid } = findAgent(parseAgent(flag('--agent')));
 
 /**
  * Where the session works, if the server's cwd says so. Some agents (Codex, Kimi Code, Antigravity) start
@@ -55,12 +71,49 @@ function monitorCommand(): string {
  * itself. A one-prompt `claude -p` run ends anyway, so it needs neither.
  */
 function claudeWithoutMonitor(): boolean {
-  return agent === 'claude' && isStreamJsonClaude(agentPid);
+  return agent === 'claude' && isStreamJsonClaude(agentPid) && !process.env.CLAUDE_CODE_MESSAGING_SOCKET;
 }
 
-// A Codex session goes by its thread, which the server learns only from a tool call (see selfIdFor).
-if (agent !== 'codex') registerPresence(agent, agentPid, { cwd: sessionCwd() });
-debugLog('server', `started for ${peerId(agent, agentPid)}`);
+// A Codex session goes by its thread. This server learns that thread from a tool call (see selfIdFor) and does
+// not register the daemon pid: one daemon hosts every thread. A TUI that has not been prompted yet is listed
+// from the process table until a thread id exists (see observeLaunchedCodex).
+// Any other harness is keyed by its session id once a hook has linked this process to one.
+function boundId(): string {
+  return linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+}
+const selfId = boundId();
+if (agent !== 'codex' && isDeliveryOwner(selfId, agentPid)) {
+  registerPresence(agent, agentPid, { cwd: sessionCwd() }, selfId);
+  registerStableName(agent, selfId, flag('--name'));
+}
+let stopSocketWatcher: (() => void) | undefined;
+let watchingSocket: string | undefined;
+function armClaudeSocket(id: string): void {
+  if (agent !== 'claude' || watchingSocket === id) return;
+  if (!isDeliveryOwner(id, agentPid)) return;
+  stopSocketWatcher?.();
+  recordClaudeSocket(id, process.env, agentPid);
+  stopSocketWatcher = startClaudeSocketWatcher(id, agentPid);
+  watchingSocket = id;
+}
+armClaudeSocket(selfId);
+// The SessionStart hook may link this process after the server has started.
+let activeId = selfId;
+const relink = setInterval(() => {
+  const id = boundId();
+  if (!isDeliveryOwner(id, agentPid) || id === activeId) return;
+  if (agent !== 'codex') {
+    registerPresence(agent, agentPid, { cwd: sessionCwd() }, id);
+    registerStableName(agent, id, flag('--name'));
+  }
+  armClaudeSocket(id);
+  activeId = id;
+}, 500);
+relink.unref();
+debugLog('server', `started for ${selfId}`);
+startWakeFlusher();
+// A version check, at most once a day, in a detached process. It must not delay this server's handshake.
+scheduleAutoUpdate('server');
 
 const presenceFor = new Set<string>();
 
@@ -71,7 +124,7 @@ const presenceFor = new Set<string>();
  * the hook isn't approved yet.
  */
 function selfIdFor(meta: Record<string, unknown> | undefined): string {
-  if (agent !== 'codex') return peerId(agent, agentPid);
+  if (agent !== 'codex') return boundId();
   let thread = [meta?.threadId, meta?.sessionId].find((v): v is string => typeof v === 'string' && v.length > 0);
   if (!thread) {
     // Without one, the thread this process runs, if its hooks registered exactly one.
@@ -82,6 +135,7 @@ function selfIdFor(meta: Record<string, unknown> | undefined): string {
   if (!thread) return id;
   if (!presenceFor.has(id)) {
     registerPresence(agent, agentPid, { codexHome: defaultCodexHome() }, id);
+    registerStableName(agent, id, flag('--name'));
     presenceFor.add(id);
   }
   const existing = readSession(id);
@@ -105,20 +159,18 @@ const server = new McpServer(
   },
 );
 
-const text = ({ text, isError }: ToolResult) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError } : {}) });
-
-const NOTE_EVERY_MS = 10 * 60_000;
-const noteShownAt = new Map<string, number>();
+const text = ({ text, isError, structured }: ToolResult) => ({
+  content: [{ type: 'text' as const, text }],
+  ...(structured ? { structuredContent: structured } : {}),
+  ...(isError ? { isError } : {}),
+});
 
 /**
- * Adds `[telepathy setup]` notes: things the user has to fix before messages reach this session on time.
- * read_messages always shows them (an agent calls it when messages seem not to arrive); the other tools at most
- * every ten minutes per note.
+ * Adds `[telepathy setup]` notes the first time this session would show each one. A later tool call, including
+ * from a new server process, does not repeat a note it has already shown.
  */
-function withSetupNotes(selfId: string, result: ToolResult, always = false): ToolResult {
-  const now = Date.now();
-  const notes = setupNotes(selfPeer(agent, agentPid, selfId)).filter((note) => always || now - (noteShownAt.get(note) ?? 0) > NOTE_EVERY_MS);
-  for (const note of notes) noteShownAt.set(note, now);
+function withSetupNotes(selfId: string, result: ToolResult): ToolResult {
+  const notes = unseenSetupNotes(selfPeer(agent, agentPid, selfId));
   return notes.length ? { ...result, text: `${result.text}\n\n${notes.join('\n')}` } : result;
 }
 
@@ -145,8 +197,13 @@ server.registerTool(
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
   async ({ to, message }, ctx) => {
-    const selfId = selfIdFor(ctx.mcpReq._meta);
-    return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
+    const ownsClock = beginToolCall();
+    try {
+      const selfId = selfIdFor(ctx.mcpReq._meta);
+      return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
+    } finally {
+      if (ownsClock) endToolCall();
+    }
   },
 );
 
@@ -164,8 +221,9 @@ server.registerTool(
       const session = readSession(selfId);
       if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
     }
-    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit }), true));
+    return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit })));
   },
 );
 
 await server.connect(new StdioServerTransport());
+}

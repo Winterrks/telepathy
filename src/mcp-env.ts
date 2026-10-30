@@ -1,0 +1,29 @@
+/**
+ * Names a harness must forward into the plugin MCP server.
+ * Codex copies only `env_vars`. Anything missing is invisible, so `TELEPATHY_AUTO_UPDATE=0`
+ * never reaches the server and auto-update runs against the real installs.
+ * `TELEPATHY_AGENT_PID` stays out: it is the parent process, not the agent.
+ */
+export const FORWARDED_ENV = [
+  'TELEPATHY_HOME',
+  'TELEPATHY_AUTO_UPDATE',
+  'TELEPATHY_NAME',
+  'TELEPATHY_DEBUG',
+  'TELEPATHY_CODEX_BIN',
+  'TELEPATHY_LATEST_VERSION',
+  'TELEPATHY_VERSION_URL',
+  'TELEPATHY_CONFIRM_WAIT',
+  'TELEPATHY_CONFIRM_ABORT_MS',
+  'TELEPATHY_CONFIRM_GRACE_MS',
+  'TELEPATHY_CONFIRM_POLL_MS',
+  'TELEPATHY_WAKE_DEBOUNCE_MS',
+  'TELEPATHY_WAKE_DEBOUNCE_MAX_MS',
+  'TELEPATHY_TRANSCRIPT_DIR',
+  'TELEPATHY_HOLD_REPOST_DELAY_MS',
+  'TELEPATHY_MANAGED_SETTINGS_DIR',
+  'TELEPATHY_SOCKET_WAIT_MS',
+  'TELEPATHY_AUTO_UPDATE_ENTRY',
+  'TELEPATHY_CODEX_PROCS',
+  'TELEPATHY_PS_BIN',
+  'CODEX_HOME',
+] as const;

@@ -3,41 +3,55 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { agentLabel } from './agents.ts';
 import { findInstalls, isNewer } from './installs.ts';
-import { defaultCodexHome, listPeers, type Peer } from './peers.ts';
+import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { defaultCodexHome, listPeers, type Peer, sameStableName } from './peers.ts';
+import { commandLine } from './proc.ts';
 import { VERSION } from './version.ts';
 
-/** telepathy's Codex hooks, by the event key Codex uses when it records one as approved. */
-const CODEX_HOOKS: Record<string, string> = {
-  session_start: 'SessionStart',
-  post_tool_use: 'PostToolUse',
-  user_prompt_submit: 'UserPromptSubmit',
-};
+/**
+ * Codex names this plugin's MCP server `bridge` (`plugin/codex.mcp.json`). `send_message` waits up to 110s, and
+ * Codex's default `tool_timeout_sec` is 60, so a value below 110 cuts the wait off.
+ */
+export const CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
+const CODEX_BRIDGE_TIMEOUT_MIN = 110;
+
+/** The configured `tool_timeout_sec` for telepathy's Codex MCP server, or undefined when the key is absent. Later entries win. */
+export function codexBridgeTimeoutSec(config: string): number | undefined {
+  let found: number | undefined;
+  let inTable = false;
+  for (const line of config.split('\n')) {
+    const header = /^\[([^\]]+)\]/.exec(line);
+    if (header) {
+      inTable = header[1] === 'plugins."telepathy@telepathy".mcp_servers.bridge';
+      continue;
+    }
+    const dotted = /plugins\."telepathy@telepathy"\.mcp_servers\.bridge\.tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (dotted?.[1]) {
+      found = Number(dotted[1]);
+      continue;
+    }
+    if (!inTable) continue;
+    const local = /^\s*tool_timeout_sec\s*=\s*([0-9]+)/.exec(line);
+    if (local?.[1]) found = Number(local[1]);
+  }
+  return found;
+}
 
 /**
- * telepathy's Codex hooks that aren't approved yet. Codex records each hook the user trusts as a
- * `[hooks.state."telepathy@<marketplace>:hooks/codex-hooks.json:<event>:0:0"]` table in its config.toml; only
- * those table names are read. A hook whose command changed may need approving again, which this can't see.
- * Undefined when the config can't be read.
+ * A `-c` / `--config` override for the bridge timeout, if the Codex process command line carries one.
+ * Later matches win. Codex applies these over `config.toml`, so a file that lacks the key is not "unset".
  */
-export function unapprovedCodexHooks(codexHome: string): string[] | undefined {
-  let config: string;
-  try {
-    config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
-  } catch {
-    return undefined;
+export function codexBridgeTimeoutFromCommandLine(args: string): number | undefined {
+  const re = /mcp_servers\.bridge\.tool_timeout_sec\s*=\s*["']?([0-9]+)/g;
+  let found: number | undefined;
+  for (const match of args.matchAll(re)) {
+    if (match[1]) found = Number(match[1]);
   }
-  const approved = new Set(
-    [...config.matchAll(/^\[hooks\.state\."telepathy@[^":]*:hooks\/codex-hooks\.json:([a-z_]+):/gm)].map((m) => m[1]),
-  );
-  return Object.keys(CODEX_HOOKS)
-    .filter((key) => !approved.has(key))
-    .map((key) => CODEX_HOOKS[key]);
+  return found;
 }
 
 /** `node "<dist>/update-all.mjs"`, next to the bundle this runs from. */
 const updateAllCommand = () => `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'update-all.mjs')}"`;
-
-const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).join(', ')} and ${names.at(-1)}` : names[0]);
 
 /**
  * Things only the user can fix that keep messages from reaching this session on time, as `[telepathy setup]`
@@ -45,17 +59,42 @@ const listed = (names: string[]) => (names.length > 1 ? `${names.slice(0, -1).jo
  */
 export function setupNotes(self: Peer): string[] {
   const notes: string[] = [];
+  const dupes = listPeers().filter((p) => sameStableName(self, p));
+  if (self.stableName && dupes.length) {
+    notes.push(
+      `[telepathy setup] ${dupes.length + 1} live sessions share the name ${self.agent}:${self.stableName} ` +
+        `(${[self.id, ...dupes.map((p) => p.id)].join(', ')}). A message to that name can reach either one; use the [ref] to pick.`,
+    );
+  }
   if (self.agent === 'codex') {
-    const missing = unapprovedCodexHooks(self.codexHome ?? defaultCodexHome());
-    if (missing?.length) {
-      const effects = [
-        missing.includes('SessionStart') && "other sessions can't reach this one until it calls a telepathy tool",
-        missing.includes('PostToolUse') && 'messages sent while you work reach you only when your turn ends',
-        missing.includes('UserPromptSubmit') && 'after an interrupted turn, messages wait for a later turn',
-      ].filter(Boolean);
+    // A missing config.toml table is not evidence the hooks are untrusted: they can be approved and still
+    // absent from the file this process reads. Warn only when no telepathy hook has ever fired here.
+    if (!self.hookRan && !self.toolHookRan) {
       notes.push(
-        `[telepathy setup] Codex hasn't approved telepathy's ${listed(missing)} hook${missing.length > 1 ? 's' : ''}, ` +
-          `so ${effects.join('; ')}. Tell your user: open /hooks in this session and trust them (press t).`,
+        `[telepathy setup] No telepathy hook has fired for this session, so other sessions may not reach it until one does. ` +
+          'If /hooks shows telepathy\'s hooks untrusted, trust them (press t).',
+      );
+    }
+    const codexHome = self.codexHome ?? defaultCodexHome();
+    let timeout: number | undefined;
+    let config = '';
+    try {
+      config = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+      timeout = codexBridgeTimeoutSec(config);
+    } catch {
+      config = '';
+    }
+    const fromArgs = self.pid ? codexBridgeTimeoutFromCommandLine(commandLine(self.pid) ?? '') : undefined;
+    const effective = fromArgs ?? timeout;
+    if (effective !== undefined && effective < CODEX_BRIDGE_TIMEOUT_MIN) {
+      notes.push(
+        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 110s send_message waits ` +
+          'for a transcript. Set that key to at least 110.',
+      );
+    } else if (config && effective === undefined) {
+      notes.push(
+        `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override ` +
+          'was visible on this Codex process. If it is below 110, send_message can be cut off. Set that key to at least 110 if it is not already.',
       );
     }
   }
@@ -86,4 +125,18 @@ export function setupNotes(self: Peer): string[] {
     );
   }
   return notes;
+}
+
+const shownFile = (id: string) => path.join(peerDir(id), 'setup-shown.json');
+
+/**
+ * Setup notes this session has not already been shown. Each distinct note is recorded, so a new MCP process
+ * does not repeat it on the next `list_peers` or `send_message`.
+ */
+export function unseenSetupNotes(self: Peer): string[] {
+  const notes = setupNotes(self);
+  const shown = new Set(readJson<string[]>(shownFile(self.id)) ?? []);
+  const fresh = notes.filter((note) => !shown.has(note));
+  if (fresh.length) writeJsonAtomic(shownFile(self.id), [...shown, ...fresh]);
+  return fresh;
 }

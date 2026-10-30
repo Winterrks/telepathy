@@ -51,11 +51,12 @@ export async function deleteFromCodexQueue(
   threadId: string,
   queueIds: string[],
   codexHome: string | undefined,
+  timeoutMs = 10_000,
 ): Promise<Map<string, boolean> | undefined> {
   if (!queueIds.length) return new Map();
   for (const bin of codexCandidates()) {
     try {
-      return await appServerDeletes(bin, threadId, queueIds, codexHome);
+      return await appServerDeletes(bin, threadId, queueIds, codexHome, timeoutMs);
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return undefined;
     }
@@ -68,6 +69,7 @@ function appServerDeletes(
   threadId: string,
   queueIds: string[],
   codexHome: string | undefined,
+  timeoutMs: number,
 ): Promise<Map<string, boolean>> {
   return new Promise((resolve, reject) => {
     const child = spawn(bin, ['app-server'], { env: codexEnv(codexHome), stdio: ['pipe', 'pipe', 'ignore'] });
@@ -78,7 +80,7 @@ function appServerDeletes(
       if (err) reject(err);
       else resolve(results);
     };
-    const timer = setTimeout(() => finish(new Error('codex app-server timed out')), 10_000);
+    const timer = setTimeout(() => finish(new Error('codex app-server timed out')), timeoutMs);
     child.on('error', (err) => finish(err));
     const send = (msg: object) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', ...msg }) + '\n');
 

@@ -2,6 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/monitor.ts
 import fs4 from "node:fs";
+import path7 from "node:path";
+
+// src/core/claude-socket.ts
 import path6 from "node:path";
 
 // src/core/debug.ts
@@ -12,13 +15,26 @@ import path2 from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
 function stateDir() {
-  return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
 var peersDir = () => path.join(stateDir(), "peers");
 var peerDir = (id2) => path.join(peersDir(), id2);
 var inboxDir = (id2) => path.join(peerDir(id2), "inbox");
 var archiveDir = (id2) => path.join(peerDir(id2), "archive");
+var withdrawnDir = (id2) => path.join(peerDir(id2), "withdrawn");
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
@@ -48,6 +64,13 @@ function debugLog(component, line) {
   }
 }
 
+// src/core/codex-activity.ts
+var TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
+
+// src/core/codex-queue.ts
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
+
 // src/core/messages.ts
 import fs3 from "node:fs";
 import path5 from "node:path";
@@ -62,7 +85,6 @@ var AGENT_IDS = [
   "codex",
   "opencode",
   "kilo",
-  "gemini",
   "qwen",
   "copilot",
   "cursor",
@@ -81,14 +103,6 @@ var SPECS = {
   codex: { id: "codex", label: "Codex", names: ["codex"] },
   opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    names: ["gemini"],
-    script: /(^|[\s/])gemini(\.js)?(\s|$)/,
-    env: ["GEMINI_CLI"],
-    nextTurnHook: true
-  },
   qwen: {
     id: "qwen",
     label: "Qwen Code",
@@ -123,6 +137,7 @@ var SPECS = {
     nextTurnHook: true
   },
   devin: { id: "devin", label: "Devin CLI", names: ["devin"], env: ["DEVIN_PLUGIN_ROOT", "DEVIN_PROJECT_DIR"], nextTurnHook: true },
+  // One plugin for the App, CLI, and IDE. The CLI TUI is turn-boundary only. The App sidecar wakes idle chats.
   antigravity: { id: "antigravity", label: "Antigravity", names: ["agy", "antigravity"], nextTurnHook: true },
   hermes: { id: "hermes", label: "Hermes Agent", names: ["hermes"], script: /(^|[\s/])hermes(\s|$)/ },
   openclaw: { id: "openclaw", label: "OpenClaw", names: ["openclaw"], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },
@@ -155,12 +170,15 @@ function isAgentProcess(agent2, comm, args, kernelName = () => void 0) {
 // src/core/proc.ts
 import { execFileSync } from "node:child_process";
 var cache;
+function psCommand() {
+  return process.env.TELEPATHY_PS_BIN || "ps";
+}
 function processTable(maxAgeMs = 500) {
   if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
   const table = /* @__PURE__ */ new Map();
   let out = "";
   try {
-    out = execFileSync("ps", ["-Ao", "pid=,ppid=,lstart=,comm="], {
+    out = execFileSync(psCommand(), ["-Ao", "pid=,ppid=,lstart=,comm="], {
       encoding: "utf8",
       env: { ...process.env, LC_ALL: "C" },
       maxBuffer: 16 * 1024 * 1024
@@ -189,9 +207,15 @@ function isAlive(pid) {
 function procStart(pid) {
   return processTable().get(pid)?.start;
 }
+function isSameProcess(pid, recordedStart) {
+  if (!isAlive(pid)) return false;
+  if (!recordedStart) return true;
+  const current = processTable(0).get(pid)?.start;
+  return current === void 0 || current === recordedStart;
+}
 function psField(pid, field) {
   try {
-    return execFileSync("ps", ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }
@@ -230,6 +254,20 @@ function findAgent(hint) {
 
 // src/core/peers.ts
 var peerId = (agent2, key) => `${agent2}-${key}`;
+var ownersFile = (id2) => path4.join(peerDir(id2), "owners.json");
+var linkFile = (agent2, pid) => path4.join(peerDir(peerId(agent2, pid)), "link.json");
+function sessionOwners(id2) {
+  const owners = readJson(ownersFile(id2)) ?? [];
+  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+}
+function isDeliveryOwner(id2, pid) {
+  const owners = sessionOwners(id2);
+  return owners.length === 0 || owners[0]?.pid === pid;
+}
+function linkedPeerId(agent2, pid) {
+  const link = readJson(linkFile(agent2, pid));
+  return typeof link?.id === "string" ? link.id : void 0;
+}
 var PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
 var AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
 var REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
@@ -245,7 +283,34 @@ var peerRef = (peer) => `${peer.address} [${peer.id}]`;
 // src/core/messages.ts
 var ARCHIVE_KEEP = 200;
 var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
-function claimInbox(peerId2) {
+function deliveryBlocked(peerId2, msg, now = Date.now()) {
+  if (fs3.existsSync(path5.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === "number" && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+function withdrawEverywhere(peerId2, messageId) {
+  const file = `${messageId}.json`;
+  const dest = path5.join(ensureDir(withdrawnDir(peerId2)), file);
+  const sources = [path5.join(inboxDir(peerId2), file), path5.join(archiveDir(peerId2), file)];
+  if (!fs3.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs3.renameSync(src, dest);
+        break;
+      } catch {
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs3.existsSync(src)) fs3.rmSync(src, { force: true });
+    } catch {
+    }
+  }
+  if (fs3.existsSync(dest)) return "withdrawn";
+  if (sources.some((src) => fs3.existsSync(src))) return "claimed";
+  return "missing";
+}
+function claimInbox(peerId2, skip) {
   let files;
   try {
     files = fs3.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -254,6 +319,8 @@ function claimInbox(peerId2) {
   }
   const claimed = [];
   for (const file of files) {
+    const id2 = file.slice(0, -".json".length);
+    if (skip?.has(id2)) continue;
     const target = path5.join(ensureDir(archiveDir(peerId2)), file);
     try {
       fs3.renameSync(path5.join(inboxDir(peerId2), file), target);
@@ -261,7 +328,12 @@ function claimInbox(peerId2) {
       continue;
     }
     const msg = readJson(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId2);
   return claimed;
@@ -276,8 +348,9 @@ function pruneArchive(peerId2) {
   }
 }
 var describeSender = (from) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
+var messageMarker = (id2) => `telepathy-id:${id2}`;
 function formatMonitorLine(msg, inlineLimit = 4e3) {
-  const header = `[telepathy] New message ${msg.id} from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
+  const header = `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
   const flat = (s) => s.replace(/\r\n|\r|\n/g, "\\n");
   if (msg.body.length <= inlineLimit) {
     return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}`;
@@ -286,22 +359,44 @@ function formatMonitorLine(msg, inlineLimit = 4e3) {
   return `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" for the full text): ${preview}\u2026`;
 }
 
+// src/core/codex-queue.ts
+var execFileAsync = promisify(execFile);
+
+// src/core/confirm.ts
+var FULL_READ = 32 * 1024 * 1024;
+var TAIL_READ = 4 * 1024 * 1024;
+
+// src/core/claude-socket.ts
+var SOCKET_LINE_MAX = 1024 * 1024;
+var listenerFile = (id2) => path6.join(peerDir(id2), "socket-listener.json");
+function claudeSocketArmed(id2) {
+  const record = readJson(listenerFile(id2));
+  return !!record && isSameProcess(record.pid, record.procStart);
+}
+
 // src/monitor.ts
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
+var rewake = argv.includes("--rewake");
+if (process.env.CLAUDE_CODE_MESSAGING_SOCKET && (rewake || !once)) {
+  debugLog("monitor", "CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener");
+  process.exit(0);
+}
 var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
-var id = peerId(agent, agentPid);
-var listenerFile = path6.join(peerDir(id), "listener.json");
+var id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+var listenerFile2 = () => path7.join(peerDir(id), "listener.json");
 var draining = false;
 function drain() {
   if (draining) return;
+  if (!isDeliveryOwner(id, agentPid)) return;
+  if (claudeSocketArmed(id)) return;
   draining = true;
   try {
     const messages = claimInbox(id);
     for (const msg of messages) debugLog("monitor", `delivered ${msg.id} from ${msg.from.id}`);
     if (!messages.length) return;
     const text = messages.map((msg) => formatMonitorLine(msg) + "\n").join("");
-    if (once) process.stdout.write(text, () => stop());
+    if (once || rewake) process.stdout.write(text, () => stop(rewake ? 2 : 0));
     else process.stdout.write(text);
   } finally {
     draining = false;
@@ -309,8 +404,15 @@ function drain() {
 }
 var watcher;
 function ensureWatching() {
+  const linked = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
+  if (linked !== id) {
+    watcher?.close();
+    watcher = void 0;
+    id = linked;
+  }
+  if (!isDeliveryOwner(id, agentPid)) return;
   ensureDir(inboxDir(id));
-  if (!fs4.existsSync(listenerFile)) registerListener(agent, agentPid);
+  if (!fs4.existsSync(listenerFile2())) registerListener(agent, agentPid, id);
   if (watcher) return;
   try {
     watcher = fs4.watch(inboxDir(id), () => drain());
@@ -322,15 +424,20 @@ function ensureWatching() {
     watcher = void 0;
   }
 }
-function stop() {
+function stop(code = 0) {
   try {
-    if (readJson(listenerFile)?.pid === process.pid) fs4.rmSync(listenerFile, { force: true });
+    if (readJson(listenerFile2())?.pid === process.pid) fs4.rmSync(listenerFile2(), { force: true });
   } catch {
   }
-  process.exit(0);
+  process.exit(code);
+}
+function listenerHeldByOther() {
+  const existing = readJson(listenerFile2());
+  return !!existing?.pid && existing.pid !== process.pid && isSameProcess(existing.pid, existing.procStart);
 }
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) process.on(signal, stop);
-registerListener(agent, agentPid);
+if (rewake && listenerHeldByOther()) process.exit(0);
+if (isDeliveryOwner(id, agentPid)) registerListener(agent, agentPid, id);
 ensureWatching();
 debugLog("monitor", `listening for ${id}`);
 drain();

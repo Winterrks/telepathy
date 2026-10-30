@@ -1,0 +1,40 @@
+{
+  "name": "telepathy-cli",
+  "version": "0.9.0",
+  "description": "CLI for telepathy. Install it into the coding agents on this machine, keep those copies current, and run or host a session that can message the others.",
+  "type": "module",
+  "bin": {
+    "telepathy": "dist/telepathy.mjs"
+  },
+  "files": [
+    "dist/telepathy.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Winterrks/telepathy.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/Winterrks/telepathy#readme",
+  "bugs": {
+    "url": "https://github.com/Winterrks/telepathy/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "keywords": [
+    "telepathy",
+    "claude-code",
+    "codex",
+    "opencode",
+    "antigravity",
+    "copilot-cli",
+    "mcp",
+    "acp"
+  ]
+}

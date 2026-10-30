@@ -1,8 +1,9 @@
 import path from 'node:path';
 import type { Agent } from './agents.ts';
 import { codexActivity, codexLastResponse } from './codex-activity.ts';
-import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { envDurationMs, peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { claudeConfigDir, type Peer } from './peers.ts';
+import { commandLine, processTable } from './proc.ts';
 
 /**
  * What a session is doing, in Claude Code's words where they exist:
@@ -10,7 +11,7 @@ import { claudeConfigDir, type Peer } from './peers.ts';
  *   shell        not generating, but a shell command it started is still running (Claude Code only)
  *   idle         waiting for its user to type
  *   waiting      stopped on a permission prompt: nothing moves until its user answers it
- *   interrupted  its last turn was interrupted (Codex): it starts queued messages only after its user's next prompt
+ *   interrupted  its last turn was interrupted (Codex). The queue will not start. The next prompt's hook reads the inbox.
  */
 export type PeerStatus = 'busy' | 'shell' | 'idle' | 'waiting' | 'interrupted';
 
@@ -50,11 +51,78 @@ function recorded(id: string): StatusInfo | undefined {
 
 const CLAUDE_STATUSES: readonly string[] = ['busy', 'shell', 'idle', 'waiting'];
 
-/** Claude Code keeps each session's status in `sessions/<pid>.json`, next to its name. Only those two fields are read. */
+/**
+ * Claude Code keeps each session's status in `sessions/<pid>.json`, next to its name. `shell` means a command
+ * it started is still running. The telepathy monitor is that command for an otherwise idle session, so it
+ * does not count: idle is reported when every descendant command is telepathy's own monitor, server, or hook.
+ */
 function claudeStatus(pid: number): StatusInfo | undefined {
   const record = readJson<{ status?: unknown; statusUpdatedAt?: unknown }>(path.join(claudeConfigDir(), 'sessions', `${pid}.json`));
   if (typeof record?.status !== 'string' || !CLAUDE_STATUSES.includes(record.status)) return undefined;
-  return { status: record.status as PeerStatus, at: typeof record.statusUpdatedAt === 'number' ? record.statusUpdatedAt : undefined };
+  let status = record.status as PeerStatus;
+  if (status === 'shell' && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = 'idle';
+  return { status, at: typeof record.statusUpdatedAt === 'number' ? record.statusUpdatedAt : undefined };
+}
+
+const TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
+
+/** `ps` and processes younger than this are not a session's own command. Claude samples `ps` for a moment. */
+export function transientChildMs(): number {
+  return envDurationMs('TELEPATHY_TRANSIENT_CHILD_MS', 2_000);
+}
+
+/** A short-lived `ps` (or any process younger than {@link transientChildMs}) is not the session's work. */
+export function ignoredShellChild(command: string, ageMs: number | undefined): boolean {
+  const token = command.trim().split(/\s+/)[0] ?? '';
+  const base = token.replace(/^["']|["']$/g, '').split(/[/\\]/).pop() ?? '';
+  if (base === 'ps' || base === '(ps)') return true;
+  // A telepathy monitor that just started is still the session's monitor. Ignoring it would leave an idle session
+  // looking like `shell` for the first two seconds.
+  if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) return false;
+  return ageMs !== undefined && ageMs >= 0 && ageMs < transientChildMs();
+}
+
+function processAgeMs(start: string | undefined): number | undefined {
+  if (!start) return undefined;
+  const at = Date.parse(start);
+  if (Number.isNaN(at)) return undefined;
+  return Date.now() - at;
+}
+
+/** True when the command lines are telepathy's monitor plus its own server and hooks, and nothing else. */
+export function shellIsTelepathyMonitorOnly(commands: string[]): boolean {
+  let monitor = false;
+  for (const command of commands) {
+    if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) {
+      if (/monitor\.mjs/.test(command)) monitor = true;
+      continue;
+    }
+    return false;
+  }
+  return monitor;
+}
+
+function descendantCommands(rootPid: number): string[] {
+  const table = processTable(0);
+  const byParent = new Map<number, number[]>();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  const commands: string[] = [];
+  const stack = [...(byParent.get(rootPid) ?? [])];
+  const seen = new Set<number>();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === undefined || seen.has(pid)) continue;
+    seen.add(pid);
+    const info = table.get(pid);
+    const args = commandLine(pid) ?? info?.comm;
+    if (args && !ignoredShellChild(args, processAgeMs(info?.start))) commands.push(args);
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return commands;
 }
 
 /**
@@ -97,7 +165,7 @@ export function statusText(info: StatusInfo | undefined, now = Date.now()): stri
     case 'shell':
       return 'shell (not generating, but a command it started is still running)';
     case 'interrupted':
-      return 'interrupted: gets messages only after its user sends it a prompt';
+      return 'interrupted: a send fails until its user prompts it';
     case 'busy':
       return `busy${stale(info, now)}`;
     default:

@@ -1,12 +1,17 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { claudeSocketArmed, crossSessionInbound, readClaudeSocket, recordClaudeSocket } from './core/claude-socket.ts';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
+import { beginToolCall, endToolCall } from './core/confirm.ts';
 import { sendMessage } from './core/deliver.ts';
+import { unrefWakeTimers } from './core/wake.ts';
 import { guideText } from './core/guide.ts';
 import { listAgentsRow } from './core/listing.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
+import { peerDir, readJson, writeJsonAtomic } from './core/paths.ts';
 import { AGENT_ALTERNATION } from './core/agents.ts';
 import {
   agentLabel,
@@ -16,12 +21,18 @@ import {
   peerId,
   readPeer,
   readSession,
+  isDeliveryOwner,
+  linkedPeerId,
+  copilotEventsFile,
   registerSession,
+  registerStableName,
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { statusFromHooks, writeStatus } from './core/status.ts';
+import { scheduleAutoUpdate } from './auto-update.ts';
+import { antigravitySurface, expandHomePath, type AntigravitySurface } from './core/antigravity.ts';
 
 /**
  * Hook entry point, shared by every agent with command hooks:
@@ -47,13 +58,18 @@ interface HookInput {
 const firstString = (input: HookInput, fields: string[]): string | undefined =>
   fields.map((f) => input[f]).find((v): v is string => typeof v === 'string' && v.length > 0);
 
+/** Harness session ids that live in the environment when the hook payload omits them. */
+const SESSION_ENV: Partial<Record<Agent, string>> = {
+  // Copilot CLI exports this for the running session. See agents.ts.
+  copilot: 'COPILOT_AGENT_SESSION_ID',
+};
+
 /** Agents that put the project directory in an environment variable rather than in the hook input. */
 const PROJECT_DIR_ENV: Partial<Record<Agent, string>> = {
   devin: 'DEVIN_PROJECT_DIR',
   cursor: 'CURSOR_PROJECT_DIR',
   copilot: 'COPILOT_PROJECT_DIR',
   grok: 'GROK_WORKSPACE_ROOT',
-  gemini: 'GEMINI_PROJECT_DIR',
   qwen: 'QWEN_PROJECT_DIR',
 };
 
@@ -61,8 +77,9 @@ const PROJECT_DIR_ENV: Partial<Record<Agent, string>> = {
 function sessionOf(agent: Agent, input: HookInput): { sessionId?: string; cwd?: string } {
   const firstOf = (value: unknown) => (Array.isArray(value) && typeof value[0] === 'string' ? value[0] : undefined);
   const envName = PROJECT_DIR_ENV[agent];
+  const envSession = SESSION_ENV[agent] ? process.env[SESSION_ENV[agent]]?.trim() : undefined;
   return {
-    sessionId: firstString(input, ['session_id', 'sessionId', 'conversation_id', 'conversationId', 'thread_id', 'threadId']),
+    sessionId: firstString(input, ['session_id', 'sessionId', 'conversation_id', 'conversationId', 'thread_id', 'threadId']) ?? (envSession || undefined),
     cwd:
       firstString(input, ['cwd', 'workspaceRoot', 'project_dir', 'projectDir']) ??
       firstOf(input.workspace_roots) ??
@@ -71,7 +88,7 @@ function sessionOf(agent: Agent, input: HookInput): { sessionId?: string; cwd?: 
   };
 }
 
-/** The session a hook runs for: `<agent>-<pid>`, or for Codex the thread named in the input (see sessionKey). */
+/** The session a hook runs for: `<agent>-<session id>` once the harness names one, otherwise `<agent>-<pid>`. */
 const idOf = (agent: Agent, agentPid: number, input: HookInput) => sessionPeerId(agent, agentPid, sessionOf(agent, input).sessionId);
 
 async function readStdin(): Promise<HookInput> {
@@ -82,6 +99,33 @@ async function readStdin(): Promise<HookInput> {
 }
 
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
+
+const HOST_PROMPT = (id: string) => path.join(peerDir(id), 'host-prompt.json');
+const MESSAGE_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/g;
+
+/** Ids the ACP host already placed in this prompt. Copilot's userPromptSubmitted hook must not claim them. */
+function promptMessageIds(input: HookInput): Set<string> {
+  const ids = new Set<string>();
+  const raw = JSON.stringify(input);
+  for (const match of raw.matchAll(MESSAGE_MARKER)) ids.add(match[1]);
+  return ids;
+}
+
+function rememberHostPrompt(peerId: string, ids: Set<string>): void {
+  writeJsonAtomic(HOST_PROMPT(peerId), { ids: [...ids] });
+}
+
+function takeHostPrompt(peerId: string): Set<string> | undefined {
+  const file = HOST_PROMPT(peerId);
+  const ids = readJson<{ ids?: unknown }>(file)?.ids;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // already gone
+  }
+  if (!Array.isArray(ids)) return undefined;
+  return new Set(ids.filter((id): id is string => typeof id === 'string'));
+}
 
 /** What a hook hands back: stdout, and for agents that read it, stderr plus an exit code. */
 interface HookReply {
@@ -110,7 +154,6 @@ const SHAPES: Partial<Record<Agent, HookShape>> = {
   claude: { context: hookSpecificContext, turnEnd: blockStop },
   // Codex has no turn-end hook here: its queue starts a turn with anything still unread once the turn ends.
   codex: { context: hookSpecificContext, turnEnd: blockStop },
-  gemini: { context: hookSpecificContext, turnEnd: blockStop },
   qwen: { context: hookSpecificContext, turnEnd: blockStop },
   devin: { context: hookSpecificContext, turnEnd: blockStop },
   grok: { context: hookSpecificContext, turnEnd: blockStop },
@@ -127,6 +170,7 @@ const SHAPES: Partial<Record<Agent, HookShape>> = {
   antigravity: {
     context: (text) => json({ injectSteps: [{ userMessage: text }] }),
     turnEnd: (text) => json({ decision: 'continue', reason: text }),
+    sessionStart: (text) => json({ injectSteps: [{ systemMessage: { systemMessage: text } }] }),
   },
   // Kimi Code adds a UserPromptSubmit hook's plain stdout to the context; a Stop hook continues on exit code 2.
   kimi: { context: (text) => ({ stdout: text }), turnEnd: (text) => ({ stderr: text, exitCode: 2 }) },
@@ -143,31 +187,74 @@ function reply(r: HookReply | undefined): void {
  * SessionStart: record which session/thread this agent process is running, so peers can address it. Prints
  * nothing unless the agent can't show MCP server instructions: agents add this hook's output to the context.
  */
+/** Where this Copilot process writes `events.jsonl`. The sender cannot see `COPILOT_HOME`. */
+function copilotSessionFields(sessionId: string | undefined): { transcriptPath?: string } {
+  if (!sessionId) return {};
+  return { transcriptPath: copilotEventsFile(sessionId) };
+}
+
 function sessionStart(agent: Agent, agentPid: number, input: HookInput): void {
+  // Detached, and a no-op when a check already ran today. Never delays this hook's reply.
+  scheduleAutoUpdate('session-start');
+  const id = idOf(agent, agentPid, input);
+  const session = sessionOf(agent, input);
   registerSession(agent, agentPid, {
-    ...sessionOf(agent, input),
+    ...session,
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
+    ...(agent === 'antigravity' ? antigravitySessionFields(input) : {}),
+    ...(agent === 'copilot' ? copilotSessionFields(session.sessionId) : {}),
   });
-  if (statusFromHooks(agent)) writeStatus(idOf(agent, agentPid, input), 'idle');
+  registerStableName(agent, id);
+  if (agent === 'claude' && isDeliveryOwner(id, agentPid)) recordClaudeSocket(id, process.env, agentPid);
+  if (statusFromHooks(agent)) writeStatus(id, 'idle');
   reply(SHAPES[agent]?.sessionStart?.(guideText(agent)));
 }
 
+/** Antigravity's transcript path names the surface and the file confirm searches. */
+function antigravitySessionFields(input: HookInput): { surface?: AntigravitySurface; transcriptPath?: string } {
+  const raw = firstString(input, ['transcriptPath', 'transcript_path']);
+  if (!raw) return {};
+  const transcriptPath = expandHomePath(raw);
+  const surface = antigravitySurface(transcriptPath);
+  return { transcriptPath, ...(surface ? { surface } : {}) };
+}
+
 /**
- * Keeps the registration current from any hook: some agents have no session-start event (Antigravity), and
- * `/clear` or a resume can switch the session in the same process without one.
+ * Keeps the registration current from any hook. `/clear`, `--conversation`, or `/fork` can switch the
+ * conversation in the same process. A new Antigravity conversation id (a `/fork`) is a new peer; the same
+ * id (a `--conversation` resume) keeps the peer and its name.
  */
 function refreshSession(agent: Agent, agentPid: number, input: HookInput): void {
   const { sessionId, cwd } = sessionOf(agent, input);
   const existing = readSession(idOf(agent, agentPid, input));
   // A Codex thread's record also names the process hosting it, which changes when Codex updates its daemon.
   const sameHost = existing?.pid === agentPid;
-  if (existing?.source === 'hook' && sameHost && (!sessionId || existing.sessionId === sessionId) && (existing.cwd || !cwd)) return;
+  registerStableName(agent, idOf(agent, agentPid, input));
+  if (agent === 'claude' && isDeliveryOwner(idOf(agent, agentPid, input), agentPid)) {
+    recordClaudeSocket(idOf(agent, agentPid, input), process.env, agentPid);
+  }
+  const extra =
+    agent === 'antigravity'
+      ? antigravitySessionFields(input)
+      : agent === 'copilot'
+        ? copilotSessionFields(sessionId ?? existing?.sessionId)
+        : {};
+  if (
+    existing?.source === 'hook' &&
+    sameHost &&
+    (!sessionId || existing.sessionId === sessionId) &&
+    (existing.cwd || !cwd) &&
+    (!extra.transcriptPath || existing.transcriptPath === extra.transcriptPath)
+  ) {
+    return;
+  }
   registerSession(agent, agentPid, {
     sessionId: sessionId ?? existing?.sessionId,
     cwd: cwd ?? existing?.cwd,
     source: 'hook',
     codexHome: agent === 'codex' ? defaultCodexHome() : undefined,
+    ...extra,
   });
 }
 
@@ -178,12 +265,24 @@ function refreshSession(agent: Agent, agentPid: number, input: HookInput): void 
 const hasListener = (selfId: string) => readPeer(selfId)?.hasListener ?? false;
 
 /**
+ * The socket watcher is the delivery path when a post can be confirmed. hold and refuse are not posted, so the
+ * hooks stay the path that can still be withdrawn. A recorded socket is enough: the monitor exits when the
+ * session exported one, and must not be what keeps the hooks quiet.
+ */
+function socketOwnsDelivery(selfId: string): boolean {
+  if (!readClaudeSocket(selfId) && !claudeSocketArmed(selfId)) return false;
+  const inbound = crossSessionInbound(readPeer(selfId));
+  return inbound !== 'hold' && inbound !== 'refuse';
+}
+
+/**
  * A Claude Code session driven over stream-json (the Claude app) runs no plugin monitor, so it keeps a one-shot
  * waiter running as a background command instead: the waiter exits when a message arrives, and its completion
  * wakes the session. Returns the reminder to start it, when this is such a session and no waiter is running.
  */
 function waiterReminder(agent: Agent, agentPid: number): string | undefined {
-  if (agent !== 'claude' || !isStreamJsonClaude(agentPid)) return undefined;
+  // A stream-json session with an inbox socket is woken by the post. The Bash waiter is for a host that has neither.
+  if (agent !== 'claude' || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return undefined;
   const waiter = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude --once`;
   return (
     "[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it " +
@@ -224,10 +323,15 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   const selfId = idOf(agent, agentPid, input);
+  // A second live process on this session (a fork, or the session open twice) must not also inject the inbox.
+  if (!isDeliveryOwner(selfId, agentPid)) {
+    debugLog('hook', `${selfId} pid ${agentPid} is not the delivery owner`);
+    return;
+  }
   // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
   if (statusFromHooks(agent) || agent === 'codex') writeStatus(selfId, 'busy');
   const overlap = touchedFilesNote(agent, agentPid, input);
-  if (hasListener(selfId)) {
+  if (hasListener(selfId) || socketOwnsDelivery(selfId)) {
     if (overlap) reply(shape.context(overlap, event));
     return;
   }
@@ -237,7 +341,9 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
     const session = readSession(selfId);
     if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
   }
-  const messages = claimInbox(selfId);
+  const hostInjected = agent === 'copilot' && /userPromptSubmitted/i.test(event) ? promptMessageIds(input) : undefined;
+  if (hostInjected?.size) rememberHostPrompt(selfId, hostInjected);
+  const messages = claimInbox(selfId, hostInjected);
   if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
   const parts = [messages.length ? formatForContext(messages) : '', overlap ?? '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join('\n\n'), event));
@@ -259,10 +365,13 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   if (!shape) return;
   refreshSession(agent, agentPid, input);
   const selfId = idOf(agent, agentPid, input);
+  if (!isDeliveryOwner(selfId, agentPid)) return;
   const tracked = statusFromHooks(agent);
   if (tracked) writeStatus(selfId, 'idle');
-  if (!endedNormally(input) || hasListener(selfId)) return;
-  const messages = claimInbox(selfId);
+  // Taken even when the turn did not end cleanly, so the next prompt can claim a copy the host did not archive.
+  const hostInjected = agent === 'copilot' ? takeHostPrompt(selfId) : undefined;
+  if (!endedNormally(input) || hasListener(selfId) || socketOwnsDelivery(selfId)) return;
+  const messages = claimInbox(selfId, hostInjected);
   if (messages.length) {
     if (tracked) writeStatus(selfId, 'busy'); // the turn goes on with the messages
     debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);
@@ -275,9 +384,8 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
 }
 
 /**
- * A permission prompt is waiting for the user: Codex's PermissionRequest hook, or Gemini's Notification hook (whose
- * only notification type so far is ToolPermission). Prints nothing: a PermissionRequest hook's output could answer
- * the prompt, and that is the user's call alone.
+ * A permission prompt is waiting for the user: Codex's PermissionRequest hook. Prints nothing: a PermissionRequest
+ * hook's output could answer the prompt, and that is the user's call alone.
  */
 function waiting(agent: Agent, agentPid: number, input: HookInput): void {
   const type = input.notification_type;
@@ -295,8 +403,8 @@ function listAgents(agentPid: number, input: HookInput): void {
   const others = listPeers().filter((p) => p.id !== selfId && p.agent !== 'claude');
   if (!others.length) return;
   const heading =
-    `Other agents' sessions (${others.length}), reachable through the telepathy plugin with SendMessage or its ` +
-    'send_message tool (SendMessage shows an error for these, but the message is delivered):';
+    `Other agents' sessions (${others.length}), reachable through the telepathy plugin with send_message ` +
+    '(SendMessage only reaches Claude sessions; a SendMessage to one of these is stopped and shows an error):';
   const block = [heading, ...others.map((p) => listAgentsRow(p))].join('\n');
   const response = input.tool_response as { listing?: unknown } | undefined;
   if (typeof response?.listing === 'string') {
@@ -342,7 +450,15 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
     deny('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
     return;
   }
-  const result = await sendMessage(selfPeer('claude', agentPid), to, message);
+  const fromInput = idOf('claude', agentPid, input);
+  const bound = fromInput !== peerId('claude', agentPid) ? fromInput : (linkedPeerId('claude', agentPid) ?? fromInput);
+  const ownsClock = beginToolCall();
+  let result: Awaited<ReturnType<typeof sendMessage>>;
+  try {
+    result = await sendMessage(selfPeer('claude', agentPid, bound), to, message);
+  } finally {
+    if (ownsClock) endToolCall();
+  }
   debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
   deny(
     result.ok
@@ -353,6 +469,13 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
 }
 
 async function main(): Promise<void> {
+  if (process.argv.includes('--telepathy-auto-update')) {
+    const { runAutoUpdate } = await import('./auto-update.ts');
+    await runAutoUpdate();
+    return;
+  }
+  // Printing the hook result must not wait for a webhook. The session's server posts the batch.
+  unrefWakeTimers();
   const argv = process.argv.slice(2);
   const agentIndex = argv.indexOf('--agent');
   const [action, event] = argv.filter((_, i) => agentIndex < 0 || (i !== agentIndex && i !== agentIndex + 1));
