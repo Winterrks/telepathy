@@ -1,12 +1,17 @@
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
-import { installsInScope, isolatedStateRoots } from '../core/installs.ts';
+import { findInstalls, installsInScope, isolatedStateRoots } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { slugify } from '../core/peers.ts';
 
-/** The harness already loads telepathy, so its server is the peer. */
+/**
+ * The harness already loads telepathy, so its server is the peer.
+ * Copilot reads `COPILOT_HOME`, `--plugin-dir`, and local folders, not the sandbox `TELEPATHY_HOME`
+ * selects. An install outside that sandbox still loads, and a second host peer would sit beside it.
+ */
 export function pluginInstalled(agent: Agent): boolean {
-  return installsInScope().some((install) => install.agent === agent);
+  const installs = agent === 'copilot' ? findInstalls() : installsInScope();
+  return installs.some((install) => install.agent === agent);
 }
 
 /**

@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { claudeSocketArmed, crossSessionInbound, readClaudeSocket, recordClaudeSocket } from './core/claude-socket.ts';
@@ -10,6 +11,7 @@ import { unrefWakeTimers } from './core/wake.ts';
 import { guideText } from './core/guide.ts';
 import { listAgentsRow } from './core/listing.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
+import { peerDir, readJson, writeJsonAtomic } from './core/paths.ts';
 import { AGENT_ALTERNATION } from './core/agents.ts';
 import {
   agentLabel,
@@ -96,6 +98,33 @@ async function readStdin(): Promise<HookInput> {
 }
 
 const print = (value: unknown) => process.stdout.write(JSON.stringify(value) + '\n');
+
+const HOST_PROMPT = (id: string) => path.join(peerDir(id), 'host-prompt.json');
+const MESSAGE_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/g;
+
+/** Ids the ACP host already placed in this prompt. Copilot's userPromptSubmitted hook must not claim them. */
+function promptMessageIds(input: HookInput): Set<string> {
+  const ids = new Set<string>();
+  const raw = JSON.stringify(input);
+  for (const match of raw.matchAll(MESSAGE_MARKER)) ids.add(match[1]);
+  return ids;
+}
+
+function rememberHostPrompt(peerId: string, ids: Set<string>): void {
+  writeJsonAtomic(HOST_PROMPT(peerId), { ids: [...ids] });
+}
+
+function takeHostPrompt(peerId: string): Set<string> | undefined {
+  const file = HOST_PROMPT(peerId);
+  const ids = readJson<{ ids?: unknown }>(file)?.ids;
+  try {
+    fs.rmSync(file, { force: true });
+  } catch {
+    // already gone
+  }
+  if (!Array.isArray(ids)) return undefined;
+  return new Set(ids.filter((id): id is string => typeof id === 'string'));
+}
 
 /** What a hook hands back: stdout, and for agents that read it, stderr plus an exit code. */
 interface HookReply {
@@ -298,7 +327,9 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
     const session = readSession(selfId);
     if (session?.sessionId) await withdrawFromCodexQueue(selfId, session.sessionId, session.codexHome);
   }
-  const messages = claimInbox(selfId);
+  const hostInjected = agent === 'copilot' && /userPromptSubmitted/i.test(event) ? promptMessageIds(input) : undefined;
+  if (hostInjected?.size) rememberHostPrompt(selfId, hostInjected);
+  const messages = claimInbox(selfId, hostInjected);
   if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
   const parts = [messages.length ? formatForContext(messages) : '', overlap ?? '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join('\n\n'), event));
@@ -323,8 +354,10 @@ function turnEnd(agent: Agent, agentPid: number, input: HookInput): void {
   if (!isDeliveryOwner(selfId, agentPid)) return;
   const tracked = statusFromHooks(agent);
   if (tracked) writeStatus(selfId, 'idle');
+  // Taken even when the turn did not end cleanly, so the next prompt can claim a copy the host did not archive.
+  const hostInjected = agent === 'copilot' ? takeHostPrompt(selfId) : undefined;
   if (!endedNormally(input) || hasListener(selfId) || socketOwnsDelivery(selfId)) return;
-  const messages = claimInbox(selfId);
+  const messages = claimInbox(selfId, hostInjected);
   if (messages.length) {
     if (tracked) writeStatus(selfId, 'busy'); // the turn goes on with the messages
     debugLog('hook', `${agent} turn end: delivered ${messages.map((m) => m.id).join(', ')}`);

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import { archiveSettled, formatAsUserTurn, pendingMessages } from '../core/messages.ts';
-import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
+import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, withdrawnDir, writeJsonAtomic } from '../core/paths.ts';
 import { isAlive, procStart } from '../core/proc.ts';
 import {
   notePeerExit,
@@ -156,12 +156,6 @@ function appendTranscript(peerId: string, text: string): void {
 }
 
 /**
- * Injects inbox messages one at a time. `inject` receives a check it must run immediately before the
- * irreversible submit (stdin write, turn, HTTP prompt, or `session/prompt`). The marker is written only
- * after `inject` accepts, and only if the inbox file is still there: `fail()` withdraws that file, and a
- * withdrawn send must not become a success or stay queued.
- */
-/**
  * The plugin's peer, when the host did not register one of its own. A stable name matches `identity.json`.
  * A harness session id matches `session.json`. Either is the inbox the host pumps.
  */
@@ -188,9 +182,15 @@ export function pluginInboxPeerId(agent: Agent, name?: string, sessionId?: strin
   return byName ?? bySession;
 }
 
+/**
+ * Injects inbox messages one at a time. `inject` receives checks it must run immediately before the
+ * irreversible submit (stdin write, turn, HTTP prompt, or `session/prompt`). The delivery marker is
+ * written after `inject` accepts. A hook that already archived the inbox file is not a recall.
+ * `fail()` moves the file to `withdrawn/`, and that copy must not become a success or stay queued.
+ */
 export function startInboxPump(
   peerId: string | (() => string | undefined),
-  inject: (text: string, stillPending: () => boolean) => Promise<boolean>,
+  inject: (text: string, stillPending: () => boolean, withdrawn?: () => boolean) => Promise<boolean>,
 ): () => void {
   const resolve = typeof peerId === 'function' ? peerId : () => peerId;
   const done = new Set<string>();
@@ -206,19 +206,26 @@ export function startInboxPump(
       for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
         const file = path.join(inboxDir(id), `${msg.id}.json`);
-        if (!fs.existsSync(file)) {
+        const withdrawnFile = path.join(withdrawnDir(id), `${msg.id}.json`);
+        const pending = () => fs.existsSync(file);
+        const withdrawn = () => fs.existsSync(withdrawnFile);
+        if (!pending()) {
           done.add(msg.id);
           continue;
         }
         const text = formatAsUserTurn(msg);
-        const ok = await inject(text, () => fs.existsSync(file));
-        if (!fs.existsSync(file)) {
+        const ok = await inject(text, pending, withdrawn);
+        if (withdrawn()) {
           done.add(msg.id);
           continue;
         }
-        if (!ok) return;
+        if (!ok) {
+          if (!pending()) done.add(msg.id);
+          else return;
+          continue;
+        }
         appendTranscript(id, text);
-        archiveSettled(id, msg.id);
+        if (pending()) archiveSettled(id, msg.id);
         done.add(msg.id);
       }
     } catch {

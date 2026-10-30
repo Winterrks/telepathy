@@ -104,6 +104,8 @@ There is also an HTTP session API (`POST /api/session/{sessionID}/pending/{input
 
 ### Copilot CLI
 
+The plugin needs Copilot CLI 1.0.105 or newer. Copilot CLI 0.0.372 cannot load it.
+
 Command hooks can inject `additionalContext` at `sessionStart` and `postToolUse`. `postToolUse` joins multiple hooks with a blank line and caps the result at 10 KB. `agentStop` can `decision: "block"` and force another turn, which still counts against a cloud job's timeout. `userPromptSubmitted` does **not** honor command-hook output; `modifiedPrompt` is SDK-only. ([Hooks reference](https://docs.github.com/en/copilot/reference/hooks-reference), retrieved 27 Oct 2026.)
 
 The `notification` hook can return `additionalContext` and "inject it as a prepended user message", which "can trigger further agent processing if the session is idle". It only runs when Copilot itself emits a notification (shell finished, agent idle, permission, elicitation). It does not run because a file appeared in `~/.telepathy`. It is not an idle-wake channel for telepathy. Cloud agent does not fire it at all.

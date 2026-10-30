@@ -6,7 +6,8 @@ import os from 'node:os';
 import { after, before, describe, test } from 'node:test';
 import { type Agent, isAgentProcess, parseAgent } from '../src/core/agents.ts';
 import { codexActivity } from '../src/core/codex-activity.ts';
-import { findInstalls, isNewer } from '../src/core/installs.ts';
+import { findInstalls, installsInScope, isNewer } from '../src/core/installs.ts';
+import { pluginInstalled } from '../src/cli/launch.ts';
 import { clearCodexTuiCache, codexTuiLaunch, codexTuiProcesses, dedupeCodexTuiProcs, isCodexExecCommand } from '../src/core/codex-launch.ts';
 import { formatAgo, describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, formatForClaudeSocket, formatMonitorLine, type Message, newMessageId, writeToInbox } from '../src/core/messages.ts';
@@ -949,7 +950,9 @@ describe('ListAgents rows', () => {
 describe('installed copies', () => {
   test('each agent\'s install is found where that agent keeps it, with its version', () => {
     const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-installs-'));
-    const saved = Object.fromEntries(['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME'].map((k) => [k, process.env[k]]));
+    const saved = Object.fromEntries(
+      ['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'COPILOT_HOME', 'TELEPATHY_HOME'].map((k) => [k, process.env[k]]),
+    );
     const write = (file: string, content: string) => {
       fs.mkdirSync(path.dirname(path.join(base, file)), { recursive: true });
       fs.writeFileSync(path.join(base, file), content);
@@ -962,6 +965,8 @@ describe('installed copies', () => {
         XDG_DATA_HOME: path.join(base, '.local', 'share'),
         CLAUDE_CONFIG_DIR: path.join(base, '.claude'),
         CODEX_HOME: path.join(base, '.codex'),
+        COPILOT_HOME: path.join(base, '.copilot'),
+        TELEPATHY_HOME: path.join(base, '.telepathy'),
       });
       assert.deepEqual(findInstalls(), []);
       write(
@@ -997,6 +1002,79 @@ describe('installed copies', () => {
         else process.env[k] = v;
       }
       fs.rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  test('copilot installs in COPILOT_HOME, local folders, --plugin-dir, and TELEPATHY_HOME all count', () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'um-copilot-'));
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'um-copilot-out-'));
+    const savedEnv = Object.fromEntries(
+      ['HOME', 'XDG_CACHE_HOME', 'XDG_DATA_HOME', 'CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'COPILOT_HOME', 'TELEPATHY_HOME'].map((k) => [k, process.env[k]]),
+    );
+    const savedArgv = process.argv;
+    const write = (file: string, content: string) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, content);
+    };
+    const manifest = (version: string) => JSON.stringify({ name: 'telepathy', version });
+    const copilotHome = path.join(outside, 'copilot-home');
+    const telepathyHome = path.join(base, '.telepathy');
+    const localDir = path.join(base, 'local-plugin');
+    const disabledDir = path.join(base, 'disabled-plugin');
+    const pluginDir = path.join(base, 'argv-plugin');
+    const market = path.join(base, 'market', 'telepathy');
+    try {
+      Object.assign(process.env, {
+        HOME: base,
+        XDG_CACHE_HOME: path.join(base, '.cache'),
+        XDG_DATA_HOME: path.join(base, '.local', 'share'),
+        CLAUDE_CONFIG_DIR: path.join(base, '.claude'),
+        CODEX_HOME: path.join(base, '.codex'),
+        COPILOT_HOME: copilotHome,
+        TELEPATHY_HOME: telepathyHome,
+      });
+      write(path.join(copilotHome, 'installed-plugins', '_direct', 'src-abc', '.github', 'plugin', 'plugin.json'), manifest('0.9.1'));
+      write(path.join(localDir, '.github', 'plugin', 'plugin.json'), manifest('0.8.0'));
+      write(path.join(disabledDir, 'plugin.json'), manifest('9.9.9'));
+      write(
+        path.join(copilotHome, 'config.json'),
+        JSON.stringify({
+          installedPlugins: [
+            { name: 'telepathy', version: '0.8.0', cache_path: localDir, marketplace: 'local' },
+            { name: 'telepathy', enabled: false, cache_path: disabledDir, version: '9.9.9' },
+            { name: 'other', version: '1.0.0', cache_path: localDir },
+          ],
+        }),
+      );
+      write(path.join(pluginDir, 'plugin.json'), manifest('0.7.5'));
+      write(path.join(telepathyHome, '.copilot', 'installed-plugins', 'telepathy', 'telepathy', '.github', 'plugin', 'plugin.json'), manifest('0.6.0'));
+      write(path.join(market, '.github', 'plugin', 'plugin.json'), manifest('0.5.0'));
+      write(
+        path.join(base, '.github', 'copilot', 'settings.json'),
+        JSON.stringify({
+          extraKnownMarketplaces: { mine: { source: { source: 'directory', path: path.join(base, 'market') } } },
+          installed_plugins: [{ name: 'telepathy', version: '0.4.0', source: { source: 'local', path: path.join(base, 'missing-local') } }],
+        }),
+      );
+      process.argv = [process.argv[0] ?? 'node', 'telepathy', '--cwd', base, '--plugin-dir', pluginDir];
+
+      const found = findInstalls().filter((install) => install.agent === 'copilot');
+      const labels = found.map((install) => `${install.version}${install.marketplace ? `@${install.marketplace}` : ''}`).sort();
+      assert.deepEqual(labels, ['0.5.0', '0.6.0@telepathy', '0.7.5', '0.8.0', '0.9.1']);
+      assert.equal(found.some((install) => install.version === '9.9.9' || install.version === '0.4.0'), false);
+
+      const scoped = installsInScope().filter((install) => install.agent === 'copilot');
+      assert.equal(scoped.some((install) => install.version === '0.9.1'), false);
+      assert.equal(scoped.some((install) => install.version === '0.6.0'), true);
+      assert.equal(pluginInstalled('copilot'), true);
+    } finally {
+      process.argv = savedArgv;
+      for (const [k, v] of Object.entries(savedEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+      fs.rmSync(base, { recursive: true, force: true });
+      fs.rmSync(outside, { recursive: true, force: true });
     }
   });
 });

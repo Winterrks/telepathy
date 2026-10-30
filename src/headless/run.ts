@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import { isAlive, procStart } from '../core/proc.ts';
+import { writeStatus } from '../core/status.ts';
 import { VERSION } from '../core/version.ts';
 import { startAcpSession } from '../acp/host.ts';
 import { LineRpc } from '../acp/rpc.ts';
@@ -38,7 +39,7 @@ export interface HeadlessRun {
 interface Plane {
   child: ChildProcess;
   exited: Promise<number>;
-  inject(text: string, stillPending: () => boolean): Promise<boolean>;
+  inject(text: string, stillPending: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
 }
 
 interface Memory {
@@ -148,7 +149,7 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   persist();
   const stopPump = startInboxPump(
     pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
-    (text, stillPending) => plane.inject(text, stillPending),
+    (text, stillPending, withdrawn) => plane.inject(text, stillPending, withdrawn),
   );
   let stopping = false;
   const shutdown = () => {
@@ -530,7 +531,17 @@ async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: s
       writeLog(text);
     },
     trace: writeLog,
+    onTurnSettled: () => {
+      const id = options.pluginPeer
+        ? pluginInboxPeerId(options.agent, options.name, memory.id)
+        : namedPeerId(options.agent, options.name).peerId;
+      if (id) writeStatus(id, 'idle');
+    },
   });
   memory.id = session.sessionId;
-  return { child: session.child, exited: session.exited, inject: (text, stillPending) => session.prompt(text, stillPending) };
+  return {
+    child: session.child,
+    exited: session.exited,
+    inject: (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
+  };
 }

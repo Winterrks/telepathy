@@ -28784,7 +28784,7 @@ function withdrawEverywhere(peerId2, messageId) {
   if (sources.some((src) => fs6.existsSync(src))) return "claimed";
   return "missing";
 }
-function claimInbox(peerId2) {
+function claimInbox(peerId2, skip) {
   let files;
   try {
     files = fs6.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -28793,6 +28793,8 @@ function claimInbox(peerId2) {
   }
   const claimed = [];
   for (const file2 of files) {
+    const id = file2.slice(0, -".json".length);
+    if (skip?.has(id)) continue;
     const target = path6.join(ensureDir(archiveDir(peerId2)), file2);
     try {
       fs6.renameSync(path6.join(inboxDir(peerId2), file2), target);
@@ -29894,13 +29896,156 @@ function extension(agent) {
   const version2 = readVersion(path11.join(dir, `${agent}-extension.json`));
   return version2 ? [{ agent, version: version2, dir }] : [];
 }
-function copilot() {
-  const root = path11.join(home(), ".copilot", "installed-plugins");
+var COPILOT_MANIFESTS = [".github/plugin/plugin.json", ".plugin/plugin.json", "plugin.json", ".claude-plugin/plugin.json"];
+function manifestAt(dir) {
+  for (const rel of COPILOT_MANIFESTS) {
+    const body = readJson(path11.join(dir, rel));
+    if (!body) continue;
+    const name = typeof body.name === "string" ? body.name : void 0;
+    const version2 = typeof body.version === "string" ? body.version : void 0;
+    if (!name && !version2) continue;
+    return { name, version: version2 };
+  }
+  return void 0;
+}
+function asCopilotInstall(dir, marketplace, version2) {
+  const manifest = manifestAt(dir);
+  if (manifest?.name && manifest.name !== "telepathy") return void 0;
+  const found = manifest?.version ?? version2;
+  if (!found) return void 0;
+  const named = manifest?.name === "telepathy" || path11.basename(dir) === "telepathy" || !manifest && version2 !== void 0;
+  if (!named) return void 0;
+  return { agent: "copilot", version: found, dir, ...marketplace ? { marketplace } : {} };
+}
+function copilotTree(root) {
   return list(root).flatMap((marketplace) => {
-    const dir = path11.join(root, marketplace, "telepathy");
-    const version2 = readVersion(path11.join(dir, ".github", "plugin", "plugin.json"));
-    return version2 ? [{ agent: "copilot", version: version2, dir, marketplace }] : [];
+    const marketName = marketplace === "_direct" ? void 0 : marketplace;
+    return list(path11.join(root, marketplace)).flatMap((child) => {
+      const install = asCopilotInstall(path11.join(root, marketplace, child), marketName);
+      return install ? [install] : [];
+    });
   });
+}
+function stringField(record2, ...keys) {
+  for (const key of keys) {
+    const value = record2[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return void 0;
+}
+function installFromRecord(entry) {
+  if (!entry || typeof entry !== "object") return void 0;
+  const record2 = entry;
+  if (record2.name !== "telepathy" || record2.enabled === false) return void 0;
+  const source = record2.source;
+  let sourcePath;
+  if (source && typeof source === "object") {
+    const body = source;
+    const kind = typeof body.source === "string" ? body.source : "";
+    if (typeof body.path === "string" && (!kind || kind === "local" || kind === "directory")) sourcePath = body.path;
+  }
+  const dir = [stringField(record2, "cache_path", "cachePath"), sourcePath].find((candidate) => candidate && fs10.existsSync(candidate));
+  if (!dir) return void 0;
+  const marketplace = typeof record2.marketplace === "string" && record2.marketplace && record2.marketplace !== "local" ? record2.marketplace : void 0;
+  const version2 = typeof record2.version === "string" ? record2.version : void 0;
+  return asCopilotInstall(dir, marketplace, version2);
+}
+function installsFromConfigFile(file2) {
+  const body = readJson(file2);
+  if (!body) return [];
+  const lists = [body.installedPlugins, body.installed_plugins].filter(Array.isArray);
+  return lists.flatMap((list2) => list2.flatMap((entry) => {
+    const install = installFromRecord(entry);
+    return install ? [install] : [];
+  }));
+}
+function marketplaceDirs(file2, base) {
+  const markets = readJson(file2)?.extraKnownMarketplaces;
+  if (!markets || typeof markets !== "object") return [];
+  const dirs = [];
+  for (const value of Object.values(markets)) {
+    if (!value || typeof value !== "object") continue;
+    const source = value.source;
+    if (!source || typeof source !== "object") continue;
+    const body = source;
+    const kind = typeof body.source === "string" ? body.source : "";
+    if (typeof body.path !== "string" || !body.path) continue;
+    if (kind && kind !== "directory" && kind !== "local") continue;
+    dirs.push(path11.resolve(base, body.path));
+  }
+  return dirs;
+}
+function pluginsInFolder(dir, marketplace) {
+  const own2 = asCopilotInstall(dir, marketplace);
+  const children = list(dir).flatMap((child) => {
+    const install = asCopilotInstall(path11.join(dir, child), marketplace);
+    return install ? [install] : [];
+  });
+  return [...own2 ? [own2] : [], ...children];
+}
+function launchCwd(argv = process.argv) {
+  let cwd = process.cwd();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--cwd" && argv[i + 1]) cwd = path11.resolve(argv[++i]);
+    else if (arg.startsWith("--cwd=")) cwd = path11.resolve(arg.slice("--cwd=".length));
+  }
+  return cwd;
+}
+function pluginDirsFromArgv(argv = process.argv) {
+  const cwd = launchCwd(argv);
+  const dirs = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--plugin-dir" && argv[i + 1] && !argv[i + 1].startsWith("-")) dirs.push(path11.resolve(cwd, argv[++i]));
+    else if (arg.startsWith("--plugin-dir=")) dirs.push(path11.resolve(cwd, arg.slice("--plugin-dir=".length)));
+  }
+  return dirs;
+}
+function copilotConfigDirs() {
+  const dirs = [];
+  const add = (dir) => {
+    if (!dir) return;
+    const resolved = path11.resolve(dir);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+  add(configuredEnv("COPILOT_HOME"));
+  add(path11.join(home(), ".copilot"));
+  add(configuredEnv("TELEPATHY_HOME") ? path11.join(configuredEnv("TELEPATHY_HOME"), ".copilot") : void 0);
+  for (const root of isolatedStateRoots() ?? []) add(path11.join(root, ".copilot"));
+  return dirs;
+}
+function dedupeInstalls(installs) {
+  const byDir = /* @__PURE__ */ new Map();
+  for (const install of installs) {
+    let key = install.dir;
+    try {
+      key = resolveReal(install.dir);
+    } catch {
+    }
+    const prev = byDir.get(key);
+    if (!prev || install.marketplace && !prev.marketplace && !isNewer(prev.version, install.version) || isNewer(install.version, prev.version)) {
+      byDir.set(key, install);
+    }
+  }
+  return [...byDir.values()];
+}
+function copilot() {
+  const configs = copilotConfigDirs();
+  const fromConfigs = configs.flatMap((dir) => [
+    ...copilotTree(path11.join(dir, "installed-plugins")),
+    ...installsFromConfigFile(path11.join(dir, "config.json")),
+    ...installsFromConfigFile(path11.join(dir, "settings.json")),
+    ...marketplaceDirs(path11.join(dir, "settings.json"), dir).flatMap((folder) => pluginsInFolder(folder))
+  ]);
+  const cwd = launchCwd();
+  const projectSettings = [path11.join(cwd, ".github", "copilot", "settings.json"), path11.join(cwd, ".github", "copilot", "settings.local.json")];
+  const fromProject = projectSettings.flatMap((file2) => [
+    ...installsFromConfigFile(file2),
+    ...marketplaceDirs(file2, cwd).flatMap((folder) => pluginsInFolder(folder))
+  ]);
+  const fromArgs = pluginDirsFromArgv().flatMap((dir) => pluginsInFolder(dir));
+  return dedupeInstalls([...fromConfigs, ...fromProject, ...fromArgs]);
 }
 function devin() {
   const cache3 = path11.join(dataHome(), "devin", "cli", "plugins", "cache");

@@ -283,13 +283,155 @@ function extension(agent) {
   const version2 = readVersion(path3.join(dir, `${agent}-extension.json`));
   return version2 ? [{ agent, version: version2, dir }] : [];
 }
-function copilot() {
-  const root = path3.join(home(), ".copilot", "installed-plugins");
+function manifestAt(dir) {
+  for (const rel of COPILOT_MANIFESTS) {
+    const body = readJson(path3.join(dir, rel));
+    if (!body) continue;
+    const name = typeof body.name === "string" ? body.name : void 0;
+    const version2 = typeof body.version === "string" ? body.version : void 0;
+    if (!name && !version2) continue;
+    return { name, version: version2 };
+  }
+  return void 0;
+}
+function asCopilotInstall(dir, marketplace, version2) {
+  const manifest = manifestAt(dir);
+  if (manifest?.name && manifest.name !== "telepathy") return void 0;
+  const found = manifest?.version ?? version2;
+  if (!found) return void 0;
+  const named = manifest?.name === "telepathy" || path3.basename(dir) === "telepathy" || !manifest && version2 !== void 0;
+  if (!named) return void 0;
+  return { agent: "copilot", version: found, dir, ...marketplace ? { marketplace } : {} };
+}
+function copilotTree(root) {
   return list(root).flatMap((marketplace) => {
-    const dir = path3.join(root, marketplace, "telepathy");
-    const version2 = readVersion(path3.join(dir, ".github", "plugin", "plugin.json"));
-    return version2 ? [{ agent: "copilot", version: version2, dir, marketplace }] : [];
+    const marketName = marketplace === "_direct" ? void 0 : marketplace;
+    return list(path3.join(root, marketplace)).flatMap((child) => {
+      const install = asCopilotInstall(path3.join(root, marketplace, child), marketName);
+      return install ? [install] : [];
+    });
   });
+}
+function stringField(record2, ...keys) {
+  for (const key of keys) {
+    const value = record2[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return void 0;
+}
+function installFromRecord(entry) {
+  if (!entry || typeof entry !== "object") return void 0;
+  const record2 = entry;
+  if (record2.name !== "telepathy" || record2.enabled === false) return void 0;
+  const source = record2.source;
+  let sourcePath;
+  if (source && typeof source === "object") {
+    const body = source;
+    const kind = typeof body.source === "string" ? body.source : "";
+    if (typeof body.path === "string" && (!kind || kind === "local" || kind === "directory")) sourcePath = body.path;
+  }
+  const dir = [stringField(record2, "cache_path", "cachePath"), sourcePath].find((candidate) => candidate && fs2.existsSync(candidate));
+  if (!dir) return void 0;
+  const marketplace = typeof record2.marketplace === "string" && record2.marketplace && record2.marketplace !== "local" ? record2.marketplace : void 0;
+  const version2 = typeof record2.version === "string" ? record2.version : void 0;
+  return asCopilotInstall(dir, marketplace, version2);
+}
+function installsFromConfigFile(file2) {
+  const body = readJson(file2);
+  if (!body) return [];
+  const lists = [body.installedPlugins, body.installed_plugins].filter(Array.isArray);
+  return lists.flatMap((list2) => list2.flatMap((entry) => {
+    const install = installFromRecord(entry);
+    return install ? [install] : [];
+  }));
+}
+function marketplaceDirs(file2, base) {
+  const markets = readJson(file2)?.extraKnownMarketplaces;
+  if (!markets || typeof markets !== "object") return [];
+  const dirs = [];
+  for (const value of Object.values(markets)) {
+    if (!value || typeof value !== "object") continue;
+    const source = value.source;
+    if (!source || typeof source !== "object") continue;
+    const body = source;
+    const kind = typeof body.source === "string" ? body.source : "";
+    if (typeof body.path !== "string" || !body.path) continue;
+    if (kind && kind !== "directory" && kind !== "local") continue;
+    dirs.push(path3.resolve(base, body.path));
+  }
+  return dirs;
+}
+function pluginsInFolder(dir, marketplace) {
+  const own2 = asCopilotInstall(dir, marketplace);
+  const children = list(dir).flatMap((child) => {
+    const install = asCopilotInstall(path3.join(dir, child), marketplace);
+    return install ? [install] : [];
+  });
+  return [...own2 ? [own2] : [], ...children];
+}
+function launchCwd(argv = process.argv) {
+  let cwd = process.cwd();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--cwd" && argv[i + 1]) cwd = path3.resolve(argv[++i]);
+    else if (arg.startsWith("--cwd=")) cwd = path3.resolve(arg.slice("--cwd=".length));
+  }
+  return cwd;
+}
+function pluginDirsFromArgv(argv = process.argv) {
+  const cwd = launchCwd(argv);
+  const dirs = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--plugin-dir" && argv[i + 1] && !argv[i + 1].startsWith("-")) dirs.push(path3.resolve(cwd, argv[++i]));
+    else if (arg.startsWith("--plugin-dir=")) dirs.push(path3.resolve(cwd, arg.slice("--plugin-dir=".length)));
+  }
+  return dirs;
+}
+function copilotConfigDirs() {
+  const dirs = [];
+  const add = (dir) => {
+    if (!dir) return;
+    const resolved = path3.resolve(dir);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+  add(configuredEnv("COPILOT_HOME"));
+  add(path3.join(home(), ".copilot"));
+  add(configuredEnv("TELEPATHY_HOME") ? path3.join(configuredEnv("TELEPATHY_HOME"), ".copilot") : void 0);
+  for (const root of isolatedStateRoots() ?? []) add(path3.join(root, ".copilot"));
+  return dirs;
+}
+function dedupeInstalls(installs) {
+  const byDir = /* @__PURE__ */ new Map();
+  for (const install of installs) {
+    let key = install.dir;
+    try {
+      key = resolveReal(install.dir);
+    } catch {
+    }
+    const prev = byDir.get(key);
+    if (!prev || install.marketplace && !prev.marketplace && !isNewer(prev.version, install.version) || isNewer(install.version, prev.version)) {
+      byDir.set(key, install);
+    }
+  }
+  return [...byDir.values()];
+}
+function copilot() {
+  const configs = copilotConfigDirs();
+  const fromConfigs = configs.flatMap((dir) => [
+    ...copilotTree(path3.join(dir, "installed-plugins")),
+    ...installsFromConfigFile(path3.join(dir, "config.json")),
+    ...installsFromConfigFile(path3.join(dir, "settings.json")),
+    ...marketplaceDirs(path3.join(dir, "settings.json"), dir).flatMap((folder) => pluginsInFolder(folder))
+  ]);
+  const cwd = launchCwd();
+  const projectSettings = [path3.join(cwd, ".github", "copilot", "settings.json"), path3.join(cwd, ".github", "copilot", "settings.local.json")];
+  const fromProject = projectSettings.flatMap((file2) => [
+    ...installsFromConfigFile(file2),
+    ...marketplaceDirs(file2, cwd).flatMap((folder) => pluginsInFolder(folder))
+  ]);
+  const fromArgs = pluginDirsFromArgv().flatMap((dir) => pluginsInFolder(dir));
+  return dedupeInstalls([...fromConfigs, ...fromProject, ...fromArgs]);
 }
 function devin() {
   const cache3 = path3.join(dataHome(), "devin", "cli", "plugins", "cache");
@@ -354,7 +496,7 @@ function installsInScope(installs = findInstalls()) {
   if (!roots) return installs;
   return installs.filter((install) => inRoots(install.dir, roots));
 }
-var home, cacheHome, dataHome, list, versionParts, isOpencodeNpmInstall;
+var home, cacheHome, dataHome, list, versionParts, COPILOT_MANIFESTS, isOpencodeNpmInstall;
 var init_installs = __esm({
   "src/core/installs.ts"() {
     "use strict";
@@ -370,6 +512,7 @@ var init_installs = __esm({
       }
     };
     versionParts = (v) => v.split(/[.-]/).map((n) => Number.parseInt(n, 10) || 0);
+    COPILOT_MANIFESTS = [".github/plugin/plugin.json", ".plugin/plugin.json", "plugin.json", ".claude-plugin/plugin.json"];
     isOpencodeNpmInstall = (install) => install.agent === "opencode" && install.dir.startsWith(path3.join(cacheHome(), "opencode", "npm") + path3.sep);
   }
 });
@@ -839,7 +982,7 @@ var init_auto_update = __esm({
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync3 } from "node:child_process";
-import fs10 from "node:fs";
+import fs7 from "node:fs";
 function tokenize(command) {
   const tokens = [];
   for (const match of command.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)) {
@@ -911,7 +1054,7 @@ function parentCommandOf(pid, table, lines) {
 }
 function procEnvironHome(pid) {
   try {
-    const raw = fs10.readFileSync(`/proc/${pid}/environ`);
+    const raw = fs7.readFileSync(`/proc/${pid}/environ`);
     for (const entry of raw.toString("utf8").split("\0")) {
       if (!entry.startsWith("CODEX_HOME=")) continue;
       const home2 = entry.slice("CODEX_HOME=".length);
@@ -953,7 +1096,7 @@ function codexHomes(pids) {
 }
 function processCwd(pid) {
   try {
-    const cwd = fs10.readlinkSync(`/proc/${pid}/cwd`);
+    const cwd = fs7.readlinkSync(`/proc/${pid}/cwd`);
     if (cwd) return cwd;
   } catch {
   }
@@ -1007,7 +1150,7 @@ function dedupeCodexTuiProcs(procs, ppidOf) {
 }
 function procsFromOverride(file2) {
   try {
-    const parsed = JSON.parse(fs10.readFileSync(file2, "utf8"));
+    const parsed = JSON.parse(fs7.readFileSync(file2, "utf8"));
     if (!Array.isArray(parsed)) return [];
     const procs = [];
     for (const row of parsed) {
@@ -1092,12 +1235,12 @@ var init_codex_launch = __esm({
 
 // src/core/codex-threads.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
-import fs11 from "node:fs";
-import path11 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 function heldLocks(dir, maxAgeMs = 1e3) {
   let files;
   try {
-    files = fs11.readdirSync(dir).filter((f) => f.endsWith(".lock") && !f.startsWith("."));
+    files = fs8.readdirSync(dir).filter((f) => f.endsWith(".lock") && !f.startsWith("."));
   } catch {
     return void 0;
   }
@@ -1118,7 +1261,7 @@ ${files.sort().join("\n")}`;
         out = e.stdout ?? "";
       }
       held = new Set(
-        out.split("\n").filter((l) => l.startsWith("n")).map((l) => path11.basename(l.slice(1)).replace(/\.lock$/, ""))
+        out.split("\n").filter((l) => l.startsWith("n")).map((l) => path9.basename(l.slice(1)).replace(/\.lock$/, ""))
       );
     }
   } catch {
@@ -1129,23 +1272,23 @@ ${files.sort().join("\n")}`;
 }
 function codexThreadLoaded(codexHome, threadId) {
   const dir = locksDir(codexHome);
-  if (!fs11.existsSync(dir)) return void 0;
-  if (!fs11.existsSync(path11.join(dir, `${threadId}.lock`))) return false;
+  if (!fs8.existsSync(dir)) return void 0;
+  if (!fs8.existsSync(path9.join(dir, `${threadId}.lock`))) return false;
   return heldLocks(dir)?.has(threadId) ?? true;
 }
 var locksDir, cache2;
 var init_codex_threads = __esm({
   "src/core/codex-threads.ts"() {
     "use strict";
-    locksDir = (codexHome) => path11.join(codexHome, "thread-writer-locks");
+    locksDir = (codexHome) => path9.join(codexHome, "thread-writer-locks");
   }
 });
 
 // src/core/peers.ts
 import { createHash } from "node:crypto";
-import fs12 from "node:fs";
-import os7 from "node:os";
-import path12 from "node:path";
+import fs9 from "node:fs";
+import os6 from "node:os";
+import path10 from "node:path";
 function sessionToken(sessionId) {
   const trimmed = sessionId?.trim();
   if (!trimmed || trimmed.length > 180) return void 0;
@@ -1187,7 +1330,7 @@ function rememberedName(agent, sessionId) {
   return readJson(rememberedFile(agent, sessionId))?.name;
 }
 function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fields.sessionId)) {
-  const file2 = path12.join(peerDir(id), "session.json");
+  const file2 = path10.join(peerDir(id), "session.json");
   const previous = readJson(file2);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const owner = fields.sessionId ? claimSessionOwner(id, pid) : true;
@@ -1219,23 +1362,23 @@ function registerSession(agent, pid, fields, id = sessionPeerId(agent, pid, fiel
 function notePeerExit(id, at = (/* @__PURE__ */ new Date()).toISOString()) {
   const session = readSession(id);
   if (!session || session.exitedAt) return;
-  writeJsonAtomic(path12.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
+  writeJsonAtomic(path10.join(peerDir(id), "session.json"), { ...session, exitedAt: at });
 }
 function dropInboxAfter(id, exitedAt) {
   const cutoff = Date.parse(exitedAt);
   if (Number.isNaN(cutoff)) return;
   let files = [];
   try {
-    files = fs12.readdirSync(inboxDir(id));
+    files = fs9.readdirSync(inboxDir(id));
   } catch {
     return;
   }
   for (const file2 of files) {
-    const msg = readJson(path12.join(inboxDir(id), file2));
+    const msg = readJson(path10.join(inboxDir(id), file2));
     const sent = Date.parse(msg?.sentAt ?? "");
     if (Number.isNaN(sent) || sent <= cutoff) continue;
     try {
-      fs12.rmSync(path12.join(inboxDir(id), file2), { force: true });
+      fs9.rmSync(path10.join(inboxDir(id), file2), { force: true });
     } catch {
     }
   }
@@ -1244,19 +1387,19 @@ function moveInbox(fromId, toId) {
   if (fromId === toId) return;
   let files = [];
   try {
-    files = fs12.readdirSync(inboxDir(fromId));
+    files = fs9.readdirSync(inboxDir(fromId));
   } catch {
     return;
   }
   for (const file2 of files) {
     try {
-      fs12.renameSync(path12.join(inboxDir(fromId), file2), path12.join(ensureDir(inboxDir(toId)), file2));
+      fs9.renameSync(path10.join(inboxDir(fromId), file2), path10.join(ensureDir(inboxDir(toId)), file2));
     } catch {
     }
   }
 }
 function lastActivity(id) {
-  const times = [readSession(id)?.updatedAt, readJson(path12.join(peerDir(id), "status.json"))?.at];
+  const times = [readSession(id)?.updatedAt, readJson(path10.join(peerDir(id), "status.json"))?.at];
   return Math.max(...times.map((t) => Date.parse(t ?? "")).filter((t) => !Number.isNaN(t)), 0);
 }
 function keepsSession(peer, now = Date.now()) {
@@ -1264,7 +1407,7 @@ function keepsSession(peer, now = Date.now()) {
 }
 function holdsUnread(id, now = Date.now()) {
   try {
-    return fs12.readdirSync(inboxDir(id)).some((f) => now - fs12.statSync(path12.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
+    return fs9.readdirSync(inboxDir(id)).some((f) => now - fs9.statSync(path10.join(inboxDir(id), f)).mtimeMs < HOLD_MS);
   } catch {
     return false;
   }
@@ -1272,26 +1415,26 @@ function holdsUnread(id, now = Date.now()) {
 function adoptHeldMessages(agent, selfId, sessionId) {
   let names;
   try {
-    names = fs12.readdirSync(peersDir());
+    names = fs9.readdirSync(peersDir());
   } catch {
     return;
   }
   for (const name of names) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
-    const old = readJson(path12.join(peerDir(name), "session.json"));
+    const old = readJson(path10.join(peerDir(name), "session.json"));
     if (old?.agent !== agent || old.sessionId !== sessionId || isPeerAlive(readPeer(name))) continue;
     let files = [];
     try {
-      files = fs12.readdirSync(inboxDir(name));
+      files = fs9.readdirSync(inboxDir(name));
     } catch {
     }
     for (const file2 of files) {
       try {
-        fs12.renameSync(path12.join(inboxDir(name), file2), path12.join(ensureDir(inboxDir(selfId)), file2));
+        fs9.renameSync(path10.join(inboxDir(name), file2), path10.join(ensureDir(inboxDir(selfId)), file2));
       } catch {
       }
     }
-    fs12.rmSync(peerDir(name), { recursive: true, force: true });
+    fs9.rmSync(peerDir(name), { recursive: true, force: true });
   }
 }
 function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
@@ -1303,11 +1446,11 @@ function registerPresence(agent, pid, fields = {}, id = peerId(agent, pid)) {
     ...fields,
     startedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
-  writeJsonAtomic(path12.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
+  writeJsonAtomic(path10.join(peerDir(id), "presence.json"), { ...record2, version: VERSION });
 }
 function registerListener(agent, pid, id = peerId(agent, pid)) {
   const record2 = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
-  writeJsonAtomic(path12.join(peerDir(id), "listener.json"), record2);
+  writeJsonAtomic(path10.join(peerDir(id), "listener.json"), record2);
 }
 function configuredStableName(explicit) {
   const raw = explicit?.trim() || configuredEnv("TELEPATHY_NAME");
@@ -1317,49 +1460,49 @@ function configuredStableName(explicit) {
 function registerStableName(agent, id, explicit) {
   const name = configuredStableName(explicit);
   if (!name) return;
-  writeJsonAtomic(path12.join(peerDir(id), "identity.json"), { name, pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() });
+  writeJsonAtomic(path10.join(peerDir(id), "identity.json"), { name, pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() });
   adoptStableInbox(agent, id, name);
 }
 function adoptStableInbox(agent, selfId, stableName) {
   let names;
   try {
-    names = fs12.readdirSync(peersDir());
+    names = fs9.readdirSync(peersDir());
   } catch {
     return;
   }
   for (const name of names) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
-    const ident = readJson(path12.join(peerDir(name), "identity.json"));
+    const ident = readJson(path10.join(peerDir(name), "identity.json"));
     if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
     let files = [];
     try {
-      files = fs12.readdirSync(inboxDir(name));
+      files = fs9.readdirSync(inboxDir(name));
     } catch {
       continue;
     }
     for (const file2 of files) {
       try {
-        fs12.renameSync(path12.join(inboxDir(name), file2), path12.join(ensureDir(inboxDir(selfId)), file2));
+        fs9.renameSync(path10.join(inboxDir(name), file2), path10.join(ensureDir(inboxDir(selfId)), file2));
       } catch {
       }
     }
   }
 }
 function readSession(id) {
-  return readJson(path12.join(peerDir(id), "session.json"));
+  return readJson(path10.join(peerDir(id), "session.json"));
 }
 function slugify(value) {
   return value.normalize("NFKD").replace(new RegExp("(\\p{Script=Latin})\\p{M}+", "gu"), "$1").normalize("NFC").toLowerCase().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^[-.]+|[-.]+$/g, "").slice(0, 40).replace(/[-.]+$/g, "");
 }
 function claudeSessionName(pid) {
-  const record2 = readJson(path12.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path10.join(claudeConfigDir(), "sessions", `${pid}.json`));
   return typeof record2?.name === "string" && record2.name ? record2.name : void 0;
 }
 function codexThreadName(codexHome, sessionId) {
   if (!sessionId) return void 0;
   let text;
   try {
-    text = fs12.readFileSync(path12.join(codexHome, "session_index.jsonl"), "utf8");
+    text = fs9.readFileSync(path10.join(codexHome, "session_index.jsonl"), "utf8");
   } catch {
     return void 0;
   }
@@ -1375,13 +1518,13 @@ function codexThreadName(codexHome, sessionId) {
   return name;
 }
 function displayName(agent, pid, key, cwd) {
-  const folder = cwd ? slugify(path12.basename(cwd)) : "";
+  const folder = cwd ? slugify(path10.basename(cwd)) : "";
   if (agent === "claude") return claudeSessionName(pid) || folder || `session-${pid}`;
   const k = /^\d+$/.test(key) ? Number(key) : key;
   return folder ? `${folder}-${nameSuffix(agent, k)}` : `session-${key}`;
 }
 function hostedSupervisorAlive(peer) {
-  const rec = readJson(path12.join(peerDir(peer.id), "hosted.json"));
+  const rec = readJson(path10.join(peerDir(peer.id), "hosted.json"));
   return !!rec && typeof rec.pid === "number" && isSameProcess(rec.pid, rec.procStart);
 }
 function codexExecAlive(peer) {
@@ -1417,20 +1560,20 @@ function readPeer(id) {
   if (!m) return void 0;
   const agent = m[1];
   const dir = peerDir(id);
-  const session = readJson(path12.join(dir, "session.json"));
-  const presence = readJson(path12.join(dir, "presence.json"));
-  const listener = readJson(path12.join(dir, "listener.json"));
+  const session = readJson(path10.join(dir, "session.json"));
+  const presence = readJson(path10.join(dir, "presence.json"));
+  const listener = readJson(path10.join(dir, "listener.json"));
   if (!session && !presence) return void 0;
   const pid = session?.pid ?? presence?.pid ?? Number(m[2]);
   const cwd = session?.cwd || presence?.cwd;
   const codexHome = session?.codexHome || presence?.codexHome || defaultCodexHome();
   const generated = displayName(agent, pid, m[2], cwd);
-  const identity = readJson(path12.join(dir, "identity.json"));
+  const identity = readJson(path10.join(dir, "identity.json"));
   const stable = identity?.name && slugify(identity.name) === identity.name ? identity.name : void 0;
   const name = stable || rememberedName(agent, session?.sessionId) || generated;
   const sessionKeyed = !!session?.sessionId && m[2] === sessionToken(session.sessionId);
   const aliases = [
-    cwd ? slugify(path12.basename(cwd)) : "",
+    cwd ? slugify(path10.basename(cwd)) : "",
     agent === "codex" ? slugify(codexThreadName(codexHome, session?.sessionId) ?? "") : "",
     stable ? slugify(generated) : ""
   ];
@@ -1453,7 +1596,7 @@ function readPeer(id) {
     hasServer: !!presence && isSameProcess(presence.serverPid, void 0),
     version: presence?.version,
     hookRan: session?.source === "hook",
-    toolHookRan: fs12.existsSync(path12.join(dir, "tool-hook.json")),
+    toolHookRan: fs9.existsSync(path10.join(dir, "tool-hook.json")),
     aliases: [...new Set(aliases)].filter((a) => a && a !== slugify(name))
   };
 }
@@ -1461,7 +1604,7 @@ function listPeers() {
   observeLaunchedCodex();
   let names = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names = fs9.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -1474,7 +1617,7 @@ function listPeers() {
     if (pid === void 0) continue;
     if (peer ? !isPeerAlive(peer) : !isSameProcess(pid, void 0)) {
       if (peer) notePeerExit(name);
-      if (!holdsUnread(name) && !keepsSession(peer)) fs12.rmSync(peerDir(name), { recursive: true, force: true });
+      if (!holdsUnread(name) && !keepsSession(peer)) fs9.rmSync(peerDir(name), { recursive: true, force: true });
       continue;
     }
     if (peer) peers.push(peer);
@@ -1483,7 +1626,7 @@ function listPeers() {
   const ids = new Set(peers.map((p) => p.id));
   return peers.filter((p) => {
     if (p.agent === "codex" && !isThreadKeyed(p) && !!p.sessionId && threads.has(p.sessionId)) return false;
-    const link = readJson(path12.join(peerDir(p.id), "link.json"));
+    const link = readJson(path10.join(peerDir(p.id), "link.json"));
     if (typeof link?.id === "string" && link.id !== p.id && ids.has(link.id)) return false;
     return p.agent !== "codex" || isThreadKeyed(p) || !!p.sessionId && !threads.has(p.sessionId) || isLaunchedCodexTui(p);
   });
@@ -1549,7 +1692,7 @@ function linkCodexWrappers(proc, id) {
   for (const wrapperPid of proc.wrapperPids ?? []) {
     const wrapperId = peerId("codex", wrapperPid);
     if (wrapperId === id) continue;
-    if (!fs12.existsSync(path12.join(peerDir(wrapperId), "session.json"))) continue;
+    if (!fs9.existsSync(path10.join(peerDir(wrapperId), "session.json"))) continue;
     writeJsonAtomic(linkFile("codex", wrapperPid), { id });
   }
 }
@@ -1572,7 +1715,7 @@ function observeUnpromptedCodex(proc, cwd) {
 function keptPeers() {
   let names = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names = fs9.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -1587,7 +1730,7 @@ function keptPeers() {
 function codexThreadsOf(pid) {
   let names = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names = fs9.readdirSync(peersDir());
   } catch {
     return [];
   }
@@ -1644,14 +1787,14 @@ var init_peers = __esm({
     peerId = (agent, key) => `${agent}-${key}`;
     sessionKey = (_agent, pid, sessionId) => sessionToken(sessionId) ?? pid;
     sessionPeerId = (agent, pid, sessionId) => peerId(agent, sessionKey(agent, pid, sessionId));
-    ownersFile = (id) => path12.join(peerDir(id), "owners.json");
-    linkFile = (agent, pid) => path12.join(peerDir(peerId(agent, pid)), "link.json");
-    rememberedFile = (agent, sessionId) => path12.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
+    ownersFile = (id) => path10.join(peerDir(id), "owners.json");
+    linkFile = (agent, pid) => path10.join(peerDir(peerId(agent, pid)), "link.json");
+    rememberedFile = (agent, sessionId) => path10.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
     PEER_DIR_RE = new RegExp(`^(${AGENT_ALTERNATION})-([A-Za-z0-9][A-Za-z0-9_-]*)$`);
     AGENT_PREFIX_RE = new RegExp(`^(${AGENT_ALTERNATION}):`);
     REF_RE = new RegExp(`^(${AGENT_ALTERNATION})-(\\d+|[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}|ses_[A-Za-z0-9]+)$`);
-    defaultCodexHome = () => configuredEnv("CODEX_HOME") || path12.join(os7.homedir(), ".codex");
-    claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path12.join(os7.homedir(), ".claude");
+    defaultCodexHome = () => configuredEnv("CODEX_HOME") || path10.join(os6.homedir(), ".codex");
+    claudeConfigDir = () => process.env.CLAUDE_CONFIG_DIR || path10.join(os6.homedir(), ".claude");
     HOLD_MS = 60 * 6e4;
     SESSION_KEEP_MS = 24 * 60 * 6e4;
     SERVICE_SESSION_ACTIVE_MS = 12 * 60 * 6e4;
@@ -1666,32 +1809,239 @@ var init_peers = __esm({
   }
 });
 
+// src/core/codex-activity.ts
+import fs13 from "node:fs";
+import path14 from "node:path";
+function findRollout(codexHome, threadId) {
+  const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
+  const sorted = (dir) => {
+    try {
+      return fs13.readdirSync(dir).sort().reverse();
+    } catch {
+      return [];
+    }
+  };
+  const root = path14.join(codexHome, "sessions");
+  for (const year of sorted(root)) {
+    for (const month of sorted(path14.join(root, year))) {
+      for (const day of sorted(path14.join(root, year, month))) {
+        const dir = path14.join(root, year, month, day);
+        const file2 = sorted(dir).find(isRollout);
+        if (file2) return path14.join(dir, file2);
+      }
+    }
+  }
+  return void 0;
+}
+function readTail(file2, bytes) {
+  const fd = fs13.openSync(file2, "r");
+  try {
+    const { size } = fs13.fstatSync(fd);
+    const start = Math.max(0, size - bytes);
+    const buf = Buffer.alloc(size - start);
+    fs13.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    return { text: start > 0 ? text.slice(text.indexOf("\n") + 1) : text, whole: start === 0 };
+  } finally {
+    fs13.closeSync(fd);
+  }
+}
+function lastTurnEvent(text) {
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"event_msg"')) continue;
+    let entry;
+    try {
+      entry = JSON.parse(lines[i]);
+    } catch {
+      continue;
+    }
+    const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
+    if (state) return state;
+  }
+  return void 0;
+}
+function codexActivity(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    for (const bytes of TAIL_STEPS) {
+      const { text, whole } = readTail(file2, bytes);
+      const state = lastTurnEvent(text);
+      if (state || whole) return state;
+    }
+  } catch {
+  }
+  return void 0;
+}
+function codexLastResponse(codexHome, threadId) {
+  try {
+    const file2 = findRollout(codexHome, threadId);
+    if (!file2) return void 0;
+    const lines = readTail(file2, 256 * 1024).text.trimEnd().split("\n");
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (!lines[i].includes('"response_item"')) continue;
+      try {
+        const entry = JSON.parse(lines[i]);
+        const at = Date.parse(entry.timestamp ?? "");
+        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
+      } catch {
+      }
+    }
+  } catch {
+  }
+  return void 0;
+}
+var TAIL_STEPS, TURN_EVENTS;
+var init_codex_activity = __esm({
+  "src/core/codex-activity.ts"() {
+    "use strict";
+    TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
+    TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
+  }
+});
+
+// src/core/status.ts
+import path15 from "node:path";
+function writeStatus(id, status, now = Date.now()) {
+  writeJsonAtomic(statusFile(id), { status, at: new Date(now).toISOString() });
+}
+function recorded(id) {
+  const record2 = readJson(statusFile(id));
+  const at = record2 ? Date.parse(record2.at) : Number.NaN;
+  return record2 && typeof record2.status === "string" && !Number.isNaN(at) ? { status: record2.status, at } : void 0;
+}
+function claudeStatus(pid) {
+  const record2 = readJson(path15.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
+  let status = record2.status;
+  if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
+  return { status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
+}
+function transientChildMs() {
+  return envDurationMs("TELEPATHY_TRANSIENT_CHILD_MS", 2e3);
+}
+function ignoredShellChild(command, ageMs) {
+  const token = command.trim().split(/\s+/)[0] ?? "";
+  const base = token.replace(/^["']|["']$/g, "").split(/[/\\]/).pop() ?? "";
+  if (base === "ps" || base === "(ps)") return true;
+  if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) return false;
+  return ageMs !== void 0 && ageMs >= 0 && ageMs < transientChildMs();
+}
+function processAgeMs(start) {
+  if (!start) return void 0;
+  const at = Date.parse(start);
+  if (Number.isNaN(at)) return void 0;
+  return Date.now() - at;
+}
+function shellIsTelepathyMonitorOnly(commands) {
+  let monitor = false;
+  for (const command of commands) {
+    if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) {
+      if (/monitor\.mjs/.test(command)) monitor = true;
+      continue;
+    }
+    return false;
+  }
+  return monitor;
+}
+function descendantCommands(rootPid) {
+  const table = processTable(0);
+  const byParent = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const kids = byParent.get(info.ppid);
+    if (kids) kids.push(info.pid);
+    else byParent.set(info.ppid, [info.pid]);
+  }
+  const commands = [];
+  const stack = [...byParent.get(rootPid) ?? []];
+  const seen = /* @__PURE__ */ new Set();
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    const info = table.get(pid);
+    const args = commandLine(pid) ?? info?.comm;
+    if (args && !ignoredShellChild(args, processAgeMs(info?.start))) commands.push(args);
+    for (const child of byParent.get(pid) ?? []) stack.push(child);
+  }
+  return commands;
+}
+function codexStatus(peer) {
+  if (!peer.codexHome || !peer.sessionId) return void 0;
+  const activity = codexActivity(peer.codexHome, peer.sessionId);
+  const hook = recorded(peer.id);
+  if (hook?.status === "waiting" && activity !== "idle" && activity !== "interrupted") {
+    const lastResponse = codexLastResponse(peer.codexHome, peer.sessionId);
+    if (lastResponse === void 0 || lastResponse <= (hook.at ?? 0)) return hook;
+  }
+  return activity ? { status: activity } : void 0;
+}
+function peerStatus(peer) {
+  if (peer.agent === "claude") return claudeStatus(peer.pid);
+  if (peer.agent === "codex") return codexStatus(peer);
+  const info = recorded(peer.id);
+  return info && { ...info, fromHooks: statusFromHooks(peer.agent) };
+}
+function statusText(info, now = Date.now()) {
+  if (!info) return void 0;
+  switch (info.status) {
+    case "waiting":
+      return `waiting on a permission prompt for its user${stale(info, now)}`;
+    case "shell":
+      return "shell (not generating, but a command it started is still running)";
+    case "interrupted":
+      return "interrupted: a send fails until its user prompts it";
+    case "busy":
+      return `busy${stale(info, now)}`;
+    default:
+      return info.status;
+  }
+}
+var OWN_SOURCE, statusFromHooks, statusFile, CLAUDE_STATUSES, TELEPATHY_PROCESS, STALE_MS, stale;
+var init_status = __esm({
+  "src/core/status.ts"() {
+    "use strict";
+    init_codex_activity();
+    init_paths();
+    init_peers();
+    init_proc();
+    OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
+    statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
+    statusFile = (id) => path15.join(peerDir(id), "status.json");
+    CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
+    TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
+    STALE_MS = 15 * 6e4;
+    stale = (info, now) => info.fromHooks && info.at !== void 0 && now - info.at > STALE_MS ? `? (no activity for ${Math.round((now - info.at) / 6e4)}m)` : "";
+  }
+});
+
 // src/core/messages.ts
 import crypto2 from "node:crypto";
-import fs13 from "node:fs";
-import path13 from "node:path";
+import fs14 from "node:fs";
+import path16 from "node:path";
 function newMessageId() {
   return `m-${Date.now().toString(36).padStart(9, "0")}-${crypto2.randomBytes(3).toString("hex")}`;
 }
 function writeToInbox(msg) {
-  writeJsonAtomic(path13.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path16.join(inboxDir(msg.to.id), `${msg.id}.json`), msg);
 }
 function archiveMessage(msg) {
-  writeJsonAtomic(path13.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
+  writeJsonAtomic(path16.join(archiveDir(msg.to.id), `${msg.id}.json`), msg);
   pruneArchive(msg.to.id);
 }
 function deliveryBlocked(peerId2, msg, now = Date.now()) {
-  if (fs13.existsSync(path13.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
+  if (fs14.existsSync(path16.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
   return typeof msg.deliverBy === "number" && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
 }
 function withdrawEverywhere(peerId2, messageId) {
   const file2 = `${messageId}.json`;
-  const dest = path13.join(ensureDir(withdrawnDir(peerId2)), file2);
-  const sources = [path13.join(inboxDir(peerId2), file2), path13.join(archiveDir(peerId2), file2)];
-  if (!fs13.existsSync(dest)) {
+  const dest = path16.join(ensureDir(withdrawnDir(peerId2)), file2);
+  const sources = [path16.join(inboxDir(peerId2), file2), path16.join(archiveDir(peerId2), file2)];
+  if (!fs14.existsSync(dest)) {
     for (const src of sources) {
       try {
-        fs13.renameSync(src, dest);
+        fs14.renameSync(src, dest);
         break;
       } catch {
       }
@@ -1699,26 +2049,28 @@ function withdrawEverywhere(peerId2, messageId) {
   }
   for (const src of sources) {
     try {
-      if (fs13.existsSync(src)) fs13.rmSync(src, { force: true });
+      if (fs14.existsSync(src)) fs14.rmSync(src, { force: true });
     } catch {
     }
   }
-  if (fs13.existsSync(dest)) return "withdrawn";
-  if (sources.some((src) => fs13.existsSync(src))) return "claimed";
+  if (fs14.existsSync(dest)) return "withdrawn";
+  if (sources.some((src) => fs14.existsSync(src))) return "claimed";
   return "missing";
 }
-function claimInbox(peerId2) {
+function claimInbox(peerId2, skip) {
   let files;
   try {
-    files = fs13.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs14.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
   const claimed = [];
   for (const file2 of files) {
-    const target = path13.join(ensureDir(archiveDir(peerId2)), file2);
+    const id = file2.slice(0, -".json".length);
+    if (skip?.has(id)) continue;
+    const target = path16.join(ensureDir(archiveDir(peerId2)), file2);
     try {
-      fs13.renameSync(path13.join(inboxDir(peerId2), file2), target);
+      fs14.renameSync(path16.join(inboxDir(peerId2), file2), target);
     } catch {
       continue;
     }
@@ -1736,13 +2088,13 @@ function claimInbox(peerId2) {
 function pendingMessages(peerId2) {
   let files;
   try {
-    files = fs13.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs14.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
   const pending = [];
   for (const file2 of files) {
-    const msg = readJson(path13.join(inboxDir(peerId2), file2));
+    const msg = readJson(path16.join(inboxDir(peerId2), file2));
     if (!msg) continue;
     if (deliveryBlocked(peerId2, msg)) {
       withdrawEverywhere(peerId2, msg.id);
@@ -1754,15 +2106,15 @@ function pendingMessages(peerId2) {
 }
 function archivePending(peerId2, id) {
   try {
-    fs13.renameSync(path13.join(inboxDir(peerId2), `${id}.json`), path13.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
+    fs14.renameSync(path16.join(inboxDir(peerId2), `${id}.json`), path16.join(ensureDir(archiveDir(peerId2)), `${id}.json`));
   } catch {
   }
 }
 function archiveSettled(peerId2, id) {
-  const dest = path13.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
+  const dest = path16.join(ensureDir(archiveDir(peerId2)), `${id}.json`);
   for (const dir of [inboxDir(peerId2), withdrawnDir(peerId2)]) {
     try {
-      fs13.renameSync(path13.join(dir, `${id}.json`), dest);
+      fs14.renameSync(path16.join(dir, `${id}.json`), dest);
       return;
     } catch {
     }
@@ -1770,22 +2122,22 @@ function archiveSettled(peerId2, id) {
 }
 function readArchived(peerId2, id) {
   if (!/^m-[0-9a-z]+-[0-9a-f]+$/.test(id)) return void 0;
-  return readJson(path13.join(archiveDir(peerId2), `${id}.json`));
+  return readJson(path16.join(archiveDir(peerId2), `${id}.json`));
 }
 function recentArchived(peerId2, limit) {
   let files;
   try {
-    files = fs13.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    files = fs14.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
   } catch {
     return [];
   }
-  return files.slice(-limit).map((f) => readJson(path13.join(archiveDir(peerId2), f))).filter((m) => !!m);
+  return files.slice(-limit).map((f) => readJson(path16.join(archiveDir(peerId2), f))).filter((m) => !!m);
 }
 function pruneArchive(peerId2) {
   try {
-    const files = fs13.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
+    const files = fs14.readdirSync(archiveDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
     for (const f of files.slice(0, Math.max(0, files.length - ARCHIVE_KEEP))) {
-      fs13.rmSync(path13.join(archiveDir(peerId2), f), { force: true });
+      fs14.rmSync(path16.join(archiveDir(peerId2), f), { force: true });
     }
   } catch {
   }
@@ -30248,13 +30600,13 @@ var init_zod = __esm({
 });
 
 // src/core/debug.ts
-import fs16 from "node:fs";
-import path18 from "node:path";
+import fs17 from "node:fs";
+import path20 from "node:path";
 function debugLog(component, line) {
   if (process.env.TELEPATHY_DEBUG !== "1") return;
   try {
     ensureDir(stateDir());
-    fs16.appendFileSync(path18.join(stateDir(), "debug.log"), `${(/* @__PURE__ */ new Date()).toISOString()} [${component} ${process.pid}] ${line}
+    fs17.appendFileSync(path20.join(stateDir(), "debug.log"), `${(/* @__PURE__ */ new Date()).toISOString()} [${component} ${process.pid}] ${line}
 `);
   } catch {
   }
@@ -30269,13 +30621,13 @@ var init_debug = __esm({
 // src/core/codex-queue.ts
 import { execFile, spawn as spawn6 } from "node:child_process";
 import os9 from "node:os";
-import path19 from "node:path";
+import path21 from "node:path";
 import readline2 from "node:readline";
 import { promisify } from "node:util";
 function codexCandidates() {
   const configured = process.env.TELEPATHY_CODEX_BIN;
   if (configured) return [configured];
-  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path19.join(os9.homedir(), ".local", "bin", "codex")];
+  return ["codex", "/opt/homebrew/bin/codex", "/usr/local/bin/codex", path21.join(os9.homedir(), ".local", "bin", "codex")];
 }
 async function queueIntoCodex(threadId, text, codexHome) {
   const args = ["queue", `--thread=${threadId}`, `--message=${text}`];
@@ -30379,103 +30731,11 @@ var init_codex_queue = __esm({
   }
 });
 
-// src/core/codex-activity.ts
-import fs17 from "node:fs";
-import path20 from "node:path";
-function findRollout(codexHome, threadId) {
-  const isRollout = (f) => f.startsWith("rollout-") && (f.endsWith(`-${threadId}.jsonl`) || f.includes(`-${threadId}_`) && f.endsWith(".jsonl"));
-  const sorted = (dir) => {
-    try {
-      return fs17.readdirSync(dir).sort().reverse();
-    } catch {
-      return [];
-    }
-  };
-  const root = path20.join(codexHome, "sessions");
-  for (const year of sorted(root)) {
-    for (const month of sorted(path20.join(root, year))) {
-      for (const day of sorted(path20.join(root, year, month))) {
-        const dir = path20.join(root, year, month, day);
-        const file2 = sorted(dir).find(isRollout);
-        if (file2) return path20.join(dir, file2);
-      }
-    }
-  }
-  return void 0;
-}
-function readTail(file2, bytes) {
-  const fd = fs17.openSync(file2, "r");
-  try {
-    const { size } = fs17.fstatSync(fd);
-    const start = Math.max(0, size - bytes);
-    const buf = Buffer.alloc(size - start);
-    fs17.readSync(fd, buf, 0, buf.length, start);
-    const text = buf.toString("utf8");
-    return { text: start > 0 ? text.slice(text.indexOf("\n") + 1) : text, whole: start === 0 };
-  } finally {
-    fs17.closeSync(fd);
-  }
-}
-function lastTurnEvent(text) {
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    if (!lines[i].includes('"event_msg"')) continue;
-    let entry;
-    try {
-      entry = JSON.parse(lines[i]);
-    } catch {
-      continue;
-    }
-    const state = entry.type === "event_msg" ? TURN_EVENTS[entry.payload?.type ?? ""] : void 0;
-    if (state) return state;
-  }
-  return void 0;
-}
-function codexActivity(codexHome, threadId) {
-  try {
-    const file2 = findRollout(codexHome, threadId);
-    if (!file2) return void 0;
-    for (const bytes of TAIL_STEPS) {
-      const { text, whole } = readTail(file2, bytes);
-      const state = lastTurnEvent(text);
-      if (state || whole) return state;
-    }
-  } catch {
-  }
-  return void 0;
-}
-function codexLastResponse(codexHome, threadId) {
-  try {
-    const file2 = findRollout(codexHome, threadId);
-    if (!file2) return void 0;
-    const lines = readTail(file2, 256 * 1024).text.trimEnd().split("\n");
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (!lines[i].includes('"response_item"')) continue;
-      try {
-        const entry = JSON.parse(lines[i]);
-        const at = Date.parse(entry.timestamp ?? "");
-        if (entry.type === "response_item" && !Number.isNaN(at)) return at;
-      } catch {
-      }
-    }
-  } catch {
-  }
-  return void 0;
-}
-var TAIL_STEPS, TURN_EVENTS;
-var init_codex_activity = __esm({
-  "src/core/codex-activity.ts"() {
-    "use strict";
-    TAIL_STEPS = [1024 * 1024, 16 * 1024 * 1024];
-    TURN_EVENTS = { task_started: "busy", task_complete: "idle", turn_aborted: "interrupted" };
-  }
-});
-
 // src/core/wake.ts
 import { spawn as spawn7 } from "node:child_process";
 import crypto3 from "node:crypto";
 import fs18 from "node:fs";
-import path21 from "node:path";
+import path22 from "node:path";
 function wakeDebounceMs() {
   return envDurationMs("TELEPATHY_WAKE_DEBOUNCE_MS", WAKE_DEBOUNCE_MS);
 }
@@ -30575,7 +30835,7 @@ function sleepSync(ms) {
 }
 function withLockSync(fn) {
   ensureDir(wakeDir());
-  const lock = path21.join(wakeDir(), ".lock");
+  const lock = path22.join(wakeDir(), ".lock");
   const start = Date.now();
   for (; ; ) {
     try {
@@ -30603,7 +30863,7 @@ function withLockSync(fn) {
 function pendingItems(items) {
   return items.filter((item) => {
     try {
-      return fs18.existsSync(path21.join(inboxDir(item.peerId), `${item.id}.json`));
+      return fs18.existsSync(path22.join(inboxDir(item.peerId), `${item.id}.json`));
     } catch {
       return false;
     }
@@ -30667,7 +30927,7 @@ function startWakeFlusher() {
 }
 function listBatches() {
   try {
-    return fs18.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path21.join(wakeDir(), name));
+    return fs18.readdirSync(wakeDir()).filter((name) => name.endsWith(".json")).map((name) => path22.join(wakeDir(), name));
   } catch {
     return [];
   }
@@ -30748,7 +31008,7 @@ async function postWebhook(target, payload) {
 }
 function runCommand2(argv, payload, timeoutMs) {
   const bin = argv[0];
-  const name = bin ? path21.basename(bin) : "command";
+  const name = bin ? path22.basename(bin) : "command";
   if (!bin) {
     logFailure("command", name, "failed: command is empty", []);
     return Promise.resolve({ ok: false, how: "command", detail: "command is empty" });
@@ -30845,10 +31105,10 @@ var init_wake = __esm({
     WAKE_DEBOUNCE_MAX_MS = 1500;
     DEFAULT_TIMEOUT_MS = 8e3;
     DEFAULT_AUTH_HEADERS = ["Authorization", "X-Automation-Key"];
-    deliveryConfigPath = () => path21.join(stateDir(), "delivery.json");
-    wakeLogPath = () => path21.join(stateDir(), "wake.log");
-    wakeDir = () => path21.join(stateDir(), "wake");
-    batchPath = (key) => path21.join(wakeDir(), `${key}.json`);
+    deliveryConfigPath = () => path22.join(stateDir(), "delivery.json");
+    wakeLogPath = () => path22.join(stateDir(), "wake.log");
+    wakeDir = () => path22.join(stateDir(), "wake");
+    batchPath = (key) => path22.join(wakeDir(), `${key}.json`);
     scrub = (text, secrets) => {
       let out = text;
       for (const secret of secrets) {
@@ -30865,7 +31125,7 @@ var init_wake = __esm({
 // src/core/confirm.ts
 import fs19 from "node:fs";
 import os10 from "node:os";
-import path22 from "node:path";
+import path23 from "node:path";
 function confirmWaitEnabled() {
   const v = process.env.TELEPATHY_CONFIRM_WAIT;
   return v !== "0" && v !== "false";
@@ -30900,8 +31160,8 @@ function transcriptHasMarker(peer, marker) {
   return !!peer && inspectTranscript(peer, marker).found;
 }
 function hostedTranscript(peer, marker) {
-  if (!fs19.existsSync(path22.join(peerDir(peer.id), "hosted.json"))) return void 0;
-  const file2 = path22.join(peerDir(peer.id), "delivery-transcript.jsonl");
+  if (!fs19.existsSync(path23.join(peerDir(peer.id), "hosted.json"))) return void 0;
+  const file2 = path23.join(peerDir(peer.id), "delivery-transcript.jsonl");
   return { located: true, found: fs19.existsSync(file2) && fileHas(file2, marker) };
 }
 function inspectTranscript(peer, marker) {
@@ -30926,7 +31186,7 @@ function searchHarnessTranscript(peer, marker) {
   if (peer.agent === "opencode" || peer.agent === "kilo") return opencodeTranscript(marker);
   if (peer.agent === "antigravity") return antigravityTranscript(peer, marker);
   if (peer.agent === "copilot" && peer.sessionId) {
-    const file2 = path22.join(os10.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
+    const file2 = path23.join(os10.homedir(), ".copilot", "session-state", peer.sessionId, "events.jsonl");
     if (!fs19.existsSync(file2)) return { located: false, found: false };
     return { located: true, found: fileHas(file2, marker) };
   }
@@ -30934,19 +31194,19 @@ function searchHarnessTranscript(peer, marker) {
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
-  const projects = path22.join(claudeConfigDir(), "projects");
+  const projects = path23.join(claudeConfigDir(), "projects");
   const name = `${peer.sessionId}.jsonl`;
   const files = /* @__PURE__ */ new Set();
   if (peer.cwd) {
     const slug = peer.cwd.replace(/[^A-Za-z0-9]/g, "-").slice(0, 200);
-    files.add(path22.join(projects, slug, name));
+    files.add(path23.join(projects, slug, name));
   }
   if (process.env.CLAUDE_CONFIG_DIR && process.env.CLAUDE_CODE_PROJECT_DIR_NAME) {
-    files.add(path22.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
+    files.add(path23.join(projects, process.env.CLAUDE_CODE_PROJECT_DIR_NAME, name));
   }
   try {
     for (const dir of fs19.readdirSync(projects).slice(0, 80)) {
-      files.add(path22.join(projects, dir, name));
+      files.add(path23.join(projects, dir, name));
     }
   } catch {
   }
@@ -30956,16 +31216,16 @@ function claudeTranscript(peer, marker) {
 }
 function codexTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
-  const home2 = peer.codexHome || process.env.CODEX_HOME || path22.join(os10.homedir(), ".codex");
+  const home2 = peer.codexHome || process.env.CODEX_HOME || path23.join(os10.homedir(), ".codex");
   const file2 = findRollout(home2, peer.sessionId);
   if (!file2) return { located: false, found: false };
   return { located: true, found: fileHas(file2, marker) };
 }
 function opencodeTranscript(marker) {
-  const xdg = process.env.XDG_DATA_HOME || path22.join(os10.homedir(), ".local", "share");
-  const db = process.env.OPENCODE_DB || path22.join(xdg, "opencode", "opencode.db");
+  const xdg = process.env.XDG_DATA_HOME || path23.join(os10.homedir(), ".local", "share");
+  const db = process.env.OPENCODE_DB || path23.join(xdg, "opencode", "opencode.db");
   const files = [db, `${db}-wal`];
-  const legacy = path22.join(xdg, "opencode", "storage");
+  const legacy = path23.join(xdg, "opencode", "storage");
   const existing = files.filter((file2) => fs19.existsSync(file2));
   const inDb = existing.some((file2) => fileHas(file2, marker));
   if (inDb) return { located: true, found: true };
@@ -30978,9 +31238,9 @@ function antigravityTranscript(peer, marker) {
   const recorded2 = readSession(peer.id)?.transcriptPath;
   if (recorded2 && !UNEXPANDED_PATH.test(recorded2)) files.push(recorded2);
   if (peer.sessionId) {
-    const root = path22.join(os10.homedir(), ".gemini");
+    const root = path23.join(os10.homedir(), ".gemini");
     for (const dir of ["antigravity-cli", "antigravity-ide", "antigravity"]) {
-      files.push(path22.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl"));
+      files.push(path23.join(root, dir, "brain", peer.sessionId, ".system_generated", "logs", "transcript.jsonl"));
     }
   }
   const existing = [...new Set(files)].filter((file2) => fs19.existsSync(file2));
@@ -30997,7 +31257,7 @@ function treeHas(dir, marker, depth) {
   }
   for (const name of names) {
     if (name === "node_modules") continue;
-    const file2 = path22.join(dir, name);
+    const file2 = path23.join(dir, name);
     let st;
     try {
       st = fs19.statSync(file2);
@@ -31031,7 +31291,7 @@ function withdrawPending(peerId2, messageId) {
 }
 function storedMessage(peerId2, messageId) {
   for (const dir of [inboxDir(peerId2), archiveDir(peerId2), withdrawnDir(peerId2)]) {
-    const msg = readJson(path22.join(dir, `${messageId}.json`));
+    const msg = readJson(path23.join(dir, `${messageId}.json`));
     if (msg) return msg;
   }
   return void 0;
@@ -31177,7 +31437,7 @@ var init_confirm = __esm({
 
 // src/core/setup.ts
 import fs20 from "node:fs";
-import path23 from "node:path";
+import path24 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 function codexBridgeTimeoutSec(config2) {
   let found;
@@ -31225,7 +31485,7 @@ function setupNotes(self2) {
     let timeout;
     let config2 = "";
     try {
-      config2 = fs20.readFileSync(path23.join(codexHome, "config.toml"), "utf8");
+      config2 = fs20.readFileSync(path24.join(codexHome, "config.toml"), "utf8");
       timeout = codexBridgeTimeoutSec(config2);
     } catch {
       config2 = "";
@@ -31283,8 +31543,8 @@ var init_setup = __esm({
     init_version();
     CODEX_BRIDGE_TIMEOUT_KEY = 'plugins."telepathy@telepathy".mcp_servers.bridge.tool_timeout_sec';
     CODEX_BRIDGE_TIMEOUT_MIN = 110;
-    updateAllCommand = () => `node "${path23.join(path23.dirname(fileURLToPath3(import.meta.url)), "update-all.mjs")}"`;
-    shownFile = (id) => path23.join(peerDir(id), "setup-shown.json");
+    updateAllCommand = () => `node "${path24.join(path24.dirname(fileURLToPath3(import.meta.url)), "update-all.mjs")}"`;
+    shownFile = (id) => path24.join(peerDir(id), "setup-shown.json");
   }
 });
 
@@ -31322,7 +31582,7 @@ var init_guide = __esm({
 // src/core/claude-socket.ts
 import fs21 from "node:fs";
 import net from "node:net";
-import path24 from "node:path";
+import path25 from "node:path";
 function socketFromEnv(env) {
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
   if (!socketPath) return void 0;
@@ -31375,29 +31635,29 @@ function readInbound(file2) {
 function managedSettingsDir() {
   if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
   if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
-  if (process.platform === "win32") return path24.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  if (process.platform === "win32") return path25.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
   return "/etc/claude-code";
 }
 function managedInbound() {
   const dir = managedSettingsDir();
-  let found = readInbound(path24.join(dir, "managed-settings.json"));
+  let found = readInbound(path25.join(dir, "managed-settings.json"));
   let names = [];
   try {
-    names = fs21.readdirSync(path24.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+    names = fs21.readdirSync(path25.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
   } catch {
   }
   for (const name of names) {
-    const value = readInbound(path24.join(dir, "managed-settings.d", name));
+    const value = readInbound(path25.join(dir, "managed-settings.d", name));
     if (value) found = value;
   }
   return found;
 }
 function crossSessionInbound(peer) {
   const managed = managedInbound();
-  const user = readInbound(path24.join(claudeConfigDir(), "settings.json"));
+  const user = readInbound(path25.join(claudeConfigDir(), "settings.json"));
   const higher = managed ?? user;
-  const project = peer?.cwd ? readInbound(path24.join(peer.cwd, ".claude", "settings.json")) : void 0;
-  const local = peer?.cwd ? readInbound(path24.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  const project = peer?.cwd ? readInbound(path25.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path25.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
   let effective = higher;
   for (const value of [project, local]) {
     if (!value) continue;
@@ -31613,8 +31873,8 @@ var init_claude_socket = __esm({
     init_proc();
     SOCKET_LINE_MAX = 1024 * 1024;
     INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
-    socketFile = (id) => path24.join(peerDir(id), "socket.json");
-    listenerFile = (id) => path24.join(peerDir(id), "socket-listener.json");
+    socketFile = (id) => path25.join(peerDir(id), "socket.json");
+    listenerFile = (id) => path25.join(peerDir(id), "socket-listener.json");
     classify = (line) => {
       let type = "";
       try {
@@ -31630,118 +31890,6 @@ var init_claude_socket = __esm({
       return void 0;
     };
     scrub2 = (text, token) => token && token.length >= 4 ? text.split(token).join("[redacted]") : text;
-  }
-});
-
-// src/core/status.ts
-import path25 from "node:path";
-function recorded(id) {
-  const record2 = readJson(statusFile(id));
-  const at = record2 ? Date.parse(record2.at) : Number.NaN;
-  return record2 && typeof record2.status === "string" && !Number.isNaN(at) ? { status: record2.status, at } : void 0;
-}
-function claudeStatus(pid) {
-  const record2 = readJson(path25.join(claudeConfigDir(), "sessions", `${pid}.json`));
-  if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
-  let status = record2.status;
-  if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
-  return { status, at: typeof record2.statusUpdatedAt === "number" ? record2.statusUpdatedAt : void 0 };
-}
-function transientChildMs() {
-  return envDurationMs("TELEPATHY_TRANSIENT_CHILD_MS", 2e3);
-}
-function ignoredShellChild(command, ageMs) {
-  const token = command.trim().split(/\s+/)[0] ?? "";
-  const base = token.replace(/^["']|["']$/g, "").split(/[/\\]/).pop() ?? "";
-  if (base === "ps" || base === "(ps)") return true;
-  if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) return false;
-  return ageMs !== void 0 && ageMs >= 0 && ageMs < transientChildMs();
-}
-function processAgeMs(start) {
-  if (!start) return void 0;
-  const at = Date.parse(start);
-  if (Number.isNaN(at)) return void 0;
-  return Date.now() - at;
-}
-function shellIsTelepathyMonitorOnly(commands) {
-  let monitor = false;
-  for (const command of commands) {
-    if (TELEPATHY_PROCESS.test(command) && /--agent(?:\s|=)/.test(command)) {
-      if (/monitor\.mjs/.test(command)) monitor = true;
-      continue;
-    }
-    return false;
-  }
-  return monitor;
-}
-function descendantCommands(rootPid) {
-  const table = processTable(0);
-  const byParent = /* @__PURE__ */ new Map();
-  for (const info of table.values()) {
-    const kids = byParent.get(info.ppid);
-    if (kids) kids.push(info.pid);
-    else byParent.set(info.ppid, [info.pid]);
-  }
-  const commands = [];
-  const stack = [...byParent.get(rootPid) ?? []];
-  const seen = /* @__PURE__ */ new Set();
-  while (stack.length) {
-    const pid = stack.pop();
-    if (pid === void 0 || seen.has(pid)) continue;
-    seen.add(pid);
-    const info = table.get(pid);
-    const args = commandLine(pid) ?? info?.comm;
-    if (args && !ignoredShellChild(args, processAgeMs(info?.start))) commands.push(args);
-    for (const child of byParent.get(pid) ?? []) stack.push(child);
-  }
-  return commands;
-}
-function codexStatus(peer) {
-  if (!peer.codexHome || !peer.sessionId) return void 0;
-  const activity = codexActivity(peer.codexHome, peer.sessionId);
-  const hook = recorded(peer.id);
-  if (hook?.status === "waiting" && activity !== "idle" && activity !== "interrupted") {
-    const lastResponse = codexLastResponse(peer.codexHome, peer.sessionId);
-    if (lastResponse === void 0 || lastResponse <= (hook.at ?? 0)) return hook;
-  }
-  return activity ? { status: activity } : void 0;
-}
-function peerStatus(peer) {
-  if (peer.agent === "claude") return claudeStatus(peer.pid);
-  if (peer.agent === "codex") return codexStatus(peer);
-  const info = recorded(peer.id);
-  return info && { ...info, fromHooks: statusFromHooks(peer.agent) };
-}
-function statusText(info, now = Date.now()) {
-  if (!info) return void 0;
-  switch (info.status) {
-    case "waiting":
-      return `waiting on a permission prompt for its user${stale(info, now)}`;
-    case "shell":
-      return "shell (not generating, but a command it started is still running)";
-    case "interrupted":
-      return "interrupted: a send fails until its user prompts it";
-    case "busy":
-      return `busy${stale(info, now)}`;
-    default:
-      return info.status;
-  }
-}
-var OWN_SOURCE, statusFromHooks, statusFile, CLAUDE_STATUSES, TELEPATHY_PROCESS, STALE_MS, stale;
-var init_status = __esm({
-  "src/core/status.ts"() {
-    "use strict";
-    init_codex_activity();
-    init_paths();
-    init_peers();
-    init_proc();
-    OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
-    statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-    statusFile = (id) => path25.join(peerDir(id), "status.json");
-    CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
-    TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
-    STALE_MS = 15 * 6e4;
-    stale = (info, now) => info.fromHooks && info.at !== void 0 && now - info.at > STALE_MS ? `? (no activity for ${Math.round((now - info.at) / 6e4)}m)` : "";
   }
 });
 
@@ -32783,23 +32931,50 @@ async function ensureInstalled(agent) {
 await init_auto_update();
 import { spawn as spawn5 } from "node:child_process";
 import os8 from "node:os";
-import path17 from "node:path";
+import path19 from "node:path";
 
 // src/acp/host.ts
-init_installs();
-init_version();
 import { spawn as spawn3 } from "node:child_process";
-import fs8 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path12 from "node:path";
 import readline from "node:readline";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
+// src/cli/launch.ts
+init_installs();
+init_paths();
+init_peers();
+import path11 from "node:path";
+function pluginInstalled(agent) {
+  const installs = agent === "copilot" ? findInstalls() : installsInScope();
+  return installs.some((install) => install.agent === agent);
+}
+function launchEnv(agent, name) {
+  const env = { ...process.env, TELEPATHY_HOME: stateDir() };
+  if (name && pluginInstalled(agent)) {
+    const slug = slugify(name);
+    if (slug) env.TELEPATHY_NAME = slug;
+  }
+  if (agent === "claude") pointClaudeAtScopedPlugin(env);
+  return env;
+}
+function pointClaudeAtScopedPlugin(env) {
+  if (!isolatedStateRoots()) return;
+  const install = installsInScope().find((item) => item.agent === "claude");
+  if (!install) return;
+  const dirs = (env.CLAUDE_CODE_PLUGIN_DIRS ?? "").split(path11.delimiter).filter(Boolean);
+  if (!dirs.includes(install.dir)) env.CLAUDE_CODE_PLUGIN_DIRS = [install.dir, ...dirs].join(path11.delimiter);
+}
+
+// src/acp/host.ts
+init_version();
+
 // src/cli/entry.ts
-import fs7 from "node:fs";
+import fs10 from "node:fs";
 function resolveArgvPath(entry) {
   if (!entry) return "";
   try {
-    return fs7.realpathSync(entry);
+    return fs10.realpathSync(entry);
   } catch {
     return entry;
   }
@@ -32882,7 +33057,7 @@ var LineRpc = class {
 
 // src/acp/host.ts
 function telepathyMcpServers(agent) {
-  if (installsInScope().some((install) => install.agent === agent)) return [];
+  if (pluginInstalled(agent)) return [];
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, "mcp", "--agent", agent] : [entry.file, "--agent", agent];
   return [
@@ -32900,10 +33075,10 @@ function mcpEntry() {
   if (override) return { file: override, viaCli: !override.endsWith("server.mjs") };
   const argv1 = process.argv[1];
   const resolved = argv1 ? resolveArgvPath(argv1) : "";
-  if (resolved && /(?:^|[/\\])(?:telepathy|cli)\.(?:mjs|ts|js)$/.test(resolved)) return { file: path9.resolve(resolved), viaCli: true };
-  const beside = path9.resolve(path9.dirname(fileURLToPath2(import.meta.url)), "../../plugin/dist/server.mjs");
-  if (fs8.existsSync(beside)) return { file: beside, viaCli: false };
-  return { file: path9.resolve(resolved || argv1 || "telepathy"), viaCli: true };
+  if (resolved && /(?:^|[/\\])(?:telepathy|cli)\.(?:mjs|ts|js)$/.test(resolved)) return { file: path12.resolve(resolved), viaCli: true };
+  const beside = path12.resolve(path12.dirname(fileURLToPath2(import.meta.url)), "../../plugin/dist/server.mjs");
+  if (fs11.existsSync(beside)) return { file: beside, viaCli: false };
+  return { file: path12.resolve(resolved || argv1 || "telepathy"), viaCli: true };
 }
 function textOf(params) {
   const root = params ?? {};
@@ -33154,7 +33329,8 @@ async function startAcpSession(options) {
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text, stillPending2 = () => true) {
+      prompt(text, stillPending2 = () => true, withdrawn) {
+        const recalled = withdrawn ?? (() => !stillPending2());
         let resolveAccepted = () => {
         };
         const accepted = new Promise((resolve) => {
@@ -33179,31 +33355,30 @@ async function startAcpSession(options) {
             rpc.notify("session/cancel", { sessionId });
           };
           const watch = setInterval(() => {
-            if (!settled && sent && !stillPending2()) cancel();
+            if (!settled && sent && recalled()) cancel();
           }, 25);
           try {
-            if (!stillPending2()) {
+            if (!stillPending2() || recalled()) {
               finish(false);
               return;
             }
             onUpdate = (params) => {
               previous(params);
-              if (relevantUpdate(params) && stillPending2()) finish(true);
+              if (relevantUpdate(params) && !recalled()) finish(true);
             };
             acceptDelivery = () => {
-              if (stillPending2()) finish(true);
+              if (!recalled()) finish(true);
             };
             sent = true;
-            if (!stillPending2()) {
+            if (!stillPending2() || recalled()) {
               finish(false);
               return;
             }
             await rpc.request("session/prompt", { sessionId, prompt: [{ type: "text", text }] });
-            if (stillPending2()) finish(true);
-            else {
+            if (recalled()) {
               cancel();
               finish(false);
-            }
+            } else finish(true);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const closed = message === "agent exited" || message === "agent stdin is closed";
@@ -33221,6 +33396,7 @@ async function startAcpSession(options) {
             onUpdate = previous;
             acceptDelivery = void 0;
             activeTurns = Math.max(0, activeTurns - 1);
+            if (activeTurns === 0) options.onTurnSettled?.();
             clearAsk();
             endText();
           }
@@ -33256,9 +33432,9 @@ function authMessage(bin, stderrTail) {
 }
 
 // src/cli/agy-auth.ts
-import fs9 from "node:fs";
-import os6 from "node:os";
-import path10 from "node:path";
+import fs12 from "node:fs";
+import os7 from "node:os";
+import path13 from "node:path";
 var AGY_CONSUMER_LOGIN_WARNING = [
   "telepathy: refusing to drive Antigravity headless or ACP on a consumer login.",
   "Google says wrapping `agy -p` or driving a consumer account from third-party software can suspend the account.",
@@ -33271,13 +33447,13 @@ var AGY_API_KEY_MISSING = [
   "Headless and ACP are not started."
 ].join("\n");
 function agySettingsFile(env = process.env) {
-  const home2 = env.HOME?.trim() || os6.homedir();
-  return path10.join(home2, ".gemini", "antigravity-cli", "settings.json");
+  const home2 = env.HOME?.trim() || os7.homedir();
+  return path13.join(home2, ".gemini", "antigravity-cli", "settings.json");
 }
 function agyLoginType(env = process.env) {
   let json2 = {};
   try {
-    json2 = JSON.parse(fs9.readFileSync(agySettingsFile(env), "utf8"));
+    json2 = JSON.parse(fs12.readFileSync(agySettingsFile(env), "utf8"));
   } catch {
     json2 = {};
   }
@@ -33299,21 +33475,22 @@ init_version_check();
 
 // src/headless/run.ts
 init_proc();
+init_status();
 init_version();
 import { spawn as spawn4 } from "node:child_process";
-import fs15 from "node:fs";
-import path15 from "node:path";
+import fs16 from "node:fs";
+import path18 from "node:path";
 
 // src/headless/peer.ts
 init_messages();
 init_paths();
 init_proc();
 init_peers();
-import fs14 from "node:fs";
-import path14 from "node:path";
-var headlessDir = () => path14.join(stateDir(), "headless");
-var headlessRecordPath = (agent, slug) => path14.join(headlessDir(), `${agent}-${slug}.json`);
-var headlessLogPath = (agent, slug) => path14.join(headlessDir(), `${agent}-${slug}.log`);
+import fs15 from "node:fs";
+import path17 from "node:path";
+var headlessDir = () => path17.join(stateDir(), "headless");
+var headlessRecordPath = (agent, slug) => path17.join(headlessDir(), `${agent}-${slug}.json`);
+var headlessLogPath = (agent, slug) => path17.join(headlessDir(), `${agent}-${slug}.log`);
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
 }
@@ -33323,11 +33500,11 @@ function writeHeadlessRecord(record2) {
 function listHeadlessRecords() {
   let names = [];
   try {
-    names = fs14.readdirSync(headlessDir());
+    names = fs15.readdirSync(headlessDir());
   } catch {
     return [];
   }
-  return names.filter((name) => name.endsWith(".json")).map((name) => readJson(path14.join(headlessDir(), name))).filter((record2) => !!record2 && typeof record2.pid === "number");
+  return names.filter((name) => name.endsWith(".json")).map((name) => readJson(path17.join(headlessDir(), name))).filter((record2) => !!record2 && typeof record2.pid === "number");
 }
 function formatHeadlessPs() {
   const live = listHeadlessRecords().filter((record2) => isAlive(record2.pid));
@@ -33362,7 +33539,7 @@ function stopHeadless(query) {
   console.log(`stopped ${record2.agent}:${record2.slug} (pid ${record2.pid})`);
   return 0;
 }
-var harnessSessionFile = (peerId2) => path14.join(peerDir(peerId2), "harness-session.json");
+var harnessSessionFile = (peerId2) => path17.join(peerDir(peerId2), "harness-session.json");
 function recallHarnessSession(peerId2) {
   const id = readJson(harnessSessionFile(peerId2))?.id;
   return typeof id === "string" && id ? id : void 0;
@@ -33371,14 +33548,14 @@ function rememberHarnessSession(peerId2, harnessSessionId) {
   writeJsonAtomic(harnessSessionFile(peerId2), { id: harnessSessionId });
 }
 function writeHosted(peerId2) {
-  writeJsonAtomic(path14.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path17.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid)
   });
 }
 function clearHosted(peerId2) {
   try {
-    fs14.rmSync(path14.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs15.rmSync(path17.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -33398,14 +33575,14 @@ function namedPeerId(agent, name) {
   return { peerId: sessionPeerId(agent, process.pid, `h-${slug}`), slug };
 }
 function appendTranscript(peerId2, text) {
-  const file2 = path14.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs14.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file2 = path17.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs15.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 function pluginInboxPeerId(agent, name, sessionId) {
   const slug = name ? slugify(name) : void 0;
   let names = [];
   try {
-    names = fs14.readdirSync(peersDir());
+    names = fs15.readdirSync(peersDir());
   } catch {
     return void 0;
   }
@@ -33416,7 +33593,7 @@ function pluginInboxPeerId(agent, name, sessionId) {
     const session = readSession(id);
     if (session?.agent !== agent) continue;
     if (slug) {
-      const ident = readJson(path14.join(peerDir(id), "identity.json"));
+      const ident = readJson(path17.join(peerDir(id), "identity.json"));
       if (ident?.name === slug) byName = id;
     }
     if (sessionId && session.sessionId === sessionId) bySession = id;
@@ -33437,20 +33614,27 @@ function startInboxPump(peerId2, inject) {
     try {
       for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
-        const file2 = path14.join(inboxDir(id), `${msg.id}.json`);
-        if (!fs14.existsSync(file2)) {
+        const file2 = path17.join(inboxDir(id), `${msg.id}.json`);
+        const withdrawnFile = path17.join(withdrawnDir(id), `${msg.id}.json`);
+        const pending = () => fs15.existsSync(file2);
+        const withdrawn = () => fs15.existsSync(withdrawnFile);
+        if (!pending()) {
           done.add(msg.id);
           continue;
         }
         const text = formatAsUserTurn(msg);
-        const ok = await inject(text, () => fs14.existsSync(file2));
-        if (!fs14.existsSync(file2)) {
+        const ok = await inject(text, pending, withdrawn);
+        if (withdrawn()) {
           done.add(msg.id);
           continue;
         }
-        if (!ok) return;
+        if (!ok) {
+          if (!pending()) done.add(msg.id);
+          else return;
+          continue;
+        }
         appendTranscript(id, text);
-        archiveSettled(id, msg.id);
+        if (pending()) archiveSettled(id, msg.id);
         done.add(msg.id);
       }
     } catch {
@@ -33526,8 +33710,8 @@ async function runHeadless(options) {
   }
   const memory = { id: recallHarnessSession(peerId2) ?? previous?.harnessSessionId };
   const logFile2 = headlessLogPath(options.agent, slug);
-  fs15.mkdirSync(path15.dirname(logFile2), { recursive: true });
-  const log = fs15.createWriteStream(logFile2, { flags: "a" });
+  fs16.mkdirSync(path18.dirname(logFile2), { recursive: true });
+  const log = fs16.createWriteStream(logFile2, { flags: "a" });
   const writeLog = (text) => {
     log.write(text);
   };
@@ -33554,7 +33738,7 @@ async function runHeadless(options) {
   persist();
   const stopPump = startInboxPump(
     pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId,
-    (text, stillPending2) => plane.inject(text, stillPending2)
+    (text, stillPending2, withdrawn) => plane.inject(text, stillPending2, withdrawn)
   );
   let stopping = false;
   const shutdown = () => {
@@ -33913,38 +34097,22 @@ async function startAcp(options, memory, writeLog) {
       process.stdout.write(text);
       writeLog(text);
     },
-    trace: writeLog
+    trace: writeLog,
+    onTurnSettled: () => {
+      const id = options.pluginPeer ? pluginInboxPeerId(options.agent, options.name, memory.id) : namedPeerId(options.agent, options.name).peerId;
+      if (id) writeStatus(id, "idle");
+    }
   });
   memory.id = session.sessionId;
-  return { child: session.child, exited: session.exited, inject: (text, stillPending2) => session.prompt(text, stillPending2) };
-}
-
-// src/cli/launch.ts
-init_installs();
-init_paths();
-init_peers();
-import path16 from "node:path";
-function pluginInstalled(agent) {
-  return installsInScope().some((install) => install.agent === agent);
-}
-function launchEnv(agent, name) {
-  const env = { ...process.env, TELEPATHY_HOME: stateDir() };
-  if (name && pluginInstalled(agent)) {
-    const slug = slugify(name);
-    if (slug) env.TELEPATHY_NAME = slug;
-  }
-  if (agent === "claude") pointClaudeAtScopedPlugin(env);
-  return env;
-}
-function pointClaudeAtScopedPlugin(env) {
-  if (!isolatedStateRoots()) return;
-  const install = installsInScope().find((item) => item.agent === "claude");
-  if (!install) return;
-  const dirs = (env.CLAUDE_CODE_PLUGIN_DIRS ?? "").split(path16.delimiter).filter(Boolean);
-  if (!dirs.includes(install.dir)) env.CLAUDE_CODE_PLUGIN_DIRS = [install.dir, ...dirs].join(path16.delimiter);
+  return {
+    child: session.child,
+    exited: session.exited,
+    inject: (text, stillPending2, withdrawn) => session.prompt(text, stillPending2, withdrawn)
+  };
 }
 
 // src/cli/run.ts
+init_status();
 function parseRunArgs(argv) {
   let acp = false;
   let headless = false;
@@ -34030,7 +34198,7 @@ Run \`telepathy run --list\` to see how each one starts.`
     }
   }
   if (!await prepare(harness.agent, parsed.install)) return 1;
-  const cwd = parsed.cwd ? path17.resolve(parsed.cwd) : process.cwd();
+  const cwd = parsed.cwd ? path19.resolve(parsed.cwd) : process.cwd();
   const name = parsed.name;
   if (parsed.headless) {
     const plane = parsed.acp ? "acp" : harness.headless;
@@ -34096,11 +34264,27 @@ Run \`telepathy run --list\` to see how each one starts.`
 function missingAcp(acp) {
   return missing(acpCommand(acp), "Install it, or run without --acp where a native plane exists.");
 }
+function explicitResume(userArgs) {
+  for (let i = 0; i < userArgs.length; i++) {
+    const arg = userArgs[i];
+    if (arg === "--resume" || arg === "-r") {
+      const value = userArgs[i + 1];
+      if (value && !value.startsWith("-")) return value;
+    } else if (arg.startsWith("--resume=")) {
+      const value = arg.slice("--resume=".length);
+      if (value) return value;
+    }
+  }
+  return void 0;
+}
 async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
   const acp = harness.acp;
   if (!acp) return 1;
   const pluginPeer = pluginInstalled(harness.agent);
-  const resume = !pluginPeer && name ? recallHarnessSession(namedPeerId(harness.agent, name).peerId) : void 0;
+  const named = name ? namedPeerId(harness.agent, name) : void 0;
+  const resume = explicitResume(userArgs) ?? (named ? recallHarnessSession(named.peerId) : void 0);
+  let hosted;
+  let sessionId = "";
   const session = await startAcpSession({
     agent: harness.agent,
     bin,
@@ -34110,13 +34294,19 @@ async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
     resumeSessionId: resume,
     env: launchEnv(harness.agent, name),
     emit: (line) => process.stdout.write(line.endsWith("\n") ? line : line + "\n"),
-    stream: (text) => process.stdout.write(text)
+    stream: (text) => process.stdout.write(text),
+    onTurnSettled: () => {
+      const id = hosted?.peerId ?? pluginInboxPeerId(harness.agent, name, sessionId);
+      if (id) writeStatus(id, "idle");
+    }
   });
-  const hosted = pluginPeer ? void 0 : registerHostedPeer(harness.agent, cwd, name);
-  if (hosted) rememberHarnessSession(hosted.peerId, session.sessionId);
+  sessionId = session.sessionId;
+  hosted = pluginPeer ? void 0 : registerHostedPeer(harness.agent, cwd, name);
+  const memoryPeer = hosted?.peerId ?? named?.peerId;
+  if (memoryPeer) rememberHarnessSession(memoryPeer, session.sessionId);
   const stopPump = startInboxPump(
     hosted ? hosted.peerId : () => pluginInboxPeerId(harness.agent, name, session.sessionId),
-    (text, stillPending2) => session.prompt(text, stillPending2)
+    (text, stillPending2, withdrawn) => session.prompt(text, stillPending2, withdrawn)
   );
   const shutdown = () => session.close();
   process.on("SIGTERM", shutdown);

@@ -310,7 +310,7 @@ function withdrawEverywhere(peerId2, messageId) {
   if (sources.some((src) => fs3.existsSync(src))) return "claimed";
   return "missing";
 }
-function claimInbox(peerId2) {
+function claimInbox(peerId2, skip) {
   let files;
   try {
     files = fs3.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -319,6 +319,8 @@ function claimInbox(peerId2) {
   }
   const claimed = [];
   for (const file of files) {
+    const id2 = file.slice(0, -".json".length);
+    if (skip?.has(id2)) continue;
     const target = path5.join(ensureDir(archiveDir(peerId2)), file);
     try {
       fs3.renameSync(path5.join(inboxDir(peerId2), file), target);

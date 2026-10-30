@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from '../core/agents.ts';
-import { installsInScope } from '../core/installs.ts';
+import { pluginInstalled } from '../cli/launch.ts';
 import { VERSION } from '../core/version.ts';
 import { resolveArgvPath } from '../cli/entry.ts';
 import { LineRpc } from './rpc.ts';
@@ -25,6 +25,11 @@ export interface AcpLaunch {
   stream?: (text: string) => void;
   /** Raw child stderr, for the log file. */
   trace?: (line: string) => void;
+  /**
+   * No `session/prompt` is in flight. A Copilot turn the hook marked busy is idle again even when
+   * `agentStop` did not run.
+   */
+  onTurnSettled?: () => void;
 }
 
 export interface AcpSession {
@@ -40,7 +45,7 @@ export interface AcpSession {
   /** Stop reading stdin so a dead agent does not wait for Ctrl-D. */
   releaseStdin(): void;
   /** Resolves once the agent has accepted the turn, which may be before the turn finishes. */
-  prompt(text: string, stillPending?: () => boolean): Promise<boolean>;
+  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
   close(): void;
   exited: Promise<number>;
 }
@@ -59,7 +64,7 @@ interface McpServer {
  * The env array replaces the server's environment, so it carries the variables the user already has.
  */
 export function telepathyMcpServers(agent: Agent): McpServer[] {
-  if (installsInScope().some((install) => install.agent === agent)) return [];
+  if (pluginInstalled(agent)) return [];
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
   return [
@@ -157,7 +162,9 @@ const AUTH_FAILURE = /not logged in|login required|authentication (?:failed|requ
  * A prompt counts as accepted on the RPC result, on any `session/update` after the request
  * (including tool calls), or on `session/request_permission`.
  * `stillPending` is checked again immediately before `session/prompt`. A send that `fail()` already withdrew
- * is not submitted. A prompt already on the wire and not yet accepted is cancelled.
+ * is not submitted. A prompt already on the wire is cancelled only when `withdrawn` says the sender
+ * recalled it. Copilot's userPromptSubmitted hook claims the inbox copy of a prompt this host just
+ * injected; that copy is no longer pending, and cancelling it drops the turn.
  */
 export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
@@ -385,7 +392,10 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text: string, stillPending: () => boolean = () => true): Promise<boolean> {
+      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean): Promise<boolean> {
+        // Callers that only know "still in the inbox" keep the old cancel. The inbox pump passes
+        // `withdrawn` so a hook claim is not treated as a recall.
+        const recalled = withdrawn ?? (() => !stillPending());
         let resolveAccepted: (ok: boolean) => void = () => {};
         const accepted = new Promise<boolean>((resolve) => {
           resolveAccepted = resolve;
@@ -409,31 +419,30 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             rpc.notify('session/cancel', { sessionId });
           };
           const watch = setInterval(() => {
-            if (!settled && sent && !stillPending()) cancel();
+            if (!settled && sent && recalled()) cancel();
           }, 25);
           try {
-            if (!stillPending()) {
+            if (!stillPending() || recalled()) {
               finish(false);
               return;
             }
             onUpdate = (params) => {
               previous(params);
-              if (relevantUpdate(params) && stillPending()) finish(true);
+              if (relevantUpdate(params) && !recalled()) finish(true);
             };
             acceptDelivery = () => {
-              if (stillPending()) finish(true);
+              if (!recalled()) finish(true);
             };
             sent = true;
-            if (!stillPending()) {
+            if (!stillPending() || recalled()) {
               finish(false);
               return;
             }
             await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
-            if (stillPending()) finish(true);
-            else {
+            if (recalled()) {
               cancel();
               finish(false);
-            }
+            } else finish(true);
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const closed = message === 'agent exited' || message === 'agent stdin is closed';
@@ -451,6 +460,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             onUpdate = previous;
             acceptDelivery = undefined;
             activeTurns = Math.max(0, activeTurns - 1);
+            if (activeTurns === 0) options.onTurnSettled?.();
             clearAsk();
             endText();
           }

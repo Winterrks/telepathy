@@ -12,8 +12,9 @@ import { configuredEnv, inboxDir, stateDir } from '../src/core/paths.ts';
 import { configuredStableName, readPeer, registerSession } from '../src/core/peers.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
 import { readHeadlessRecord } from '../src/headless/peer.ts';
-import { parseRunArgs } from '../src/cli/run.ts';
-import { ROOT, makeSandbox, type Sandbox } from './helpers.ts';
+import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
+import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
+import { ROOT, fakeAgent, makeSandbox, type Sandbox } from './helpers.ts';
 
 const CLI = path.join(ROOT, 'src', 'cli.ts');
 const FAKE = path.join(ROOT, 'test', 'fixtures', 'fake-harness.mjs');
@@ -188,6 +189,11 @@ test('parseRunArgs keeps harness flags after the agent', () => {
   assert.equal(after.name, 'box');
   assert.equal(after.cwd, '/tmp');
   assert.deepEqual(after.userArgs, ['extra']);
+  assert.equal(explicitResume(['--resume', 'sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['--resume=sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['-r', 'sess-explicit']), 'sess-explicit');
+  assert.equal(explicitResume(['--resume']), undefined);
+  assert.equal(explicitResume(['--resume', '--acp']), undefined);
 });
 
 test('help, version, list, and an unknown agent', () => {
@@ -941,4 +947,198 @@ test('run does not install or edit the Gemini config', async () => {
 
 test('the real home state directory is untouched', () => {
   assert.equal(fs.existsSync(REAL_STATE), realStateBefore);
+});
+
+/** Moves the one inbox file aside, the way a hook claim (archive) or a recall (withdrawn) does. */
+function relocateInbox(peerId: string, destName: 'archive' | 'withdrawn'): string {
+  const srcDir = inboxDir(peerId);
+  const files = fs.readdirSync(srcDir).filter((name) => name.endsWith('.json'));
+  assert.equal(files.length, 1);
+  const dest = path.join(path.dirname(srcDir), destName);
+  fs.mkdirSync(dest, { recursive: true });
+  fs.renameSync(path.join(srcDir, files[0] as string), path.join(dest, files[0] as string));
+  return files[0] as string;
+}
+
+function statusOf(home: string, peerId: string): { status?: string; at?: string } {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(home, 'peers', peerId, 'status.json'), 'utf8')) as { status?: string; at?: string };
+  } catch {
+    return {};
+  }
+}
+
+test('a hook claim does not cancel an ACP prompt, and a real withdraw does', async () => {
+  const w = world({ FAKE_ACP_DELAY_MS: '800' });
+  confirmEnv();
+  process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
+  const peerId = 'copilot-h-gem';
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const claimed = sendMessage(self, 'copilot:gem', 'claim-not-cancel');
+    await waitFor(() =>
+      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('claim-not-cancel')) ? true : undefined,
+    );
+    relocateInbox(peerId, 'archive');
+    const sent = await claimed;
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/cancel'), false);
+    await waitFor(() => (statusOf(w.sb.home, peerId).status === 'idle' ? true : undefined));
+
+    const recalled = sendMessage(self, 'copilot:gem', 'withdraw-cancels');
+    await waitFor(() =>
+      w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('withdraw-cancels')) ? true : undefined,
+    );
+    relocateInbox(peerId, 'withdrawn');
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/cancel') ? true : undefined));
+    const failed = await recalled;
+    assert.equal(failed.ok, false);
+    await waitFor(() => (statusOf(w.sb.home, peerId).status === 'idle' ? true : undefined));
+    const prompts = w.readLog().filter((entry) => entry.method === 'session/prompt');
+    assert.equal(prompts.length, 2);
+  } finally {
+    await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
+test('an installed Copilot plugin still resumes the same harness session', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  plantCopilot(w.env.HOME as string);
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (first.out().includes('session sess-keep') ? true : undefined));
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(started?.name, 'gem');
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'harness-session.json')) ? true : undefined));
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+  const second = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/load') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-keep');
+    assert.equal(w.readLog().filter((entry) => entry.method === 'session/new').length, 1);
+    const starts = w.readLog().filter((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(starts.length, 2);
+    assert.ok(starts.every((entry) => entry.name === 'gem'));
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+    second.child.stdin.end();
+    await second.done;
+  } finally {
+    if (second.child.exitCode === null) second.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('telepathy run copilot --resume loads that session when the plugin is installed', async () => {
+  const w = world();
+  plantCopilot(w.env.HOME as string);
+  const launched = spawnCli(['run', 'copilot', '--resume', 'sess-explicit'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/load') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-explicit');
+    assert.equal(w.readLog().some((entry) => entry.method === 'session/new'), false);
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.ok(started?.args?.includes('--resume'));
+    assert.ok(started?.args?.includes('sess-explicit'));
+    launched.child.stdin.end();
+    await launched.done;
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('a named ACP session without the plugin still resumes and keeps its host peer', async () => {
+  const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
+  const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (first.out().includes('session sess-keep') ? true : undefined));
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')) ? true : undefined));
+    first.child.stdin.end();
+    await first.done;
+  } finally {
+    if (first.child.exitCode === null) first.child.kill('SIGKILL');
+  }
+  const second = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (second.out().includes('session sess-keep') ? true : undefined));
+    const loaded = w.readLog().find((entry) => entry.method === 'session/load');
+    assert.equal((loaded?.params as { sessionId?: string } | undefined)?.sessionId, 'sess-keep');
+    assert.equal(w.readLog().filter((entry) => entry.method === 'session/new').length, 1);
+    await waitFor(() => (fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')) ? true : undefined));
+    second.child.stdin.end();
+    await second.done;
+  } finally {
+    if (second.child.exitCode === null) second.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('copilot userPromptSubmitted skips a prompt the ACP host already injected', () => {
+  const w = world();
+  const agent = fakeAgent();
+  const hook = path.join(ROOT, 'src', 'hook.ts');
+  const env = { ...w.env, TELEPATHY_NAME: 'gem', TELEPATHY_AGENT_PID: String(agent.pid) };
+  const runHookSrc = (action: string, event: string, input: object) =>
+    spawnSync(process.execPath, [hook, '--agent', 'copilot', action, event], {
+      input: JSON.stringify(input),
+      env,
+      encoding: 'utf8',
+    });
+  const peerId = 'copilot-sess-keep';
+  try {
+    const started = runHookSrc('session-start', 'sessionStart', { sessionId: 'sess-keep', cwd: '/work' });
+    assert.equal(started.status, 0, started.stderr);
+    assert.equal(readPeer(peerId)?.name, 'gem');
+    const from = { id: 'claude-sender', agent: 'claude' as const, name: 'sender', address: 'claude:sender' };
+    const to = { id: peerId, agent: 'copilot' as const, name: 'gem', address: 'copilot:gem' };
+    const injected: Message = {
+      id: 'm-000000001-aaaaaa',
+      from,
+      to,
+      body: 'INJECTED-BODY',
+      sentAt: new Date().toISOString(),
+    };
+    const other: Message = {
+      id: 'm-000000002-bbbbbb',
+      from,
+      to,
+      body: 'OTHER-BODY',
+      sentAt: new Date().toISOString(),
+    };
+    writeToInbox(injected);
+    writeToInbox(other);
+    const submitted = runHookSrc('inbox', 'userPromptSubmitted', {
+      sessionId: 'sess-keep',
+      cwd: '/work',
+      prompt: formatAsUserTurn(injected),
+    });
+    assert.equal(submitted.status, 0, submitted.stderr);
+    assert.match(submitted.stdout, /OTHER-BODY/);
+    assert.doesNotMatch(submitted.stdout, /INJECTED-BODY/);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${other.id}.json`)), false);
+    assert.equal(statusOf(w.sb.home, peerId).status, 'busy');
+    const ended = runHookSrc('turn-end', 'agentStop', { sessionId: 'sess-keep', cwd: '/work' });
+    assert.equal(ended.status, 0, ended.stderr);
+    assert.equal(ended.stdout.trim(), '');
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), true);
+    assert.equal(statusOf(w.sb.home, peerId).status, 'idle');
+    const later = runHookSrc('inbox', 'userPromptSubmitted', { sessionId: 'sess-keep', cwd: '/work', prompt: 'just typing' });
+    assert.equal(later.status, 0, later.stderr);
+    assert.match(later.stdout, /INJECTED-BODY/);
+    assert.equal(fs.existsSync(path.join(inboxDir(peerId), `${injected.id}.json`)), false);
+  } finally {
+    agent.kill('SIGKILL');
+    w.restore();
+  }
 });

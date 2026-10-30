@@ -197,7 +197,7 @@ supported yet.
 copilot plugin marketplace add Winterrks/telepathy && copilot plugin install telepathy@telepathy
 ```
 
-Update: `copilot plugin update telepathy@telepathy`. Tested with Copilot CLI 1.0.88. Copilot asks before a tool
+Update: `copilot plugin update telepathy@telepathy`. Copilot CLI 1.0.105 or newer is required; 0.0.372 cannot load the plugin. Copilot asks before a tool
 runs for the first time, telepathy's included.
 
 ### Qwen Code

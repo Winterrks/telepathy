@@ -103,6 +103,8 @@ if (args.includes('--sleep')) {
   let pending = null;
   const rl = readline.createInterface({ input: process.stdin });
   const finishPrompt = async (msg) => {
+    const delay = Number(process.env.FAKE_ACP_DELAY_MS || 0);
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
     if (process.env.FAKE_ACP_REJECT === '1') {
       send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'rejected' } });
       return;

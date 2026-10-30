@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { Agent } from './agents.ts';
-import { configuredEnv } from './paths.ts';
+import { configuredEnv, readJson } from './paths.ts';
 
 /** One agent's installed copy of telepathy, found on disk. */
 export interface Install {
@@ -174,13 +174,182 @@ function extension(agent: 'qwen'): Install[] {
   return version ? [{ agent, version, dir }] : [];
 }
 
-function copilot(): Install[] {
-  const root = path.join(home(), '.copilot', 'installed-plugins');
+const COPILOT_MANIFESTS = ['.github/plugin/plugin.json', '.plugin/plugin.json', 'plugin.json', '.claude-plugin/plugin.json'];
+
+function manifestAt(dir: string): { name?: string; version?: string } | undefined {
+  for (const rel of COPILOT_MANIFESTS) {
+    const body = readJson<{ name?: unknown; version?: unknown }>(path.join(dir, rel));
+    if (!body) continue;
+    const name = typeof body.name === 'string' ? body.name : undefined;
+    const version = typeof body.version === 'string' ? body.version : undefined;
+    if (!name && !version) continue;
+    return { name, version };
+  }
+  return undefined;
+}
+
+function asCopilotInstall(dir: string, marketplace: string | undefined, version?: string): Install | undefined {
+  const manifest = manifestAt(dir);
+  if (manifest?.name && manifest.name !== 'telepathy') return undefined;
+  const found = manifest?.version ?? version;
+  if (!found) return undefined;
+  // A config record already named telepathy. A folder counts when its manifest does, or when it is named telepathy.
+  const named = manifest?.name === 'telepathy' || path.basename(dir) === 'telepathy' || (!manifest && version !== undefined);
+  if (!named) return undefined;
+  return { agent: 'copilot', version: found, dir, ...(marketplace ? { marketplace } : {}) };
+}
+
+/** Marketplace copies plus `_direct/<source>` and `local/<name>`, where the child folder is the plugin. */
+function copilotTree(root: string): Install[] {
   return list(root).flatMap((marketplace) => {
-    const dir = path.join(root, marketplace, 'telepathy');
-    const version = readVersion(path.join(dir, '.github', 'plugin', 'plugin.json'));
-    return version ? [{ agent: 'copilot' as const, version, dir, marketplace }] : [];
+    const marketName = marketplace === '_direct' ? undefined : marketplace;
+    return list(path.join(root, marketplace)).flatMap((child) => {
+      const install = asCopilotInstall(path.join(root, marketplace, child), marketName);
+      return install ? [install] : [];
+    });
   });
+}
+
+function stringField(record: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+/** A local-folder install: `cache_path`, or `source: { source: "local", path }`. */
+function installFromRecord(entry: unknown): Install | undefined {
+  if (!entry || typeof entry !== 'object') return undefined;
+  const record = entry as Record<string, unknown>;
+  if (record.name !== 'telepathy' || record.enabled === false) return undefined;
+  const source = record.source;
+  let sourcePath: string | undefined;
+  if (source && typeof source === 'object') {
+    const body = source as { source?: unknown; path?: unknown };
+    const kind = typeof body.source === 'string' ? body.source : '';
+    if (typeof body.path === 'string' && (!kind || kind === 'local' || kind === 'directory')) sourcePath = body.path;
+  }
+  const dir = [stringField(record, 'cache_path', 'cachePath'), sourcePath].find((candidate) => candidate && fs.existsSync(candidate));
+  if (!dir) return undefined;
+  const marketplace = typeof record.marketplace === 'string' && record.marketplace && record.marketplace !== 'local' ? record.marketplace : undefined;
+  const version = typeof record.version === 'string' ? record.version : undefined;
+  return asCopilotInstall(dir, marketplace, version);
+}
+
+function installsFromConfigFile(file: string): Install[] {
+  const body = readJson<Record<string, unknown>>(file);
+  if (!body) return [];
+  const lists = [body.installedPlugins, body.installed_plugins].filter(Array.isArray) as unknown[][];
+  return lists.flatMap((list) => list.flatMap((entry) => {
+    const install = installFromRecord(entry);
+    return install ? [install] : [];
+  }));
+}
+
+/** Directory marketplaces (`extraKnownMarketplaces`) whose source is a local folder. */
+function marketplaceDirs(file: string, base: string): string[] {
+  const markets = readJson<Record<string, unknown>>(file)?.extraKnownMarketplaces;
+  if (!markets || typeof markets !== 'object') return [];
+  const dirs: string[] = [];
+  for (const value of Object.values(markets)) {
+    if (!value || typeof value !== 'object') continue;
+    const source = (value as { source?: unknown }).source;
+    if (!source || typeof source !== 'object') continue;
+    const body = source as { source?: unknown; path?: unknown };
+    const kind = typeof body.source === 'string' ? body.source : '';
+    if (typeof body.path !== 'string' || !body.path) continue;
+    if (kind && kind !== 'directory' && kind !== 'local') continue;
+    dirs.push(path.resolve(base, body.path));
+  }
+  return dirs;
+}
+
+function pluginsInFolder(dir: string, marketplace?: string): Install[] {
+  const own = asCopilotInstall(dir, marketplace);
+  const children = list(dir).flatMap((child) => {
+    const install = asCopilotInstall(path.join(dir, child), marketplace);
+    return install ? [install] : [];
+  });
+  return [...(own ? [own] : []), ...children];
+}
+
+/** Working directory `telepathy run --cwd` will give Copilot. Relative plugin paths resolve against it. */
+function launchCwd(argv: string[] = process.argv): string {
+  let cwd = process.cwd();
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--cwd' && argv[i + 1]) cwd = path.resolve(argv[++i]);
+    else if (arg.startsWith('--cwd=')) cwd = path.resolve(arg.slice('--cwd='.length));
+  }
+  return cwd;
+}
+
+/** `--plugin-dir <path>` and `--plugin-dir=<path>` on this process. */
+function pluginDirsFromArgv(argv: string[] = process.argv): string[] {
+  const cwd = launchCwd(argv);
+  const dirs: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--plugin-dir' && argv[i + 1] && !argv[i + 1].startsWith('-')) dirs.push(path.resolve(cwd, argv[++i]));
+    else if (arg.startsWith('--plugin-dir=')) dirs.push(path.resolve(cwd, arg.slice('--plugin-dir='.length)));
+  }
+  return dirs;
+}
+
+function copilotConfigDirs(): string[] {
+  const dirs: string[] = [];
+  const add = (dir: string | undefined) => {
+    if (!dir) return;
+    const resolved = path.resolve(dir);
+    if (!dirs.includes(resolved)) dirs.push(resolved);
+  };
+  add(configuredEnv('COPILOT_HOME'));
+  add(path.join(home(), '.copilot'));
+  // A sandbox keeps its own Copilot config next to TELEPATHY_HOME, which is not ~/.copilot.
+  add(configuredEnv('TELEPATHY_HOME') ? path.join(configuredEnv('TELEPATHY_HOME') as string, '.copilot') : undefined);
+  for (const root of isolatedStateRoots() ?? []) add(path.join(root, '.copilot'));
+  return dirs;
+}
+
+function dedupeInstalls(installs: Install[]): Install[] {
+  const byDir = new Map<string, Install>();
+  for (const install of installs) {
+    let key = install.dir;
+    try {
+      key = resolveReal(install.dir);
+    } catch {
+      // keep the path we have
+    }
+    const prev = byDir.get(key);
+    if (!prev || (install.marketplace && !prev.marketplace && !isNewer(prev.version, install.version)) || isNewer(install.version, prev.version)) {
+      byDir.set(key, install);
+    }
+  }
+  return [...byDir.values()];
+}
+
+/**
+ * Copilot loads plugins from `COPILOT_HOME` (default `~/.copilot`), from a local folder recorded in
+ * `config.json`, from `--plugin-dir`, and from a config that lives under the active `TELEPATHY_HOME`.
+ * Looking only at `~/.copilot/installed-plugins/<marketplace>/telepathy` misses those and a second peer is registered.
+ */
+function copilot(): Install[] {
+  const configs = copilotConfigDirs();
+  const fromConfigs = configs.flatMap((dir) => [
+    ...copilotTree(path.join(dir, 'installed-plugins')),
+    ...installsFromConfigFile(path.join(dir, 'config.json')),
+    ...installsFromConfigFile(path.join(dir, 'settings.json')),
+    ...marketplaceDirs(path.join(dir, 'settings.json'), dir).flatMap((folder) => pluginsInFolder(folder)),
+  ]);
+  const cwd = launchCwd();
+  const projectSettings = [path.join(cwd, '.github', 'copilot', 'settings.json'), path.join(cwd, '.github', 'copilot', 'settings.local.json')];
+  const fromProject = projectSettings.flatMap((file) => [
+    ...installsFromConfigFile(file),
+    ...marketplaceDirs(file, cwd).flatMap((folder) => pluginsInFolder(folder)),
+  ]);
+  const fromArgs = pluginDirsFromArgv().flatMap((dir) => pluginsInFolder(dir));
+  return dedupeInstalls([...fromConfigs, ...fromProject, ...fromArgs]);
 }
 
 /** Devin keeps `<data>/devin/cli/plugins/cache/<source>/<version>`. */
