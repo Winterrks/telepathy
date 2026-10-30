@@ -26,7 +26,13 @@ import {
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
 import { VERSION } from './core/version.ts';
+import { scheduleAutoUpdate } from './auto-update.ts';
 
+/**
+ * The plugin MCP server. The standalone `server.mjs` bundle calls this immediately. The `telepathy` CLI
+ * calls it only for `telepathy mcp`, so importing this module does not take over stdio.
+ */
+export async function startMcpServer(): Promise<void> {
 const argv = process.argv.slice(2);
 const flag = (name: string) => {
   const value = argv[argv.indexOf(name) + 1];
@@ -106,6 +112,8 @@ const relink = setInterval(() => {
 relink.unref();
 debugLog('server', `started for ${selfId}`);
 startWakeFlusher();
+// A version check, at most once a day, in a detached process. It must not delay this server's handshake.
+scheduleAutoUpdate('server');
 
 const presenceFor = new Set<string>();
 
@@ -218,3 +226,4 @@ server.registerTool(
 );
 
 await server.connect(new StdioServerTransport());
+}

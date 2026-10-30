@@ -3,8 +3,14 @@
     "telepathy": {
       "type": "local",
       "command": "node",
-      "args": ["${PLUGIN_ROOT}/dist/server.mjs", "--agent", "copilot"],
-      "tools": ["*"]
+      "args": [
+        "${PLUGIN_ROOT}/dist/server.mjs",
+        "--agent",
+        "copilot"
+      ],
+      "tools": [
+        "*"
+      ]
     }
   }
 }

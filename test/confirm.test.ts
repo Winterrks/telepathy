@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
-import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall } from '../src/core/confirm.ts';
+import { beginToolCall, confirmAbortMs, confirmDelivery, confirmGraceMs, confirmWindow, endToolCall, transcriptHasMarker } from '../src/core/confirm.ts';
 import { sendMessage } from '../src/core/deliver.ts';
-import { messageMarker } from '../src/core/messages.ts';
+import { claimInbox, messageMarker, type Message, writeToInbox } from '../src/core/messages.ts';
 import { archiveDir, inboxDir, withdrawnDir } from '../src/core/paths.ts';
 import { readPeer, registerPresence, registerSession } from '../src/core/peers.ts';
 import { fakeAgent, killAndWait, makeSandbox, type Sandbox, waitFor } from './helpers.ts';
@@ -64,10 +64,10 @@ describe('transcript confirmation', () => {
     const key = `g${n++}`;
     registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-tx');
     registerSession('codex', fromProc.pid, { sessionId: 'thread-tx', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
-    registerPresence('gemini', toProc.pid, { cwd: '/w/docs' }, `gemini-${key}`);
-    registerSession('gemini', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
+    registerPresence('qwen', toProc.pid, { cwd: '/w/docs' }, `qwen-${key}`);
+    registerSession('qwen', toProc.pid, { sessionId: key, cwd: '/w/docs', source: 'hook' });
     const from = readPeer('codex-thread-tx');
-    const to = readPeer(`gemini-${key}`);
+    const to = readPeer(`qwen-${key}`);
     assert.ok(from && to);
     return { from, to };
   };
@@ -133,6 +133,48 @@ describe('transcript confirmation', () => {
     assert.match(result.status, new RegExp(`The transcript shows ${messageMarker(msg.id)}`));
   });
 
+  test('an Antigravity brain transcript counts when the extra dir is an unexpanded placeholder', async () => {
+    process.env.TELEPATHY_CONFIRM_WAIT = '1';
+    process.env.TELEPATHY_CONFIRM_ABORT_MS = '2000';
+    process.env.TELEPATHY_CONFIRM_GRACE_MS = '200';
+    process.env.TELEPATHY_CONFIRM_POLL_MS = '20';
+    const home = path.join(sb.home, 'agy-home');
+    fs.mkdirSync(home, { recursive: true });
+    const prevHome = process.env.HOME;
+    process.env.HOME = home;
+    process.env.TELEPATHY_TRANSCRIPT_DIR = '${TELEPATHY_TRANSCRIPT_DIR}';
+    const fromProc = fakeAgent();
+    const toProc = fakeAgent();
+    agents.push(fromProc, toProc);
+    const key = `agy${n++}`;
+    registerPresence('codex', fromProc.pid, { cwd: '/w/from' }, 'codex-thread-tx');
+    registerSession('codex', fromProc.pid, { sessionId: 'thread-tx', cwd: '/w/from', source: 'hook', codexHome: sb.codexHome });
+    registerSession('antigravity', toProc.pid, { sessionId: key, cwd: '/w/app', source: 'hook' });
+    const from = readPeer('codex-thread-tx');
+    const to = readPeer(`antigravity-${key}`);
+    assert.ok(from && to);
+    try {
+      const pending = sendMessage(from, to.id, 'agy confirm');
+      const file = await waitFor(() => {
+        try {
+          return fs.readdirSync(inboxDir(to.id))[0];
+        } catch {
+          return undefined;
+        }
+      });
+      const msg = JSON.parse(fs.readFileSync(path.join(inboxDir(to.id), file), 'utf8')) as { id: string };
+      const transcript = path.join(home, '.gemini', 'antigravity-ide', 'brain', key, '.system_generated', 'logs', 'transcript.jsonl');
+      fs.mkdirSync(path.dirname(transcript), { recursive: true });
+      fs.writeFileSync(transcript, `${messageMarker(msg.id)}\n`);
+      const result = await pending;
+      assert.equal(result.ok, true, result.ok ? '' : result.error);
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+    }
+  });
+
   test('a timeout withdraws the inbox and is not success', async () => {
     arm('200', '80');
     const { from, to } = pair();
@@ -185,8 +227,32 @@ describe('transcript confirmation', () => {
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /^Message failed:/);
-    assert.match(result.error, /already claimed/);
+    assert.match(result.error, /withdrawn/);
+    assert.doesNotMatch(result.error, /already claimed/);
+    assert.equal(fs.existsSync(path.join(archive, file)), false);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), file)), true);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), file)), false);
     assertNoRepeatedSentence(result.error);
+  });
+
+  test('an expired message and a withdrawn marker are not claimed again', () => {
+    const { to } = pair();
+    const expired: Message = {
+      id: `m-expired00-${n.toString(16).padStart(6, '0')}`,
+      from: { id: 'codex-1', agent: 'codex', name: 'from', address: 'codex:from' },
+      to: { id: to.id, agent: to.agent, name: to.name, address: to.address },
+      body: 'too late',
+      sentAt: new Date().toISOString(),
+      deliverBy: Date.now() - 1,
+    };
+    writeToInbox(expired);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${expired.id}.json`)), true);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${expired.id}.json`)), false);
+    writeToInbox(expired);
+    assert.equal(claimInbox(to.id).length, 0);
+    assert.equal(fs.existsSync(path.join(inboxDir(to.id), `${expired.id}.json`)), false);
   });
 
   test('a session that is not running stores nothing', async () => {
@@ -360,5 +426,68 @@ describe('transcript confirmation', () => {
     assert.equal(fs.existsSync(path.join(withdrawnDir(to.id), `${message.id}.json`)), true);
     assert.match(fs.readFileSync(sb.codexLog, 'utf8').slice(before.length), /app-server/);
     assert.deepEqual(JSON.parse(fs.readFileSync(`${sb.codexLog}.queue.json`, 'utf8')), []);
+  });
+
+  test('copilot confirm reads the recorded COPILOT_HOME log and a pump transcript without hosted.json', () => {
+    const savedHome = process.env.HOME;
+    const savedCopilot = process.env.COPILOT_HOME;
+    const savedTranscript = process.env.TELEPATHY_TRANSCRIPT_DIR;
+    delete process.env.COPILOT_HOME;
+    delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+    const home = path.join(sb.home, 'empty-home');
+    fs.mkdirSync(home, { recursive: true });
+    process.env.HOME = home;
+    const proc = fakeAgent();
+    agents.push(proc);
+    const sessionId = 'sess-copilot';
+    const id = 'copilot-sess-copilot';
+    const copilotHome = path.join(sb.home, 'copilot-home');
+    const recorded = path.join(copilotHome, 'session-state', sessionId, 'events.jsonl');
+    try {
+      registerPresence('copilot', proc.pid, { cwd: '/work' }, id);
+      registerSession('copilot', proc.pid, { sessionId, cwd: '/work', source: 'hook', transcriptPath: recorded });
+      const peer = readPeer(id);
+      assert.ok(peer);
+      const inHome = messageMarker('m-000000009-abc123');
+      assert.equal(transcriptHasMarker(peer, inHome), false);
+      fs.mkdirSync(path.dirname(recorded), { recursive: true });
+      fs.writeFileSync(recorded, JSON.stringify({ type: 'session.start', data: { initialPrompt: inHome } }) + '\n');
+      assert.equal(transcriptHasMarker(peer, inHome), false);
+      fs.appendFileSync(recorded, JSON.stringify({ type: 'user.message', data: { content: inHome } }) + '\n');
+      assert.equal(transcriptHasMarker(peer, inHome), true);
+      const peerDir = path.join(sb.home, 'peers', id);
+      assert.equal(fs.existsSync(path.join(peerDir, 'hosted.json')), false);
+
+      const pumped = messageMarker('m-00000000a-def456');
+      assert.equal(transcriptHasMarker(peer, pumped), false);
+      fs.appendFileSync(path.join(peerDir, 'delivery-transcript.jsonl'), `${pumped}\n`);
+      assert.equal(transcriptHasMarker(peer, pumped), true);
+
+      const unrecorded = fakeAgent();
+      agents.push(unrecorded);
+      registerPresence('copilot', unrecorded.pid, { cwd: '/work' }, 'copilot-sess-plain');
+      registerSession('copilot', unrecorded.pid, { sessionId: 'sess-plain', cwd: '/work', source: 'hook' });
+      const plain = readPeer('copilot-sess-plain');
+      assert.ok(plain);
+      const onlyCustom = messageMarker('m-00000000b-aabbcc');
+      const customOnly = path.join(copilotHome, 'session-state', 'sess-plain', 'events.jsonl');
+      fs.mkdirSync(path.dirname(customOnly), { recursive: true });
+      fs.writeFileSync(customOnly, `${onlyCustom}\n`);
+      assert.equal(transcriptHasMarker(plain, onlyCustom), false);
+      const fallback = path.join(home, '.copilot', 'session-state', 'sess-plain', 'events.jsonl');
+      fs.mkdirSync(path.dirname(fallback), { recursive: true });
+      fs.writeFileSync(
+        fallback,
+        JSON.stringify({ type: 'hook.start', data: { hookType: 'userPromptSubmitted', prompt: onlyCustom } }) + '\n',
+      );
+      assert.equal(transcriptHasMarker(plain, onlyCustom), true);
+    } finally {
+      if (savedHome === undefined) delete process.env.HOME;
+      else process.env.HOME = savedHome;
+      if (savedCopilot === undefined) delete process.env.COPILOT_HOME;
+      else process.env.COPILOT_HOME = savedCopilot;
+      if (savedTranscript === undefined) delete process.env.TELEPATHY_TRANSCRIPT_DIR;
+      else process.env.TELEPATHY_TRANSCRIPT_DIR = savedTranscript;
+    }
   });
 });

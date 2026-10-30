@@ -13,7 +13,7 @@ export interface GuideOptions {
 
 export function guideLines(agent: Agent, opts: GuideOptions = {}): string[] {
   const lines = [
-    'telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI, OpenCode and more).',
+    'telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and more).',
     agent === 'claude'
       ? "- ListAgents (or list_peers) also lists other agents' sessions. Message a session that is not Claude Code with send_message. SendMessage only reaches Claude sessions; telepathy stops a SendMessage aimed at another harness, and that result is an error."
       : '- list_peers shows the sessions you can reach; send_message delivers.',

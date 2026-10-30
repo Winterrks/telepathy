@@ -3,9 +3,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { findRollout } from './codex-activity.ts';
 import { deleteFromCodexQueue } from './codex-queue.ts';
-import { archiveSettled, messageMarker, type Message } from './messages.ts';
-import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir } from './paths.ts';
-import { claudeConfigDir, isPeerAlive, notePeerExit, type Peer, peerRef } from './peers.ts';
+import { archiveSettled, messageMarker, type Message, withdrawEverywhere } from './messages.ts';
+import { archiveDir, configuredEnv, envDurationMs, inboxDir, peerDir, readJson, withdrawnDir } from './paths.ts';
+import { claudeConfigDir, copilotEventsFile, isPeerAlive, notePeerExit, type Peer, peerRef, readSession } from './peers.ts';
 import { cancelWake } from './wake.ts';
 
 /**
@@ -22,7 +22,7 @@ export function confirmAbortMs(): number {
   // 100s + 10s grace is 110s. Claude moves a live tool call to the background at about 120s, and the
   // return after the grace period does not wait on anything else. When a tool call has been marked,
   // that 110s is measured from the mark, so listing before the wait counts against it.
-  return envMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
+  return envDurationMs('TELEPATHY_CONFIRM_ABORT_MS', 100_000);
 }
 
 /** Set at the start of a tool call. Unset, the 110s starts when the wait itself starts. */
@@ -54,16 +54,11 @@ export function confirmWindow(now = Date.now()): { abort: number; grace: number;
 }
 
 export function confirmGraceMs(): number {
-  return envMs('TELEPATHY_CONFIRM_GRACE_MS', 10_000);
+  return envDurationMs('TELEPATHY_CONFIRM_GRACE_MS', 10_000);
 }
 
 export function confirmPollMs(): number {
-  return Math.max(15, envMs('TELEPATHY_CONFIRM_POLL_MS', 200));
-}
-
-function envMs(name: string, fallback: number): number {
-  const n = Number(process.env[name]);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  return Math.max(15, envDurationMs('TELEPATHY_CONFIRM_POLL_MS', 200));
 }
 
 const FULL_READ = 32 * 1024 * 1024;
@@ -80,26 +75,60 @@ export function transcriptHasMarker(peer: Peer | undefined, marker: string): boo
 }
 
 /**
+ * The inbox pump writes this when it accepts a turn. A plugin-owned peer has no `hosted.json`,
+ * and the file is still proof: the sender cannot see `COPILOT_HOME`.
+ */
+function hostedTranscript(peer: Peer, marker: string): TranscriptLook | undefined {
+  const file = path.join(peerDir(peer.id), 'delivery-transcript.jsonl');
+  if (!fs.existsSync(file)) return undefined;
+  return { located: true, found: fileHas(file, marker) };
+}
+
+/**
  * Searches the recipient's transcript for the marker.
- * `TELEPATHY_TRANSCRIPT_DIR`, when set, is the whole search: a directory that exists counts as located even
- * when the marker is absent. Otherwise each harness has its own files (see the design note).
+ * `TELEPATHY_TRANSCRIPT_DIR`, when set to a real directory, is searched in addition to the harness files.
+ * It never replaces them: an unexpanded `${...}` token is ignored. A hosted peer's delivery transcript counts too.
  */
 export function inspectTranscript(peer: Peer, marker: string): TranscriptLook {
-  const override = process.env.TELEPATHY_TRANSCRIPT_DIR;
-  if (override) {
-    if (!fs.existsSync(override)) return { located: false, found: false };
-    return { located: true, found: treeHas(override, marker, 4) };
-  }
+  const hosted = hostedTranscript(peer, marker);
+  if (hosted?.found) return hosted;
+  const harness = inspectHarnessTranscript(peer, marker);
+  if (harness.found || !hosted) return harness;
+  return hosted;
+}
+
+function inspectHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
+  const harness = searchHarnessTranscript(peer, marker);
+  const extra = configuredEnv('TELEPATHY_TRANSCRIPT_DIR');
+  if (!extra) return harness;
+  const extraFound = fs.existsSync(extra) && treeHas(extra, marker, 4);
+  if (extraFound) return { located: true, found: true };
+  if (harness.found) return harness;
+  return { located: harness.located || fs.existsSync(extra), found: false };
+}
+
+function searchHarnessTranscript(peer: Peer, marker: string): TranscriptLook {
   if (peer.agent === 'claude') return claudeTranscript(peer, marker);
   if (peer.agent === 'codex') return codexTranscript(peer, marker);
   if (peer.agent === 'opencode' || peer.agent === 'kilo') return opencodeTranscript(marker);
-  if (peer.agent === 'gemini') return geminiTranscript(marker);
-  if (peer.agent === 'copilot' && peer.sessionId) {
-    const file = path.join(os.homedir(), '.copilot', 'session-state', peer.sessionId, 'events.jsonl');
-    if (!fs.existsSync(file)) return { located: false, found: false };
-    return { located: true, found: fileHas(file, marker) };
-  }
+  if (peer.agent === 'antigravity') return antigravityTranscript(peer, marker);
+  if (peer.agent === 'copilot' && peer.sessionId) return copilotTranscript(peer, marker);
   return { located: false, found: false };
+}
+
+/**
+ * The hook records `transcriptPath` because the sender does not have the recipient's `COPILOT_HOME`.
+ * `~/.copilot` remains the fallback when nothing was recorded.
+ */
+function copilotTranscript(peer: Peer, marker: string): TranscriptLook {
+  const files = new Set<string>();
+  const recorded = readSession(peer.id)?.transcriptPath;
+  if (recorded && !UNEXPANDED_PATH.test(recorded)) files.add(recorded);
+  if (peer.sessionId) files.add(copilotEventsFile(peer.sessionId));
+  const existing = [...files].filter((file) => fs.existsSync(file));
+  if (!existing.length) return { located: false, found: false };
+  // sessionStart logs the same text as initialPrompt before Copilot records user.message.
+  return { located: true, found: existing.some((file) => copilotLogHasMarker(file, marker)) };
 }
 
 function claudeTranscript(peer: Peer, marker: string): TranscriptLook {
@@ -148,12 +177,26 @@ function opencodeTranscript(marker: string): TranscriptLook {
   return { located: false, found: false };
 }
 
-function geminiTranscript(marker: string): TranscriptLook {
-  const home = process.env.GEMINI_CLI_HOME || path.join(os.homedir(), '.gemini');
-  const tmp = path.join(home, 'tmp');
-  if (!fs.existsSync(tmp)) return { located: false, found: false };
-  return { located: true, found: treeHas(tmp, marker, 4) };
+/**
+ * Antigravity writes `<app_data_dir>/brain/<conversation id>/.system_generated/logs/transcript.jsonl`.
+ * The hook's `transcriptPath` wins. Otherwise each surface's brain directory is tried.
+ */
+function antigravityTranscript(peer: Peer, marker: string): TranscriptLook {
+  const files: string[] = [];
+  const recorded = readSession(peer.id)?.transcriptPath;
+  if (recorded && !UNEXPANDED_PATH.test(recorded)) files.push(recorded);
+  if (peer.sessionId) {
+    const root = path.join(os.homedir(), '.gemini');
+    for (const dir of ['antigravity-cli', 'antigravity-ide', 'antigravity'] as const) {
+      files.push(path.join(root, dir, 'brain', peer.sessionId, '.system_generated', 'logs', 'transcript.jsonl'));
+    }
+  }
+  const existing = [...new Set(files)].filter((file) => fs.existsSync(file));
+  if (!existing.length) return { located: false, found: false };
+  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
 }
+
+const UNEXPANDED_PATH = /^\$\{[^}]+\}$/;
 
 function treeHas(dir: string, marker: string, depth: number): boolean {
   if (depth < 0) return false;
@@ -179,36 +222,70 @@ function treeHas(dir: string, marker: string, depth: number): boolean {
   return false;
 }
 
-function fileHas(file: string, marker: string): boolean {
+function readTranscriptText(file: string): string | undefined {
   let fd: number | undefined;
   try {
     const st = fs.statSync(file);
-    if (!st.isFile() || st.size === 0) return false;
+    if (!st.isFile() || st.size === 0) return undefined;
     fd = fs.openSync(file, 'r');
     const start = st.size <= FULL_READ ? 0 : Math.max(0, st.size - TAIL_READ);
     const buf = Buffer.alloc(st.size - start);
     fs.readSync(fd, buf, 0, buf.length, start);
-    return buf.includes(marker);
+    return buf.toString('utf8');
   } catch {
-    return false;
+    return undefined;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
 }
 
+function fileHas(file: string, marker: string): boolean {
+  return readTranscriptText(file)?.includes(marker) ?? false;
+}
+
+/** Copilot events that mean the prompt is in the session. sessionStart's initialPrompt is not one of them. */
+const COPILOT_DELIVERY_EVENTS = new Set(['user.message', 'userPromptSubmitted']);
+
+function copilotEventNames(record: unknown): string[] {
+  if (!record || typeof record !== 'object') return [];
+  const body = record as Record<string, unknown>;
+  const names: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === 'string' && value) names.push(value);
+  };
+  for (const key of ['type', 'event', 'name']) push(body[key]);
+  const data = body.data;
+  if (data && typeof data === 'object') {
+    const nested = data as Record<string, unknown>;
+    for (const key of ['type', 'event', 'hook', 'hookEventName', 'hookType']) push(nested[key]);
+  }
+  return names;
+}
+
+/** True when a user.message line, or a hook.start whose hookType is userPromptSubmitted, carries `marker`. */
+export function copilotLogHasMarker(file: string, marker: string): boolean {
+  const text = readTranscriptText(file);
+  if (!text || !text.includes(marker)) return false;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.includes(marker)) continue;
+    try {
+      if (copilotEventNames(JSON.parse(trimmed)).some((name) => COPILOT_DELIVERY_EVENTS.has(name))) return true;
+    } catch {
+      // a partial tail line, or a line that is not an event
+    }
+  }
+  return false;
+}
+
 export type WithdrawResult = 'withdrawn' | 'claimed' | 'missing';
 
-/** Moves an inbox file aside. A file already in `archive/` was claimed and stays there. */
+/**
+ * Moves the inbox copy, or a copy a consumer already claimed into `archive/`, into `withdrawn/`.
+ * A claimed file is not proof the model saw it, and leaving it in `archive/` lets that consumer retry.
+ */
 export function withdrawPending(peerId: string, messageId: string): WithdrawResult {
-  const src = path.join(inboxDir(peerId), `${messageId}.json`);
-  const dest = path.join(ensureDir(withdrawnDir(peerId)), `${messageId}.json`);
-  try {
-    fs.renameSync(src, dest);
-    return 'withdrawn';
-  } catch {
-    if (fs.existsSync(path.join(archiveDir(peerId), `${messageId}.json`))) return 'claimed';
-    return 'missing';
-  }
+  return withdrawEverywhere(peerId, messageId);
 }
 
 function storedMessage(peerId: string, messageId: string): Message | undefined {
@@ -305,8 +382,9 @@ interface Retract {
 }
 
 /**
- * Every failure withdraws the inbox copy, deletes a queued Codex item, and cancels a wake that is still
- * on disk. A file already in `withdrawn/` stays there. Nothing is moved back to the inbox.
+ * Every failure withdraws the inbox copy and a copy already claimed into `archive/`, deletes a queued
+ * Codex item, and cancels a wake that is still on disk. A file already in `withdrawn/` stays there.
+ * Nothing is moved back to the inbox.
  */
 async function retract(peer: Peer, messageId: string, routeStatus: string, deleteMs: number): Promise<Retract> {
   const stored = storedMessage(peer.id, messageId);

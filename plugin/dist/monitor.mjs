@@ -15,13 +15,26 @@ import path2 from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+var UNEXPANDED = /^\$\{[^}]+\}$/;
+function scrubPlaceholderEnv(env = process.env) {
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value === "string" && UNEXPANDED.test(value.trim())) delete env[key];
+  }
+}
+scrubPlaceholderEnv();
+function configuredEnv(name, env = process.env) {
+  const value = env[name]?.trim();
+  if (!value || UNEXPANDED.test(value)) return void 0;
+  return value;
+}
 function stateDir() {
-  return process.env.TELEPATHY_HOME || path.join(os.homedir(), ".telepathy");
+  return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
 }
 var peersDir = () => path.join(stateDir(), "peers");
 var peerDir = (id2) => path.join(peersDir(), id2);
 var inboxDir = (id2) => path.join(peerDir(id2), "inbox");
 var archiveDir = (id2) => path.join(peerDir(id2), "archive");
+var withdrawnDir = (id2) => path.join(peerDir(id2), "withdrawn");
 function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true, mode: 448 });
   return dir;
@@ -72,7 +85,6 @@ var AGENT_IDS = [
   "codex",
   "opencode",
   "kilo",
-  "gemini",
   "qwen",
   "copilot",
   "cursor",
@@ -91,14 +103,6 @@ var SPECS = {
   codex: { id: "codex", label: "Codex", names: ["codex"] },
   opencode: { id: "opencode", label: "OpenCode", names: ["opencode", ".opencode"], script: /(^|[\s/])opencode(\.js)?(\s|$)/ },
   kilo: { id: "kilo", label: "Kilo Code", names: ["kilo", "kilocode"], script: /(^|[\s/])kilo(code)?(\.js)?(\s|$)/ },
-  gemini: {
-    id: "gemini",
-    label: "Gemini CLI",
-    names: ["gemini"],
-    script: /(^|[\s/])gemini(\.js)?(\s|$)/,
-    env: ["GEMINI_CLI"],
-    nextTurnHook: true
-  },
   qwen: {
     id: "qwen",
     label: "Qwen Code",
@@ -133,6 +137,7 @@ var SPECS = {
     nextTurnHook: true
   },
   devin: { id: "devin", label: "Devin CLI", names: ["devin"], env: ["DEVIN_PLUGIN_ROOT", "DEVIN_PROJECT_DIR"], nextTurnHook: true },
+  // One plugin for the App, CLI, and IDE. The CLI TUI is turn-boundary only. The App sidecar wakes idle chats.
   antigravity: { id: "antigravity", label: "Antigravity", names: ["agy", "antigravity"], nextTurnHook: true },
   hermes: { id: "hermes", label: "Hermes Agent", names: ["hermes"], script: /(^|[\s/])hermes(\s|$)/ },
   openclaw: { id: "openclaw", label: "OpenClaw", names: ["openclaw"], script: /(^|[\s/])openclaw(\.mjs|\.js)?(\s|$)/ },
@@ -278,7 +283,34 @@ var peerRef = (peer) => `${peer.address} [${peer.id}]`;
 // src/core/messages.ts
 var ARCHIVE_KEEP = 200;
 var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
-function claimInbox(peerId2) {
+function deliveryBlocked(peerId2, msg, now = Date.now()) {
+  if (fs3.existsSync(path5.join(withdrawnDir(peerId2), `${msg.id}.json`))) return true;
+  return typeof msg.deliverBy === "number" && Number.isFinite(msg.deliverBy) && now >= msg.deliverBy;
+}
+function withdrawEverywhere(peerId2, messageId) {
+  const file = `${messageId}.json`;
+  const dest = path5.join(ensureDir(withdrawnDir(peerId2)), file);
+  const sources = [path5.join(inboxDir(peerId2), file), path5.join(archiveDir(peerId2), file)];
+  if (!fs3.existsSync(dest)) {
+    for (const src of sources) {
+      try {
+        fs3.renameSync(src, dest);
+        break;
+      } catch {
+      }
+    }
+  }
+  for (const src of sources) {
+    try {
+      if (fs3.existsSync(src)) fs3.rmSync(src, { force: true });
+    } catch {
+    }
+  }
+  if (fs3.existsSync(dest)) return "withdrawn";
+  if (sources.some((src) => fs3.existsSync(src))) return "claimed";
+  return "missing";
+}
+function claimInbox(peerId2, skip) {
   let files;
   try {
     files = fs3.readdirSync(inboxDir(peerId2)).filter((f) => MSG_FILE_RE.test(f)).sort();
@@ -287,6 +319,8 @@ function claimInbox(peerId2) {
   }
   const claimed = [];
   for (const file of files) {
+    const id2 = file.slice(0, -".json".length);
+    if (skip?.has(id2)) continue;
     const target = path5.join(ensureDir(archiveDir(peerId2)), file);
     try {
       fs3.renameSync(path5.join(inboxDir(peerId2), file), target);
@@ -294,7 +328,12 @@ function claimInbox(peerId2) {
       continue;
     }
     const msg = readJson(target);
-    if (msg) claimed.push(msg);
+    if (!msg) continue;
+    if (deliveryBlocked(peerId2, msg)) {
+      withdrawEverywhere(peerId2, msg.id);
+      continue;
+    }
+    claimed.push(msg);
   }
   if (claimed.length) pruneArchive(peerId2);
   return claimed;

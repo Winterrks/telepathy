@@ -13,8 +13,8 @@ import {
   partyOf,
   writeToInbox,
 } from './messages.ts';
-import { inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
-import { beginToolCall, confirmDelivery, confirmWaitEnabled, endToolCall, withdrawPending } from './confirm.ts';
+import { envDurationMs, inboxDir, peerDir, readJson, writeJsonAtomic } from './paths.ts';
+import { beginToolCall, confirmDelivery, confirmWaitEnabled, confirmWindow, endToolCall, withdrawPending } from './confirm.ts';
 import { keptPeers, listPeers, notePeerExit, type Peer, peerRef, resolvePeer, isPeerAlive } from './peers.ts';
 import { peerStatus } from './status.ts';
 import { notifyWake, type WakeResult } from './wake.ts';
@@ -49,10 +49,9 @@ const DUPLICATE_WINDOW_MS = 2 * 60_000;
 const RATE_WINDOW_MS = 10 * 60_000;
 const RATE_MAX_PER_RECIPIENT = 20;
 /** How long a sender waits for the recipient's socket watcher to claim. A held message falls through after this. */
-const SOCKET_WAIT_MS = () => {
-  const n = Number(process.env.TELEPATHY_SOCKET_WAIT_MS);
-  return Number.isFinite(n) && n >= 0 ? n : 1500;
-};
+export function socketWaitMs(): number {
+  return envDurationMs('TELEPATHY_SOCKET_WAIT_MS', 1500);
+}
 
 interface SentEntry {
   to: string;
@@ -102,6 +101,9 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   if ('error' in resolved) {
     const selfMatch = resolvePeer(to, [self]);
     if ('peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
+    // Two live peers already answered. An exited session in the keep window must not replace that
+    // with "offline" for a different process that used to have the same name.
+    if (/ (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) return { ok: false, error: resolved.error };
     // A session that exited in the keep window is not listed. Naming it is what makes the offline failure
     // specific. The inbox is not written.
     const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self.id));
@@ -113,12 +115,14 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   const limited = checkRate(self.id, recipient.id, body);
   if (limited) return { ok: false, error: limited };
 
+  const plan = confirmWindow();
   const message: Message = {
     id: newMessageId(),
     from: partyOf(self),
     to: partyOf(recipient),
     body,
     sentAt: new Date().toISOString(),
+    deliverBy: plan.deadline ?? Date.now() + plan.abort + plan.grace,
   };
 
   // A launched Codex TUI has no thread until the first prompt (or `codex resume <id>`). Queueing needs a thread
@@ -180,6 +184,9 @@ interface Route {
  * it does not start after the user interrupts, so those cases are the mid-turn hook and the inbox.
  */
 async function routeDelivery(recipient: Peer, message: Message): Promise<Route> {
+  // `telepathy run` hosts this peer and injects from the inbox (a Claude stream, an app-server turn, an
+  // OpenCode prompt, or ACP). Codex's queue would address a daemon thread, not that hosted thread.
+  if (fs.existsSync(path.join(peerDir(recipient.id), 'hosted.json'))) return routeInbox(recipient, message);
   if (recipient.agent === 'codex') return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -336,7 +343,7 @@ function inboxRung(recipient: Peer): DeliveryAttempt {
 }
 
 async function waitForSocket(peerId: string, messageId: string): Promise<void> {
-  const deadline = Date.now() + SOCKET_WAIT_MS();
+  const deadline = Date.now() + socketWaitMs();
   while (stillPending(peerId, messageId) && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }

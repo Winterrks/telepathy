@@ -30,6 +30,8 @@ export function makeSandbox(): Sandbox {
   const codexLog = path.join(base, 'codex-calls.jsonl');
   const codexProcs = path.join(base, 'codex-procs.json');
   const previousProcs = process.env.TELEPATHY_CODEX_PROCS;
+  const previousAuto = process.env.TELEPATHY_AUTO_UPDATE;
+  process.env.TELEPATHY_AUTO_UPDATE = '0';
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(codexProcs, '[]');
   fs.chmodSync(FAKE_CODEX, 0o755);
@@ -49,6 +51,7 @@ export function makeSandbox(): Sandbox {
   };
   delete env.TELEPATHY_AGENT_PID;
   delete env.TELEPATHY_DEBUG;
+  delete env.COPILOT_HOME;
   // Production waits for a transcript. Tests assert the route's own status unless they opt in.
   env.TELEPATHY_CONFIRM_WAIT = '0';
   for (const key of [
@@ -73,6 +76,8 @@ export function makeSandbox(): Sandbox {
       fs.rmSync(base, { recursive: true, force: true });
       if (previousProcs === undefined) delete process.env.TELEPATHY_CODEX_PROCS;
       else process.env.TELEPATHY_CODEX_PROCS = previousProcs;
+      if (previousAuto === undefined) delete process.env.TELEPATHY_AUTO_UPDATE;
+      else process.env.TELEPATHY_AUTO_UPDATE = previousAuto;
     },
   };
 }
@@ -80,7 +85,7 @@ export function makeSandbox(): Sandbox {
 /** Replaces the Codex TUI scan. `args` is the command line `ps` would have shown. */
 export function setCodexProcs(
   sb: Sandbox,
-  procs: { pid: number; args: string; cwd?: string; start?: string; parent?: string; codexHome?: string }[],
+  procs: { pid: number; args: string; cwd?: string; start?: string; parent?: string; ppid?: number; codexHome?: string }[],
 ): void {
   fs.writeFileSync(sb.codexProcs, JSON.stringify(procs));
 }

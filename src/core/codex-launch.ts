@@ -17,6 +17,11 @@ export interface CodexTuiProc {
   start?: string;
   /** `CODEX_HOME` from this process, when it could be read. Queue and delete use it. */
   codexHome?: string;
+  /**
+   * Interpreter pids (`node …/codex.js`, an npm bin) that spawned this same TUI.
+   * They are not separate peers. The session row links them here.
+   */
+  wrapperPids?: number[];
 }
 
 /** Flags that take the next argv token. A boolean flag must not swallow the prompt or the subcommand. */
@@ -83,17 +88,8 @@ function codexArgv(command: string): string[] | undefined {
   return tokens.slice(i + 2);
 }
 
-/**
- * The interactive Codex TUI this command line starts, or undefined when it is not one.
- * Allowed: bare `codex` (global flags only), `codex resume` (optional uuid), `codex fork`, and a prompt whose
- * first token is not subcommand-shaped. `exec-server`, `mcp-server`, `app-server`, `exec`, `queue`, `login`,
- * `cloud`, and every other subcommand are not TUIs. A one-word lowercase prompt looks like a subcommand and is
- * not listed from the process table; SessionStart lists it once the thread exists. A quoted prompt with a space
- * or a capital letter is a TUI. Only `codex resume <uuid>` yields a thread id. A bare `codex resume` is the
- * newest thread according to Codex, which this process cannot know until SessionStart, so it stays a TUI with
- * no id. `codex fork <id>` opens a new thread; the id on the command line is the parent, not this window.
- */
-export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
+/** Positional argv of a `codex` command, or undefined when `command` is not Codex. */
+function codexPositionals(command: string): string[] | undefined {
   const argv = codexArgv(command);
   if (!argv) return undefined;
   const positional: string[] = [];
@@ -110,6 +106,31 @@ export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
     }
     positional.push(token);
   }
+  return positional;
+}
+
+/**
+ * `codex exec` and `codex e`, including `codex exec resume`. The TUI allowlist already excludes these because the
+ * first token is subcommand-shaped. `exec-server` is not exec, so the ChatGPT.app helper is not kept alive here.
+ */
+export function isCodexExecCommand(command: string): boolean {
+  const sub = codexPositionals(command)?.[0];
+  return sub === 'exec' || sub === 'e';
+}
+
+/**
+ * The interactive Codex TUI this command line starts, or undefined when it is not one.
+ * Allowed: bare `codex` (global flags only), `codex resume` (optional uuid), `codex fork`, and a prompt whose
+ * first token is not subcommand-shaped. `exec-server`, `mcp-server`, `app-server`, `exec`, `queue`, `login`,
+ * `cloud`, and every other subcommand are not TUIs. A one-word lowercase prompt looks like a subcommand and is
+ * not listed from the process table; SessionStart lists it once the thread exists. A quoted prompt with a space
+ * or a capital letter is a TUI. Only `codex resume <uuid>` yields a thread id. A bare `codex resume` is the
+ * newest thread according to Codex, which this process cannot know until SessionStart, so it stays a TUI with
+ * no id. `codex fork <id>` opens a new thread; the id on the command line is the parent, not this window.
+ */
+export function codexTuiLaunch(command: string): CodexTuiLaunch | undefined {
+  const positional = codexPositionals(command);
+  if (!positional) return undefined;
   const sub = positional[0];
   if (!sub) return {};
   if (sub === 'resume') {
@@ -208,11 +229,55 @@ function acceptTui(args: string, parent: string | undefined): boolean {
   return !!codexTuiLaunch(args) && !parentIsAppBundle(parent);
 }
 
+function interpreterWrapper(command: string): boolean {
+  const tokens = tokenize(command);
+  let i = 0;
+  while (i < tokens.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[i] ?? '')) i++;
+  const exe = tokens[i];
+  return !!exe && INTERPRETERS.has(binName(exe));
+}
+
+function descendsFrom(pid: number, ancestor: number, ppidOf: (pid: number) => number | undefined): boolean {
+  let current = ppidOf(pid);
+  for (let hop = 0; hop < 16 && current; hop++) {
+    if (current === ancestor) return true;
+    current = ppidOf(current);
+  }
+  return false;
+}
+
+/**
+ * `npm`/`npx` leaves a `node …/codex.js` process in front of the native `codex` child. Both command lines
+ * are interactive Codex, and listing both registers two peers for one window. The interpreter is dropped
+ * when its descendant is also a TUI. The native process keeps the wrapper pids so that row can be linked away.
+ */
+export function dedupeCodexTuiProcs(procs: CodexTuiProc[], ppidOf: (pid: number) => number | undefined): CodexTuiProc[] {
+  const drop = new Set<number>();
+  const wrappersOf = new Map<number, number[]>();
+  for (const proc of procs) {
+    if (!interpreterWrapper(proc.args)) continue;
+    const descendants = procs.filter((other) => other.pid !== proc.pid && descendsFrom(other.pid, proc.pid, ppidOf));
+    if (!descendants.length) continue;
+    drop.add(proc.pid);
+    for (const other of descendants) {
+      const list = wrappersOf.get(other.pid) ?? [];
+      if (!list.includes(proc.pid)) list.push(proc.pid);
+      wrappersOf.set(other.pid, list);
+    }
+  }
+  return procs
+    .filter((proc) => !drop.has(proc.pid))
+    .map((proc) => {
+      const wrapperPids = wrappersOf.get(proc.pid);
+      return wrapperPids?.length ? { ...proc, wrapperPids } : proc;
+    });
+}
+
 function procsFromOverride(file: string): CodexTuiProc[] {
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as unknown;
     if (!Array.isArray(parsed)) return [];
-    const procs: CodexTuiProc[] = [];
+    const procs: (CodexTuiProc & { ppid?: number })[] = [];
     for (const row of parsed) {
       if (!row || typeof row !== 'object') continue;
       const rec = row as {
@@ -221,6 +286,7 @@ function procsFromOverride(file: string): CodexTuiProc[] {
         cwd?: unknown;
         start?: unknown;
         parent?: unknown;
+        ppid?: unknown;
         codexHome?: unknown;
       };
       if (typeof rec.pid !== 'number' || typeof rec.args !== 'string') continue;
@@ -233,9 +299,11 @@ function procsFromOverride(file: string): CodexTuiProc[] {
         cwd: typeof rec.cwd === 'string' ? rec.cwd : undefined,
         start: typeof rec.start === 'string' ? rec.start : undefined,
         codexHome,
+        ppid: typeof rec.ppid === 'number' ? rec.ppid : undefined,
       });
     }
-    return procs;
+    const ppid = new Map(procs.map((proc) => [proc.pid, proc.ppid]));
+    return dedupeCodexTuiProcs(procs, (pid) => ppid.get(pid));
   } catch {
     return [];
   }
@@ -269,12 +337,15 @@ export function codexTuiProcesses(): CodexTuiProc[] {
     candidates.push({ pid, args });
   }
   const homes = codexHomes(candidates.map((candidate) => candidate.pid));
-  const procs = candidates.map((candidate) => ({
-    pid: candidate.pid,
-    args: candidate.args,
-    start: table.get(candidate.pid)?.start,
-    codexHome: homes.get(candidate.pid),
-  }));
+  const procs = dedupeCodexTuiProcs(
+    candidates.map((candidate) => ({
+      pid: candidate.pid,
+      args: candidate.args,
+      start: table.get(candidate.pid)?.start,
+      codexHome: homes.get(candidate.pid),
+    })),
+    (pid) => table.get(pid)?.ppid,
+  );
   liveCache = { at: Date.now(), procs };
   return procs;
 }

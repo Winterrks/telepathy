@@ -1,15 +1,15 @@
 ---
 name: using-telepathy
-description: Use when working alongside other coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI, OpenCode and others), for finding them, messaging them and coordinating work with them, and whenever a [telepathy] message arrives.
+description: Use when working alongside other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and others), for finding them, messaging them and coordinating work with them, and whenever a [telepathy] message arrives.
 ---
 
 # Using telepathy
 
-Coding-agent sessions on this machine (Claude Code, Codex, Gemini CLI, OpenCode, Copilot CLI and more) can
+Coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode, Copilot CLI and more) can
 message each other.
 
 - **Find sessions** with telepathy's `list_peers`, or `ListAgents` in Claude Code. Addresses look like
-  `gemini:api-g3f [gemini-4242]` (a session is named after its folder); the name alone is enough unless two sessions
+  `codex:api-c3f [codex-4242]` (a session is named after its folder); the name alone is enough unless two sessions
   share it. Listings also say what each session is doing: busy, idle, waiting on a permission prompt (it acts on a
   message only after its user answers), or interrupted (Codex: a send fails until its user prompts it).
 - **Message whenever it helps**, for example when another session works in the same repo, owns code you depend
@@ -17,7 +17,7 @@ message each other.
 - **Send** with telepathy's `send_message`. It waits until the other session's transcript shows the message,
   and it succeeds only then. A session that is not running fails immediately and nothing is left. A Codex window
   that has not been prompted yet is listed as `no thread yet`; a send to it fails immediately the same way. In Claude Code, `SendMessage` only reaches Claude sessions. For Codex, OpenCode,
-  Gemini, and every other telepathy peer, use `send_message`. A `SendMessage` aimed at one of those is stopped
+  Antigravity, and every other telepathy peer, use `send_message`. A `SendMessage` aimed at one of those is stopped
   and the tool result is an error, even when telepathy also stored the message.
 - The other session doesn't share your context, so make messages self-contained. Replies arrive as new
   messages: don't wait or poll for them. Some agents only see a message at their next turn, so a reply can

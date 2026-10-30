@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
 import { sendMessage } from '../src/core/deliver.ts';
-import { isDeliveryOwner, listPeers, markToolHook, readPeer, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
+import { isDeliveryOwner, listPeers, markToolHook, readPeer, registerListener, registerPresence, registerSession, registerStableName } from '../src/core/peers.ts';
 import { readMessagesTool } from '../src/core/tools.ts';
 import { crossSessionInbound, readClaudeSocket, recordClaudeSocket, startClaudeSocketWatcher } from '../src/core/claude-socket.ts';
 import { inboxDir, withdrawnDir } from '../src/core/paths.ts';
@@ -238,11 +238,11 @@ describe('Claude inbox socket', () => {
     agents.push(claude, other);
     const cwd = path.join(sb.home, name);
     const id = `claude-${name}`;
-    const fromId = `gemini-g-${name}`;
+    const fromId = `qwen-g-${name}`;
     registerPresence('claude', claude.pid, { cwd }, id);
     registerSession('claude', claude.pid, { sessionId: name, cwd, source: 'hook' });
-    registerPresence('gemini', other.pid, { cwd: '/work/docs' }, fromId);
-    registerSession('gemini', other.pid, { sessionId: `g-${name}`, cwd: '/work/docs', source: 'hook' });
+    registerPresence('qwen', other.pid, { cwd: '/work/docs' }, fromId);
+    registerSession('qwen', other.pid, { sessionId: `g-${name}`, cwd: '/work/docs', source: 'hook' });
     const from = readPeer(fromId);
     assert.ok(from);
     return { id, from, address: `claude:${name}` };
@@ -281,7 +281,7 @@ describe('Claude inbox socket', () => {
       assert.match(ok.status, /through Claude's inbox socket/);
       assert.match(deliveredBuf, /\{"type":"auth","token":"socket-token-a"\}/);
       assert.match(deliveredBuf, /\{"type":"user","message":\{"role":"user","content":".*via the socket/);
-      assert.match(deliveredBuf, /from-name=\\"Gemini CLI session gemini:docs/);
+      assert.match(deliveredBuf, /from-name=\\"Qwen Code session qwen:docs/);
       assert.equal(fs.existsSync(path.join(inboxDir(first.id), `${ok.message.id}.json`)), false);
       const log = fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8');
       assert.equal(log.includes('socket-token-a'), false);
@@ -353,7 +353,7 @@ describe('Claude inbox socket', () => {
   });
 
   test('a hold or refuse is not posted, and lifting the hold posts once', async () => {
-    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
+    process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '1';
     const sock = path.join(sb.home, 'once.sock');
     let posts = 0;
     const server = await serve(sock, (buf) => {
@@ -421,7 +421,7 @@ describe('Claude inbox socket', () => {
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.writeFileSync(path.join(transcript, 'session.jsonl'), `telepathy-id:${held.message.id}\n`);
       fs.rmSync(path.join(settingsDir, 'settings.local.json'));
-      process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '0';
+      process.env.TELEPATHY_HOLD_REPOST_DELAY_MS = '1';
       await waitFor(() => (fs.existsSync(path.join(sb.home, 'peers', peer.id, 'archive', `${held.message.id}.json`)) ? true : undefined));
       assert.equal(posts, 0, 'the marker is the release; do not post');
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
@@ -495,7 +495,7 @@ describe('webhook and command wake', () => {
     sb = makeSandbox();
     process.env.TELEPATHY_HOME = sb.home;
     process.env.TELEPATHY_DEBUG = '1';
-    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
+    process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '1';
     delete process.env.TELEPATHY_NAME;
     fs.mkdirSync(sb.home, { recursive: true });
   });
@@ -682,7 +682,7 @@ describe('webhook and command wake', () => {
       const log = fs.existsSync(path.join(sb.home, 'debug.log')) ? fs.readFileSync(path.join(sb.home, 'debug.log'), 'utf8') : '';
       assert.equal(log.includes('bot-key'), false);
     } finally {
-      process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '0';
+      process.env.TELEPATHY_WAKE_DEBOUNCE_MS = '1';
       server.close();
     }
   });
@@ -897,6 +897,21 @@ describe('stable name and duplicate sessions', () => {
     assert.ok(held);
     assert.match(describePeer(held), /sees messages at its next turn/);
     assert.doesNotMatch(describePeer(held), /inbox socket/);
+  });
+
+  test('copilot under the host is not listed as waiting for its next turn', () => {
+    const proc = fakeAgent();
+    agents.push(proc);
+    registerPresence('copilot', proc.pid, { cwd: '/work/cp' }, 'copilot-sess-list');
+    registerSession('copilot', proc.pid, { sessionId: 'sess-list', cwd: '/work/cp', source: 'hook' });
+    const idle = readPeer('copilot-sess-list');
+    assert.ok(idle);
+    assert.match(describePeer(idle), /sees messages at its next turn/);
+    registerListener('copilot', proc.pid, 'copilot-sess-list');
+    const hosted = readPeer('copilot-sess-list');
+    assert.ok(hosted);
+    assert.match(describePeer(hosted), /the host delivers messages as they arrive/);
+    assert.doesNotMatch(describePeer(hosted), /next turn/);
   });
 
   test('read_messages with nothing waiting is an empty array, not a message', () => {

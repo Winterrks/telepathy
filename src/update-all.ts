@@ -3,14 +3,15 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
-import { findInstalls, type Install, isOpencodeNpmInstall } from './core/installs.ts';
+import { installsInScope, isNewer, type Install, isOpencodeNpmInstall } from './core/installs.ts';
+import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
 
 /**
  * Updates telepathy in every agent on this machine that has it installed, each with the agent's own update
  * command:
  *   node update-all.mjs [--dry-run]
- * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Gemini CLI and
- * Qwen Code ask to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
+ * Unlike the plugin itself, this needs the network: the agents fetch the new version from GitHub. Qwen Code
+ * asks to confirm every update of a third-party extension; running this answers yes to such prompts. Running sessions
  * keep the version they started with until they restart.
  */
 
@@ -33,9 +34,8 @@ function stepsFor(install: Install): Step[] | 'cache' {
       ];
     case 'codex':
       return [{ cmd: 'codex', args: ['plugin', 'marketplace', 'upgrade', marketplace] }];
-    case 'gemini':
     case 'qwen':
-      return [{ cmd: install.agent, args: ['extensions', 'update', 'telepathy'] }];
+      return [{ cmd: 'qwen', args: ['extensions', 'update', 'telepathy'] }];
     case 'copilot':
       return [{ cmd: 'copilot', args: ['plugin', 'update', `telepathy@${marketplace}`] }];
     case 'devin':
@@ -50,8 +50,8 @@ function stepsFor(install: Install): Step[] | 'cache' {
   }
 }
 
-/** Runs one step, answering "y" to any confirmation prompt (Gemini and Qwen ask on every update). */
-function run({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
+/** Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). */
+export function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
   return new Promise((resolve) => {
     let output = '';
     const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -82,8 +82,8 @@ async function refreshPackageCache(install: Install): Promise<{ ok: boolean; out
   // Outside the package folder, so the old copy can't be mistaken for the reinstalled one.
   const aside = path.join(path.dirname(packages), `.telepathy-update-${Date.now()}`);
   fs.renameSync(entry, aside);
-  const result = await run({ cmd: install.agent, args: ['debug', 'config'] });
-  const reinstalled = findInstalls().find((i) => i.agent === install.agent);
+  const result = await runHarnessCommand({ cmd: install.agent, args: ['debug', 'config'] });
+  const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
     fs.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
@@ -100,55 +100,103 @@ const lastLine = (text: string) =>
     .filter(Boolean)
     .at(-1) ?? '';
 
-async function main(): Promise<void> {
-  const dryRun = process.argv.includes('--dry-run');
-  const before = findInstalls();
-  if (!before.length) {
-    console.log('No agent on this machine has telepathy installed.');
-    return;
+export interface UpdateAllOptions {
+  dryRun?: boolean;
+  /**
+   * Receives each line that would have gone to stdout, without a trailing newline.
+   * Unset, the script prints exactly as `node update-all.mjs` always has.
+   */
+  log?: (line: string) => void;
+}
+
+/** GitHub's version when we can see it. A forced `TELEPATHY_LATEST_VERSION` is not cached. */
+async function latestKnown(): Promise<string | undefined> {
+  if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
+  try {
+    return await latestGithubVersion();
+  } catch {
+    return cachedGithubVersion();
   }
-  console.log(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
+}
+
+const alreadyCurrent = (install: Install, latest: string | undefined) => !!latest && !isNewer(latest, install.version);
+
+/** Updates every install. Returns 0 when every harness updated, 1 when any failed or none were found. */
+export async function updateAll(options: UpdateAllOptions = {}): Promise<number> {
+  const dryRun = options.dryRun === true;
+  const log = options.log;
+  const say = (line: string) => (log ? log(line) : console.log(line));
+  const before = installsInScope();
+  if (!before.length) {
+    say('No agent on this machine has telepathy installed.');
+    return 0;
+  }
+  const latest = await latestKnown();
+  say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
   if (dryRun) {
     for (const install of before) {
+      if (alreadyCurrent(install, latest)) {
+        say(`- ${agentLabel(install.agent)}: already current`);
+        continue;
+      }
       const steps = stepsFor(install);
       const how =
         steps === 'cache'
           ? `clear its package cache and run \`${install.agent} debug config\` to reinstall`
           : steps.map((s) => `\`${[s.cmd, ...s.args].join(' ')}\``).join(', then ');
-      console.log(`- ${agentLabel(install.agent)}: ${how}`);
+      say(`- ${agentLabel(install.agent)}: ${how}`);
     }
-    return;
+    return 0;
   }
 
   const failures: string[] = [];
   for (const install of before) {
-    process.stdout.write(`Updating ${agentLabel(install.agent)}… `);
+    if (alreadyCurrent(install, latest)) {
+      say(`Updating ${agentLabel(install.agent)}… already current`);
+      continue;
+    }
+    if (log) log(`Updating ${agentLabel(install.agent)}…`);
+    else process.stdout.write(`Updating ${agentLabel(install.agent)}… `);
     const steps = stepsFor(install);
     let result = { ok: true, output: '' };
     if (steps === 'cache') result = await refreshPackageCache(install);
-    else for (const step of steps) if ((result = await run(step)).ok === false) break;
-    if (result.ok) console.log('done');
+    else for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
+    if (result.ok) say('done');
     else {
-      console.log(`failed: ${lastLine(result.output)}`);
+      say(`failed: ${lastLine(result.output)}`);
       failures.push(agentLabel(install.agent));
     }
   }
 
-  const after = findInstalls();
-  console.log('\nInstalled versions:');
+  const after = installsInScope();
+  let changed = false;
+  say('\nInstalled versions:');
   for (const install of before) {
     const now = after.find((i) => i.agent === install.agent)?.version ?? 'not found';
-    console.log(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} → ${now}`}`);
+    if (install.version !== now) changed = true;
+    say(`- ${agentLabel(install.agent)}: ${install.version === now ? now : `${install.version} → ${now}`}`);
   }
-  console.log(
-    '\nSessions that are already running keep the version they started with: restart them to load the update. ' +
-      'Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces ' +
-      'the folder their hooks run from.',
-  );
+  if (changed) {
+    say(
+      '\nSessions that are already running keep the version they started with: restart them to load the update. ' +
+        'Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces ' +
+        'the folder their hooks run from.',
+    );
+  }
   if (failures.length) {
-    console.log(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
-    process.exitCode = 1;
+    say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
+    return 1;
   }
+  return 0;
 }
 
-await main();
+/** True when this file is the process entry (`node update-all.mjs`), not a bundled import. */
+function invokedAsUpdateAll(): boolean {
+  const entry = process.argv[1] ?? '';
+  return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
+}
+
+if (invokedAsUpdateAll()) {
+  const code = await updateAll({ dryRun: process.argv.includes('--dry-run') });
+  if (code !== 0) process.exitCode = code;
+}
