@@ -5,7 +5,7 @@ import type { Agent } from '../core/agents.ts';
 import { isAlive, procStart } from '../core/proc.ts';
 import { writeStatus } from '../core/status.ts';
 import { VERSION } from '../core/version.ts';
-import { startAcpSession } from '../acp/host.ts';
+import { noteMissedCopilotResume, startAcpSession } from '../acp/host.ts';
 import { LineRpc } from '../acp/rpc.ts';
 import {
   clearHosted,
@@ -542,6 +542,7 @@ async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: s
       if (id) writeStatus(id, 'idle');
     },
   });
+  noteMissedCopilotResume(options.agent, memory.id, session);
   memory.id = session.sessionId;
   if (options.pluginPeer && session.child.pid && memory.id) {
     claimed = claimPluginSession(options.agent, session.child.pid, memory.id, options.cwd, options.name);

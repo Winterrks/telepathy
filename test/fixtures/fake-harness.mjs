@@ -2,6 +2,7 @@
 // One stand-in for every harness CLI. The test names it with FAKE_ARGV0 (claude, codex, gemini, …).
 import fs from 'node:fs';
 import http from 'node:http';
+import path from 'node:path';
 import readline from 'node:readline';
 
 const name = process.env.FAKE_ARGV0 || 'harness';
@@ -118,8 +119,30 @@ if (args.includes('--sleep')) {
         params: { sessionId, update: { sessionUpdate: kind, messageId, content: { type: 'text', text: piece } } },
       });
     if (process.env.FAKE_ACP_TWO === '1') {
+      chunk(text, 'agent_message_chunk', 'm0');
       chunk('one', 'agent_message_chunk', 'm1');
       chunk('two', 'agent_message_chunk', 'm2');
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
+    if (process.env.FAKE_ACP_TOOL_ECHO === '1') {
+      send({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: {
+          sessionId,
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'call-1',
+            title: 'shell',
+            kind: 'execute',
+            status: 'pending',
+            content: { type: 'text', text },
+          },
+        },
+      });
+      const hold = Number(process.env.FAKE_ACP_HOLD_MS || 0);
+      if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
       send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
       return;
     }
@@ -132,6 +155,14 @@ if (args.includes('--sleep')) {
           update: { sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'shell', kind: 'execute', status: 'pending' },
         },
       });
+      const proofDelay = Number(process.env.FAKE_ACP_EVENTS_AFTER_MS || 0);
+      if (proofDelay > 0) {
+        await new Promise((resolve) => setTimeout(resolve, proofDelay));
+        const home = process.env.COPILOT_HOME || path.join(process.env.HOME || '', '.copilot');
+        const file = path.join(home, 'session-state', String(sessionId), 'events.jsonl');
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, JSON.stringify({ type: 'user.message', content: text }) + '\n');
+      }
       const hold = Number(process.env.FAKE_ACP_HOLD_MS || 0);
       if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
       chunk(text);
@@ -139,6 +170,7 @@ if (args.includes('--sleep')) {
       return;
     }
     if (process.env.FAKE_ACP_SPLIT === '1') {
+      chunk(text, 'agent_message_chunk', 'm0');
       chunk('Hello');
       chunk(' there');
     } else {
@@ -169,7 +201,11 @@ if (args.includes('--sleep')) {
     } else if (msg.method === 'session/new') {
       send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: process.env.FAKE_ACP_SESSION_ID || 'sess-acp' } });
     } else if (msg.method === 'session/load') {
-      send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
+      if (process.env.FAKE_ACP_LOAD_FAIL === '1') {
+        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'session not found' } });
+      } else {
+        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
+      }
     } else if (msg.method === 'session/prompt') {
       if (process.env.FAKE_ACP_AUTH_LATE === '1') {
         process.stderr.write('authentication required\n');

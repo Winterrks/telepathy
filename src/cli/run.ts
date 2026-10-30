@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import os from 'node:os';
 import path from 'node:path';
 import { scheduleAutoUpdate } from '../auto-update.ts';
-import { startAcpSession } from '../acp/host.ts';
+import { noteMissedCopilotResume, startAcpSession } from '../acp/host.ts';
 import { ensureAgyApiKey } from './agy-auth.ts';
 import { agentLabel } from '../core/agents.ts';
 import { findInstalls, isNewer } from '../core/installs.ts';
@@ -233,6 +233,7 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
     },
   });
   sessionId = session.sessionId;
+  noteMissedCopilotResume(harness.agent, resume, session);
   if (pluginPeer && session.child.pid) {
     pluginId = claimPluginSession(harness.agent, session.child.pid, session.sessionId, cwd, name);
     writeStatus(pluginId, 'idle');

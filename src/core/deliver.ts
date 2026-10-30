@@ -101,6 +101,9 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
   if ('error' in resolved) {
     const selfMatch = resolvePeer(to, [self]);
     if ('peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
+    // Two live peers already answered. An exited session in the keep window must not replace that
+    // with "offline" for a different process that used to have the same name.
+    if (/ (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) return { ok: false, error: resolved.error };
     // A session that exited in the keep window is not listed. Naming it is what makes the offline failure
     // specific. The inbox is not written.
     const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self.id));

@@ -158,6 +158,29 @@ export function claimSessionOwner(id: string, pid: number): boolean {
   return owners[0]?.pid === pid;
 }
 
+/**
+ * Leaves `pid` as the only owner. `telepathy run copilot` used to claim npm's launcher and the real
+ * CLI both, and list_peers then called that one session a duplicate.
+ */
+export function focusSessionOwner(id: string, pid: number): void {
+  const record: OwnerRecord = { pid, procStart: procStart(pid), at: new Date().toISOString() };
+  writeJsonAtomic(ownersFile(id), [record]);
+  const session = readSession(id);
+  if (!session || session.pid === pid) return;
+  writeJsonAtomic(path.join(peerDir(id), 'session.json'), { ...session, pid, procStart: record.procStart });
+}
+
+/**
+ * Points a pid-keyed directory at the session peer and moves its inbox, without claiming ownership.
+ * This is the same `link.json` the hook writes once the session id is known.
+ */
+export function linkAgentProcess(agent: Agent, pid: number, sessionPeer: string): void {
+  const from = peerId(agent, pid);
+  if (from === sessionPeer) return;
+  writeJsonAtomic(linkFile(agent, pid), { id: sessionPeer });
+  moveInbox(from, sessionPeer);
+}
+
 /** True when this process should deliver inbound messages. A second process on the same session does not. */
 export function isDeliveryOwner(id: string, pid: number): boolean {
   const owners = sessionOwners(id);

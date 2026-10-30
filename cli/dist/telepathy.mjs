@@ -721,6 +721,10 @@ import { execFileSync } from "node:child_process";
 function psCommand() {
   return process.env.TELEPATHY_PS_BIN || "ps";
 }
+function clearProcessListCache() {
+  cache = void 0;
+  argsCache = void 0;
+}
 function processTable(maxAgeMs = 500) {
   if (cache && Date.now() - cache.at < maxAgeMs) return cache.table;
   const table = /* @__PURE__ */ new Map();
@@ -818,6 +822,79 @@ function findAgent(hint) {
   const claudePid = Number(process.env.CLAUDE_PID);
   if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
   return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list2 = children.get(info.ppid);
+    if (list2) list2.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out;
+}
+function isNpmCopilotShim(command) {
+  return /(?:^|[\s/])\.bin\/copilot(?:\.js)?(?:\s|$)/.test(command);
+}
+function isTelepathyMcp(command) {
+  if (!/telepathy/i.test(command)) return false;
+  return /(?:server|hook)\.mjs/.test(command) || /(?:^|\s)mcp(?:\s|$)/.test(command);
+}
+function resolveCopilotPid(spawnedPid) {
+  if (!Number.isInteger(spawnedPid) || spawnedPid <= 0) return spawnedPid;
+  const tree = descendantPids(spawnedPid);
+  if (!tree.length) return spawnedPid;
+  const inTree = new Set(tree);
+  const table = processTable(0);
+  const lines = commandLines(0);
+  const lineOf = (pid) => lines.get(pid) ?? "";
+  const depth = /* @__PURE__ */ new Map([[spawnedPid, 0]]);
+  for (const pid of tree) {
+    if (pid === spawnedPid) continue;
+    const parent = table.get(pid)?.ppid;
+    const parentDepth = parent === void 0 ? void 0 : depth.get(parent);
+    if (parentDepth !== void 0) depth.set(pid, parentDepth + 1);
+  }
+  const looksCopilot = (pid) => {
+    const info = table.get(pid);
+    if (!info) return false;
+    return isAgentProcess("copilot", info.comm, () => lineOf(pid));
+  };
+  const mcpPids = tree.filter((pid) => isTelepathyMcp(lineOf(pid)));
+  for (const mcp of mcpPids) {
+    let pid = table.get(mcp)?.ppid;
+    while (pid && inTree.has(pid)) {
+      if (looksCopilot(pid) && !isNpmCopilotShim(lineOf(pid))) return pid;
+      pid = table.get(pid)?.ppid;
+    }
+    let parent = table.get(mcp)?.ppid;
+    while (parent && inTree.has(parent)) {
+      if (!isNpmCopilotShim(lineOf(parent))) return parent;
+      parent = table.get(parent)?.ppid;
+    }
+  }
+  let best = spawnedPid;
+  let bestDepth = -1;
+  for (const pid of tree) {
+    if (!looksCopilot(pid) || isNpmCopilotShim(lineOf(pid))) continue;
+    const d = depth.get(pid) ?? 0;
+    if (d >= bestDepth) {
+      best = pid;
+      bestDepth = d;
+    }
+  }
+  return best;
 }
 var cache, commandLine, argsCache, isStreamJsonClaude;
 var init_proc = __esm({
@@ -1307,6 +1384,19 @@ function claimSessionOwner(id, pid) {
     writeJsonAtomic(ownersFile(id), owners);
   }
   return owners[0]?.pid === pid;
+}
+function focusSessionOwner(id, pid) {
+  const record2 = { pid, procStart: procStart(pid), at: (/* @__PURE__ */ new Date()).toISOString() };
+  writeJsonAtomic(ownersFile(id), [record2]);
+  const session = readSession(id);
+  if (!session || session.pid === pid) return;
+  writeJsonAtomic(path10.join(peerDir(id), "session.json"), { ...session, pid, procStart: record2.procStart });
+}
+function linkAgentProcess(agent, pid, sessionPeer) {
+  const from = peerId(agent, pid);
+  if (from === sessionPeer) return;
+  writeJsonAtomic(linkFile(agent, pid), { id: sessionPeer });
+  moveInbox(from, sessionPeer);
 }
 function isDeliveryOwner(id, pid) {
   const owners = sessionOwners(id);
@@ -31943,6 +32033,7 @@ async function sendMessage(self2, to, body) {
     if ("error" in resolved) {
       const selfMatch = resolvePeer(to, [self2]);
       if ("peer" in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
+      if (/ (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) return { ok: false, error: resolved.error };
       const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self2.id));
       if ("peer" in offline) resolved = offline;
       else return { ok: false, error: resolved.error };
@@ -32977,6 +33068,7 @@ function pointClaudeAtScopedPlugin(env) {
 }
 
 // src/acp/host.ts
+init_peers();
 init_version();
 
 // src/cli/entry.ts
@@ -33106,6 +33198,30 @@ function textOf(params) {
 }
 function relevantUpdate(_params) {
   return true;
+}
+var PROMPT_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/;
+function promptMarker(text) {
+  const match = PROMPT_MARKER.exec(text);
+  return match ? `telepathy-id:${match[1]}` : void 0;
+}
+function copilotEventsHaveMarker(sessionId, marker) {
+  const files = /* @__PURE__ */ new Set([copilotEventsFile(sessionId)]);
+  const recorded2 = readSession(sessionPeerId("copilot", 0, sessionId))?.transcriptPath;
+  if (recorded2 && !recorded2.includes("${")) files.add(recorded2);
+  for (const file2 of files) {
+    try {
+      if (fs11.existsSync(file2) && fs11.readFileSync(file2, "utf8").includes(marker)) return true;
+    } catch {
+    }
+  }
+  return false;
+}
+function noteMissedCopilotResume(agent, requested, session) {
+  if (agent !== "copilot" || !requested || session.resumed) return;
+  process.stderr.write(
+    `telepathy: Copilot did not resume ${requested} (it does not save a session that never had a turn). Started a new session ${session.sessionId}.
+`
+  );
 }
 function summarize(value) {
   if (value == null) return "";
@@ -33314,12 +33430,16 @@ async function startAcpSession(options) {
     if (failure2 !== void 0) throw new Error(authMessage(options.bin, stderrTail));
     const mcpServers = telepathyMcpServers(options.agent);
     let sessionId = options.resumeSessionId;
+    let resumed = false;
     if (sessionId) {
+      const wanted = sessionId;
       try {
         const loaded = await rpc.request("session/load", { sessionId, cwd: options.cwd, mcpServers });
-        sessionId = sessionIdOf(loaded) ?? sessionId;
+        sessionId = sessionIdOf(loaded) ?? wanted;
+        resumed = sessionId === wanted;
       } catch {
         sessionId = void 0;
+        resumed = false;
       }
     }
     if (!sessionId) {
@@ -33336,11 +33456,14 @@ async function startAcpSession(options) {
     session = {
       sessionId,
       child,
+      resumed,
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
       prompt(text, stillPending2 = () => true, withdrawn) {
         const recalled = withdrawn ?? (() => !stillPending2());
+        const marker = options.agent === "copilot" ? promptMarker(text) : void 0;
+        const eventsProven = () => !!marker && copilotEventsHaveMarker(sessionId, marker);
         let resolveAccepted = () => {
         };
         const accepted = new Promise((resolve) => {
@@ -33365,7 +33488,9 @@ async function startAcpSession(options) {
             rpc.notify("session/cancel", { sessionId });
           };
           const watch = setInterval(() => {
-            if (!settled && sent && recalled()) cancel();
+            if (settled || !sent) return;
+            if (recalled()) cancel();
+            else if (eventsProven()) finish(true);
           }, 25);
           try {
             if (!stillPending2() || recalled()) {
@@ -33374,7 +33499,12 @@ async function startAcpSession(options) {
             }
             onUpdate = (params) => {
               previous(params);
-              if (relevantUpdate(params) && !recalled()) finish(true);
+              if (recalled()) return;
+              if (marker) {
+                if (textOf(params).includes(marker) || eventsProven()) finish(true);
+                return;
+              }
+              if (relevantUpdate(params)) finish(true);
             };
             acceptDelivery = () => {
               if (!recalled()) finish(true);
@@ -33388,7 +33518,21 @@ async function startAcpSession(options) {
             if (recalled()) {
               cancel();
               finish(false);
-            } else finish(true);
+            } else if (!marker || eventsProven()) {
+              finish(true);
+            } else {
+              while (!settled && !recalled()) {
+                if (eventsProven()) {
+                  finish(true);
+                  break;
+                }
+                await new Promise((resolve) => setTimeout(resolve, 25));
+              }
+              if (!settled) {
+                if (recalled()) cancel();
+                finish(false);
+              }
+            }
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const closed = message === "agent exited" || message === "agent stdin is closed";
@@ -33492,6 +33636,7 @@ import fs16 from "node:fs";
 import path18 from "node:path";
 
 // src/headless/peer.ts
+init_agents();
 init_messages();
 init_paths();
 init_proc();
@@ -33581,16 +33726,58 @@ function registerHostedPeer(agent, cwd, name) {
   return { peerId: peerId2, slug: slug || sessionId, address: peer?.address ?? `${agent}:${slug || sessionId}` };
 }
 function claimPluginSession(agent, childPid, sessionId, cwd, name) {
+  if (agent === "copilot") return claimCopilotSession(childPid, sessionId, cwd, name);
   const id = sessionPeerId(agent, childPid, sessionId);
-  registerSession(agent, childPid, {
-    sessionId,
-    cwd,
-    source: "plugin",
-    ...agent === "copilot" ? { transcriptPath: copilotEventsFile(sessionId) } : {}
-  });
+  registerSession(agent, childPid, { sessionId, cwd, source: "plugin" });
   if (name) registerStableName(agent, id, name);
   registerListener(agent, childPid, id);
   return id;
+}
+function claimCopilotSession(spawnedPid, sessionId, cwd, name) {
+  const id = bindCopilotSession(spawnedPid, sessionId, cwd, name);
+  const home2 = process.env.TELEPATHY_HOME;
+  for (const ms of [200, 800]) {
+    const timer2 = setTimeout(() => {
+      try {
+        if (process.env.TELEPATHY_HOME !== home2) return;
+        if (!readSession(id)) return;
+        bindCopilotSession(spawnedPid, sessionId, cwd, name);
+      } catch {
+      }
+    }, ms);
+    timer2.unref();
+  }
+  return id;
+}
+function bindCopilotSession(spawnedPid, sessionId, cwd, name) {
+  clearProcessListCache();
+  const agentPid = resolveCopilotPid(spawnedPid);
+  const id = sessionPeerId("copilot", agentPid, sessionId);
+  const previous = readSession(id);
+  registerSession("copilot", agentPid, {
+    sessionId,
+    cwd: cwd || previous?.cwd,
+    source: previous?.source === "hook" ? "hook" : "plugin",
+    transcriptPath: previous?.transcriptPath || copilotEventsFile(sessionId)
+  });
+  focusSessionOwner(id, agentPid);
+  if (name) registerStableName("copilot", id, name);
+  registerListener("copilot", agentPid, id);
+  linkCopilotPlaceholders(spawnedPid, agentPid, id);
+  return id;
+}
+function linkCopilotPlaceholders(spawnedPid, agentPid, sessionPeer) {
+  const lines = commandLines(0);
+  const table = processTable(0);
+  for (const pid of descendantPids(spawnedPid)) {
+    if (pid === agentPid) continue;
+    const info = table.get(pid);
+    const line = lines.get(pid) ?? "";
+    const looksCopilot = !!info && isAgentProcess("copilot", info.comm, () => line);
+    const listed = fs15.existsSync(peerDir(peerId("copilot", pid)));
+    if (pid !== spawnedPid && !looksCopilot && !listed) continue;
+    linkAgentProcess("copilot", pid, sessionPeer);
+  }
 }
 function namedPeerId(agent, name) {
   const slug = slugify(name) || `${agent}-headless`;
@@ -34126,6 +34313,7 @@ async function startAcp(options, memory, writeLog) {
       if (id) writeStatus(id, "idle");
     }
   });
+  noteMissedCopilotResume(options.agent, memory.id, session);
   memory.id = session.sessionId;
   if (options.pluginPeer && session.child.pid && memory.id) {
     claimed = claimPluginSession(options.agent, session.child.pid, memory.id, options.cwd, options.name);
@@ -34330,6 +34518,7 @@ async function runInteractiveAcp(harness, bin, userArgs, cwd, name) {
     }
   });
   sessionId = session.sessionId;
+  noteMissedCopilotResume(harness.agent, resume, session);
   if (pluginPeer && session.child.pid) {
     pluginId = claimPluginSession(harness.agent, session.child.pid, session.sessionId, cwd, name);
     writeStatus(pluginId, "idle");

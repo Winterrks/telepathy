@@ -30697,6 +30697,7 @@ async function sendMessage(self2, to, body) {
     if ("error" in resolved) {
       const selfMatch = resolvePeer(to, [self2]);
       if ("peer" in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
+      if (/ (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) return { ok: false, error: resolved.error };
       const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self2.id));
       if ("peer" in offline) resolved = offline;
       else return { ok: false, error: resolved.error };
