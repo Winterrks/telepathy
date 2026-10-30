@@ -568,6 +568,30 @@ test('an ACP update that echoes the prompt confirms before the turn finishes', a
   }
 });
 
+test('a Copilot sessionStart initialPrompt does not confirm before user.message', async () => {
+  const w = world({
+    FAKE_ACP_TOOL_FIRST: '1',
+    FAKE_ACP_HOLD_MS: '4000',
+    FAKE_ACP_EVENTS_AFTER_MS: '400',
+    FAKE_ACP_INITIAL_PROMPT: '1',
+  });
+  confirmEnv();
+  const launched = spawnCli(['run', '--headless', '--name', 'tool', 'copilot'], w.env);
+  try {
+    await waitFor(() => (launched.err().includes('is up') ? true : undefined));
+    const self = sender();
+    const started = Date.now();
+    const sent = await sendMessage(self, 'copilot:tool', 'run a tool');
+    const elapsed = Date.now() - started;
+    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+    assert.ok(elapsed >= 300, `confirmed on sessionStart initialPrompt (${elapsed}ms)`);
+    assert.ok(elapsed < 3000, `confirmed too late (${elapsed}ms)`);
+  } finally {
+    await stop(w.env, 'tool', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
+    w.restore();
+  }
+});
+
 test('a Copilot update that does not echo the prompt waits for events.jsonl', async () => {
   const w = world({ FAKE_ACP_TOOL_FIRST: '1', FAKE_ACP_HOLD_MS: '4000', FAKE_ACP_EVENTS_AFTER_MS: '350' });
   confirmEnv();

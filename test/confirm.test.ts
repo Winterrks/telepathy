@@ -451,7 +451,9 @@ describe('transcript confirmation', () => {
       const inHome = messageMarker('m-000000009-abc123');
       assert.equal(transcriptHasMarker(peer, inHome), false);
       fs.mkdirSync(path.dirname(recorded), { recursive: true });
-      fs.writeFileSync(recorded, `${inHome}\n`);
+      fs.writeFileSync(recorded, JSON.stringify({ type: 'session.start', data: { initialPrompt: inHome } }) + '\n');
+      assert.equal(transcriptHasMarker(peer, inHome), false);
+      fs.appendFileSync(recorded, JSON.stringify({ type: 'user.message', data: { content: inHome } }) + '\n');
       assert.equal(transcriptHasMarker(peer, inHome), true);
       const peerDir = path.join(sb.home, 'peers', id);
       assert.equal(fs.existsSync(path.join(peerDir, 'hosted.json')), false);
@@ -474,7 +476,7 @@ describe('transcript confirmation', () => {
       assert.equal(transcriptHasMarker(plain, onlyCustom), false);
       const fallback = path.join(home, '.copilot', 'session-state', 'sess-plain', 'events.jsonl');
       fs.mkdirSync(path.dirname(fallback), { recursive: true });
-      fs.writeFileSync(fallback, `${onlyCustom}\n`);
+      fs.writeFileSync(fallback, JSON.stringify({ type: 'userPromptSubmitted', prompt: onlyCustom }) + '\n');
       assert.equal(transcriptHasMarker(plain, onlyCustom), true);
     } finally {
       if (savedHome === undefined) delete process.env.HOME;

@@ -127,7 +127,8 @@ function copilotTranscript(peer: Peer, marker: string): TranscriptLook {
   if (peer.sessionId) files.add(copilotEventsFile(peer.sessionId));
   const existing = [...files].filter((file) => fs.existsSync(file));
   if (!existing.length) return { located: false, found: false };
-  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
+  // sessionStart logs the same text as initialPrompt before Copilot records user.message.
+  return { located: true, found: existing.some((file) => copilotLogHasMarker(file, marker)) };
 }
 
 function claudeTranscript(peer: Peer, marker: string): TranscriptLook {
@@ -221,21 +222,60 @@ function treeHas(dir: string, marker: string, depth: number): boolean {
   return false;
 }
 
-function fileHas(file: string, marker: string): boolean {
+function readTranscriptText(file: string): string | undefined {
   let fd: number | undefined;
   try {
     const st = fs.statSync(file);
-    if (!st.isFile() || st.size === 0) return false;
+    if (!st.isFile() || st.size === 0) return undefined;
     fd = fs.openSync(file, 'r');
     const start = st.size <= FULL_READ ? 0 : Math.max(0, st.size - TAIL_READ);
     const buf = Buffer.alloc(st.size - start);
     fs.readSync(fd, buf, 0, buf.length, start);
-    return buf.includes(marker);
+    return buf.toString('utf8');
   } catch {
-    return false;
+    return undefined;
   } finally {
     if (fd !== undefined) fs.closeSync(fd);
   }
+}
+
+function fileHas(file: string, marker: string): boolean {
+  return readTranscriptText(file)?.includes(marker) ?? false;
+}
+
+/** Copilot events that mean the prompt is in the session. sessionStart's initialPrompt is not one of them. */
+const COPILOT_DELIVERY_EVENTS = new Set(['user.message', 'userPromptSubmitted']);
+
+function copilotEventNames(record: unknown): string[] {
+  if (!record || typeof record !== 'object') return [];
+  const body = record as Record<string, unknown>;
+  const names: string[] = [];
+  const push = (value: unknown) => {
+    if (typeof value === 'string' && value) names.push(value);
+  };
+  for (const key of ['type', 'event', 'name']) push(body[key]);
+  const data = body.data;
+  if (data && typeof data === 'object') {
+    const nested = data as Record<string, unknown>;
+    for (const key of ['type', 'event', 'hook', 'hookEventName']) push(nested[key]);
+  }
+  return names;
+}
+
+/** True when a user.message or userPromptSubmitted line in this log carries `marker`. */
+export function copilotLogHasMarker(file: string, marker: string): boolean {
+  const text = readTranscriptText(file);
+  if (!text || !text.includes(marker)) return false;
+  for (const line of text.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed.includes(marker)) continue;
+    try {
+      if (copilotEventNames(JSON.parse(trimmed)).some((name) => COPILOT_DELIVERY_EVENTS.has(name))) return true;
+    } catch {
+      // a partial tail line, or a line that is not an event
+    }
+  }
+  return false;
 }
 
 export type WithdrawResult = 'withdrawn' | 'claimed' | 'missing';

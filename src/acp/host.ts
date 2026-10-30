@@ -5,6 +5,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from '../core/agents.ts';
 import { pluginInstalled } from '../cli/launch.ts';
+import { copilotLogHasMarker } from '../core/confirm.ts';
 import { copilotEventsFile, readSession, sessionPeerId } from '../core/peers.ts';
 import { VERSION } from '../core/version.ts';
 import { resolveArgvPath } from '../cli/entry.ts';
@@ -132,17 +133,16 @@ function promptMarker(text: string): string | undefined {
   return match ? `telepathy-id:${match[1]}` : undefined;
 }
 
-/** Copilot has the injected prompt when `events.jsonl` contains its marker. */
+/**
+ * Copilot has the injected prompt when a `user.message` or `userPromptSubmitted` event carries its marker.
+ * sessionStart writes the same text as `initialPrompt` before that event exists.
+ */
 function copilotEventsHaveMarker(sessionId: string, marker: string): boolean {
   const files = new Set<string>([copilotEventsFile(sessionId)]);
   const recorded = readSession(sessionPeerId('copilot', 0, sessionId))?.transcriptPath;
   if (recorded && !recorded.includes('${')) files.add(recorded);
   for (const file of files) {
-    try {
-      if (fs.existsSync(file) && fs.readFileSync(file, 'utf8').includes(marker)) return true;
-    } catch {
-      // the next poll reads it again
-    }
+    if (copilotLogHasMarker(file, marker)) return true;
   }
   return false;
 }

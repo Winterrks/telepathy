@@ -155,11 +155,15 @@ if (args.includes('--sleep')) {
           update: { sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'shell', kind: 'execute', status: 'pending' },
         },
       });
+      const home = process.env.COPILOT_HOME || path.join(process.env.HOME || '', '.copilot');
+      const file = path.join(home, 'session-state', String(sessionId), 'events.jsonl');
+      if (process.env.FAKE_ACP_INITIAL_PROMPT === '1') {
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.appendFileSync(file, JSON.stringify({ type: 'session.start', data: { initialPrompt: text } }) + '\n');
+      }
       const proofDelay = Number(process.env.FAKE_ACP_EVENTS_AFTER_MS || 0);
       if (proofDelay > 0) {
         await new Promise((resolve) => setTimeout(resolve, proofDelay));
-        const home = process.env.COPILOT_HOME || path.join(process.env.HOME || '', '.copilot');
-        const file = path.join(home, 'session-state', String(sessionId), 'events.jsonl');
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.appendFileSync(file, JSON.stringify({ type: 'user.message', content: text }) + '\n');
       }

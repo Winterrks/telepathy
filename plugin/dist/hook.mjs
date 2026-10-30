@@ -2568,7 +2568,7 @@ function copilotTranscript(peer, marker) {
   if (peer.sessionId) files2.add(copilotEventsFile(peer.sessionId));
   const existing = [...files2].filter((file) => fs9.existsSync(file));
   if (!existing.length) return { located: false, found: false };
-  return { located: true, found: existing.some((file) => fileHas(file, marker)) };
+  return { located: true, found: existing.some((file) => copilotLogHasMarker(file, marker)) };
 }
 function claudeTranscript(peer, marker) {
   if (!peer.sessionId) return { located: false, found: false };
@@ -2649,21 +2649,53 @@ function treeHas(dir, marker, depth) {
   }
   return false;
 }
-function fileHas(file, marker) {
+function readTranscriptText(file) {
   let fd;
   try {
     const st = fs9.statSync(file);
-    if (!st.isFile() || st.size === 0) return false;
+    if (!st.isFile() || st.size === 0) return void 0;
     fd = fs9.openSync(file, "r");
     const start = st.size <= FULL_READ ? 0 : Math.max(0, st.size - TAIL_READ);
     const buf = Buffer.alloc(st.size - start);
     fs9.readSync(fd, buf, 0, buf.length, start);
-    return buf.includes(marker);
+    return buf.toString("utf8");
   } catch {
-    return false;
+    return void 0;
   } finally {
     if (fd !== void 0) fs9.closeSync(fd);
   }
+}
+function fileHas(file, marker) {
+  return readTranscriptText(file)?.includes(marker) ?? false;
+}
+var COPILOT_DELIVERY_EVENTS = /* @__PURE__ */ new Set(["user.message", "userPromptSubmitted"]);
+function copilotEventNames(record) {
+  if (!record || typeof record !== "object") return [];
+  const body = record;
+  const names = [];
+  const push = (value) => {
+    if (typeof value === "string" && value) names.push(value);
+  };
+  for (const key of ["type", "event", "name"]) push(body[key]);
+  const data = body.data;
+  if (data && typeof data === "object") {
+    const nested = data;
+    for (const key of ["type", "event", "hook", "hookEventName"]) push(nested[key]);
+  }
+  return names;
+}
+function copilotLogHasMarker(file, marker) {
+  const text = readTranscriptText(file);
+  if (!text || !text.includes(marker)) return false;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.includes(marker)) continue;
+    try {
+      if (copilotEventNames(JSON.parse(trimmed)).some((name) => COPILOT_DELIVERY_EVENTS.has(name))) return true;
+    } catch {
+    }
+  }
+  return false;
 }
 function withdrawPending(peerId2, messageId) {
   return withdrawEverywhere(peerId2, messageId);
