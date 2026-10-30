@@ -665,6 +665,80 @@ test('ACP text chunks are one stream, not one line each', async () => {
   }
 });
 
+test('/exit and /quit stop the ACP host instead of prompting the agent', async () => {
+  for (const command of ['/exit', '/quit', '/EXIT']) {
+    const w = world();
+    const launched = spawnCli(['run', 'copilot'], w.env);
+    try {
+      await waitFor(() => (launched.out().includes('session ') ? true : undefined));
+      launched.child.stdin.write('hello there\n');
+      await waitFor(() =>
+        w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('hello there')) ? true : undefined,
+      );
+      launched.child.stdin.write(`${command}\n`);
+      const result = await Promise.race([
+        launched.done,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${command} hung`)), 4000)),
+      ]);
+      assert.equal(result.code, 0);
+      assert.equal(
+        w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).toLowerCase().includes(command.toLowerCase())),
+        false,
+      );
+    } finally {
+      if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+      w.restore();
+    }
+  }
+});
+
+test('/exit during a permission prompt or a running turn stops the host', async () => {
+  const permission = world({ FAKE_ACP_PERMISSION: '1' });
+  const asking = spawnCli(['run', 'copilot'], permission.env);
+  try {
+    await waitFor(() => (asking.out().includes('session ') ? true : undefined));
+    asking.child.stdin.write('needs permission\n');
+    await waitFor(() => (asking.out().includes('permission requested') ? true : undefined));
+    asking.child.stdin.write('/quit\n');
+    const result = await Promise.race([
+      asking.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('/quit during permission hung')), 4000)),
+    ]);
+    assert.equal(result.code, 0);
+    assert.equal(
+      permission.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('/quit')),
+      false,
+    );
+  } finally {
+    if (asking.child.exitCode === null) asking.child.kill('SIGKILL');
+    permission.restore();
+  }
+
+  const held = world({ FAKE_ACP_HOLD_MS: '8000' });
+  const running = spawnCli(['run', 'copilot'], held.env);
+  try {
+    await waitFor(() => (running.out().includes('session ') ? true : undefined));
+    running.child.stdin.write('hold this turn\n');
+    await waitFor(() =>
+      held.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('hold this turn')) ? true : undefined,
+    );
+    running.child.stdin.write('  /exit  \n');
+    const result = await Promise.race([
+      running.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('/exit during turn hung')), 4000)),
+    ]);
+    assert.equal(result.code, 0);
+    assert.equal(held.readLog().some((entry) => entry.method === 'session/cancel'), false);
+    assert.equal(
+      held.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).toLowerCase().includes('/exit')),
+      false,
+    );
+  } finally {
+    if (running.child.exitCode === null) running.child.kill('SIGKILL');
+    held.restore();
+  }
+});
+
 test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '8000' });
   const launched = spawnCli(['run', 'copilot'], w.env);

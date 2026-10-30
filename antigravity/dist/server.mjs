@@ -6,7 +6,7 @@ var __export = (target, all) => {
 };
 
 // src/server.ts
-import path20 from "node:path";
+import path21 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -882,10 +882,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path21) {
-  if (!path21)
+function getElementAtPath(obj, path22) {
+  if (!path22)
     return obj;
-  return path21.reduce((acc, key) => acc?.[key], obj);
+  return path22.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1225,11 +1225,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path21, issues) {
+function prefixIssues(path22, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path21);
+    iss.path.unshift(path22);
     return iss;
   });
 }
@@ -1679,16 +1679,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path22 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path22, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1727,17 +1727,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path22 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path22, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1776,8 +1776,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path21 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path21) {
+  const path22 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path22) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18879,13 +18879,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path21 = ref.slice(1).split("/").filter(Boolean);
-  if (path21.length === 0) {
+  const path22 = ref.slice(1).split("/").filter(Boolean);
+  if (path22.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path21[0] === defsKey) {
-    const key = path21[1] === void 0 ? void 0 : decodeJSONPointerSegment(path21[1]);
+  if (path22[0] === defsKey) {
+    const key = path22[1] === void 0 ? void 0 : decodeJSONPointerSegment(path22[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -23307,9 +23307,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path21 = issue2.path.map(String);
-      const key = path21.length > 0 ? path21.join(".") : "_meta";
-      if (path21.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path22 = issue2.path.map(String);
+      const key = path22.length > 0 ? path22.join(".") : "_meta";
+      if (path22.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -23611,29 +23611,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path21, reachable) => {
+  const visit2 = (node2, path22, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path21.length === 0) return `${pathName(path21)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path22.length === 0) return `${pathName(path22)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path21)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path21)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path22)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path22)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path21)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path22)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path21,
+        path: path22,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path21, key], reachable);
+      const fault$1 = visit2(child, [...path22, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -23641,7 +23641,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path21, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path22, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -23681,8 +23681,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path21) {
-  return path21.length === 0 ? "<root>" : path21.join(".");
+function pathName(path22) {
+  return path22.length === 0 ? "<root>" : path22.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -23932,7 +23932,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path21, vendor, unsupported) {
+function walkProperty(node2, path22, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -23940,8 +23940,8 @@ function walkProperty(node2, path21, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path21}.${key}`);
-  } else unsupported.push(`${path21}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path22}.${key}`);
+  } else unsupported.push(`${path22}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -23958,11 +23958,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path21 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path21}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path22 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path22}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path21 ? `${path21}.${key}` : key;
+    const childPath = path22 ? `${path22}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -30663,16 +30663,287 @@ function waitForInbox(peerId2, timeoutMs, signal) {
   });
 }
 
+// src/core/copilot-resume.ts
+import fs14 from "node:fs";
+import os6 from "node:os";
+import path15 from "node:path";
+function shellTokens(command) {
+  const out = [];
+  let cur = "";
+  let quote;
+  for (const ch of command) {
+    if (quote) {
+      if (ch === quote) quote = void 0;
+      else cur += ch;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (cur) out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += ch;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+function copilotLaunchFlags(command) {
+  const flags = { resumeFlag: false, continue: false, conflict: false };
+  const tokens = shellTokens(command);
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i] ?? "";
+    if (token === "--") break;
+    if (token === "--continue") {
+      flags.continue = true;
+      continue;
+    }
+    let value;
+    if (token === "--resume") {
+      flags.resumeFlag = true;
+      const next = tokens[i + 1];
+      if (next && !next.startsWith("-")) {
+        value = next;
+        i++;
+      }
+    } else if (token.startsWith("--resume=")) {
+      flags.resumeFlag = true;
+      const raw = token.slice("--resume=".length);
+      if (raw) value = raw;
+    } else {
+      continue;
+    }
+    if (value === void 0) continue;
+    if (flags.resume !== void 0 && flags.resume !== value) flags.conflict = true;
+    flags.resume = value;
+  }
+  if (flags.resumeFlag && flags.continue) flags.conflict = true;
+  return flags;
+}
+function parseTime(value) {
+  if (typeof value === "number" && Number.isFinite(value)) return value < 1e12 ? value * 1e3 : value;
+  if (typeof value !== "string" || !value.trim()) return void 0;
+  const n = Date.parse(value);
+  return Number.isNaN(n) ? void 0 : n;
+}
+function pathKeys(p) {
+  const trimmed = p.trim().replace(/[\\/]+$/, "") || p.trim();
+  if (!trimmed) return [];
+  const keys = /* @__PURE__ */ new Set();
+  const add = (value) => {
+    const slashed = value.replace(/\\/g, "/");
+    keys.add(process.platform === "win32" || process.platform === "darwin" ? slashed.toLowerCase() : slashed);
+  };
+  add(path15.resolve(trimmed));
+  try {
+    add(fs14.realpathSync(trimmed));
+  } catch {
+  }
+  return [...keys];
+}
+function samePath(a, b) {
+  if (!a || !b) return false;
+  const left = new Set(pathKeys(a));
+  return pathKeys(b).some((key) => left.has(key));
+}
+function yamlScalars(text) {
+  const out = {};
+  for (const line of text.split("\n")) {
+    if (!line || /^\s/.test(line) || line.startsWith("#")) continue;
+    const match = /^([A-Za-z0-9_]+):\s*(.*)$/.exec(line);
+    if (!match) continue;
+    let value = match[2].trim();
+    if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, "").trim();
+    }
+    out[match[1]] = value;
+  }
+  return out;
+}
+function readTail2(file2, max = 256 * 1024) {
+  let fd;
+  try {
+    fd = fs14.openSync(file2, "r");
+    const size = fs14.fstatSync(fd).size;
+    if (size <= 0) return "";
+    const start = Math.max(0, size - max);
+    const buf = Buffer.alloc(size - start);
+    fs14.readSync(fd, buf, 0, buf.length, start);
+    const text = buf.toString("utf8");
+    if (start === 0) return text;
+    const cut = text.indexOf("\n");
+    return cut === -1 ? "" : text.slice(cut + 1);
+  } catch {
+    return "";
+  } finally {
+    if (fd !== void 0) fs14.closeSync(fd);
+  }
+}
+function latestResume(file2) {
+  let best;
+  for (const line of readTail2(file2).split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed.includes("session.resume")) continue;
+    let record2;
+    try {
+      record2 = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!record2 || typeof record2 !== "object") continue;
+    const body = record2;
+    const type = body.type ?? body.event ?? body.name;
+    if (type !== "session.resume") continue;
+    const data = body.data && typeof body.data === "object" ? body.data : {};
+    const context = data.context && typeof data.context === "object" ? data.context : {};
+    const cwd = typeof context.cwd === "string" ? context.cwd : typeof data.cwd === "string" ? data.cwd : void 0;
+    const times = [body.timestamp, data.resumeTime, data.timestamp].map(parseTime).filter((n) => n !== void 0);
+    if (!times.length) continue;
+    const at = Math.max(...times);
+    if (!best || at >= best.at) best = { at, cwd };
+  }
+  return best;
+}
+function loadSessions(copilotHome2) {
+  const root = path15.join(copilotHome2, "session-state");
+  let names = [];
+  try {
+    names = fs14.readdirSync(root);
+  } catch {
+    return [];
+  }
+  const sessions = [];
+  for (const name of names) {
+    if (!sessionToken(name)) continue;
+    const dir = path15.join(root, name);
+    let st;
+    try {
+      st = fs14.statSync(dir);
+    } catch {
+      continue;
+    }
+    if (!st.isDirectory()) continue;
+    const snap = { id: name };
+    const workspace = path15.join(dir, "workspace.yaml");
+    try {
+      const wst = fs14.statSync(workspace);
+      snap.workspaceMtime = wst.mtimeMs;
+      const fields = yamlScalars(fs14.readFileSync(workspace, "utf8"));
+      if (fields.id && fields.id !== name) continue;
+      if (fields.cwd) snap.cwd = fields.cwd;
+      if (fields.name) snap.name = fields.name;
+    } catch {
+    }
+    snap.resume = latestResume(path15.join(dir, "events.jsonl"));
+    sessions.push(snap);
+  }
+  return sessions;
+}
+function confirming(sessions, cwd, processStartMs2) {
+  const ids = [];
+  let conflict = false;
+  for (const snap of sessions) {
+    const eventNew = !!snap.resume && snap.resume.at > processStartMs2;
+    const eventMatch = eventNew && samePath(snap.resume?.cwd, cwd);
+    const eventOther = eventNew && !!snap.resume?.cwd && !samePath(snap.resume.cwd, cwd);
+    const workspaceNew = snap.workspaceMtime !== void 0 && snap.workspaceMtime > processStartMs2;
+    const workspaceMatch = workspaceNew && samePath(snap.cwd, cwd);
+    const workspaceOther = workspaceNew && !!snap.cwd && !samePath(snap.cwd, cwd);
+    if (eventMatch && workspaceOther || workspaceMatch && eventOther) {
+      conflict = true;
+      continue;
+    }
+    if (eventMatch || workspaceMatch) ids.push(snap.id);
+  }
+  return { ids, conflict };
+}
+function resolveToken(token, sessions) {
+  const exact = sessions.filter((s) => s.id === token);
+  if (exact.length === 1) return { id: exact[0].id, ambiguous: false };
+  if (exact.length > 1) return { ambiguous: true };
+  const folded = token.toLowerCase();
+  const hits = /* @__PURE__ */ new Set();
+  for (const snap of sessions) {
+    if (snap.id.toLowerCase() === folded) hits.add(snap.id);
+  }
+  if (token.length >= 8) {
+    for (const snap of sessions) {
+      if (snap.id.startsWith(token) || snap.id.toLowerCase().startsWith(folded)) hits.add(snap.id);
+    }
+  }
+  for (const snap of sessions) {
+    if (snap.name?.toLowerCase() === folded) hits.add(snap.id);
+  }
+  if (hits.size === 1) return { id: [...hits][0], ambiguous: false };
+  if (hits.size > 1) return { ambiguous: true };
+  return { ambiguous: false };
+}
+function detectResumedCopilotSession(input2) {
+  const flags = copilotLaunchFlags(input2.argv);
+  if (flags.conflict) return { state: "skip" };
+  if (!flags.resumeFlag && !flags.continue) return { state: "skip" };
+  if (!input2.cwd || !Number.isFinite(input2.processStartMs)) return { state: "pending" };
+  const sessions = loadSessions(input2.copilotHome);
+  const confirmed = confirming(sessions, input2.cwd, input2.processStartMs);
+  if (confirmed.conflict) return { state: "skip" };
+  const unique = [...new Set(confirmed.ids)];
+  if (flags.resume) {
+    const resolved = resolveToken(flags.resume, sessions);
+    if (resolved.ambiguous) return { state: "skip" };
+    if (!resolved.id) return unique.length ? { state: "skip" } : { state: "pending" };
+    if (!unique.length) return { state: "pending" };
+    if (unique.length === 1 && unique[0] === resolved.id) return { state: "resume", sessionId: resolved.id };
+    return { state: "skip" };
+  }
+  if (unique.length === 1) return { state: "resume", sessionId: unique[0] };
+  if (unique.length > 1) return { state: "skip" };
+  return { state: "pending" };
+}
+function copilotHome() {
+  return configuredEnv("COPILOT_HOME") || path15.join(os6.homedir(), ".copilot");
+}
+function processStartMs(pid) {
+  const start = procStart(pid);
+  if (!start) return Number.NaN;
+  return Date.parse(start);
+}
+function claimResumedCopilot(pid, hint) {
+  const linked = linkedPeerId("copilot", pid);
+  if (linked) {
+    const sessionId = linked.startsWith("copilot-") ? linked.slice("copilot-".length) : linked;
+    return { state: "claimed", sessionId };
+  }
+  const look = detectResumedCopilotSession({
+    argv: commandLine(pid) ?? "",
+    cwd: processCwd(pid) || hint?.cwd,
+    processStartMs: processStartMs(pid),
+    copilotHome: copilotHome()
+  });
+  if (look.state !== "resume") return look;
+  registerSession("copilot", pid, {
+    sessionId: look.sessionId,
+    cwd: processCwd(pid) || hint?.cwd,
+    source: "process",
+    transcriptPath: copilotEventsFile(look.sessionId)
+  });
+  return { state: "claimed", sessionId: look.sessionId };
+}
+
 // src/core/deliver.ts
 import crypto4 from "node:crypto";
-import fs14 from "node:fs";
-import path16 from "node:path";
+import fs15 from "node:fs";
+import path17 from "node:path";
 
 // src/core/status.ts
-import path15 from "node:path";
+import path16 from "node:path";
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path15.join(peerDir(id), "status.json");
+var statusFile = (id) => path16.join(peerDir(id), "status.json");
 function recorded(id) {
   const record2 = readJson(statusFile(id));
   const at = record2 ? Date.parse(record2.at) : Number.NaN;
@@ -30680,7 +30951,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record2 = readJson(path15.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path16.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   let status = record2.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -30777,7 +31048,7 @@ var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path16.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path17.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -30797,7 +31068,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto4.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs14.existsSync(path16.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs15.existsSync(path17.join(inboxDir(peerId2), `${messageId}.json`));
 async function sendMessage(self2, to, body) {
   const ownsClock = beginToolCall();
   try {
@@ -30869,7 +31140,7 @@ async function sendMessage(self2, to, body) {
   }
 }
 async function routeDelivery(recipient, message) {
-  if (fs14.existsSync(path16.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs15.existsSync(path17.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -30986,11 +31257,12 @@ function wakeAttempt(wake) {
     detail: wake.ok ? void 0 : wake.detail
   };
 }
+function seesAtNextTurn(recipient) {
+  if (recipient.agent === "copilot") return true;
+  return !!agentSpec(recipient.agent).nextTurnHook && !!recipient.hookRan;
+}
 function inboxRung(recipient) {
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
-    return { id: "next-boundary", result: "armed", when: "next-prompt" };
-  }
-  if (recipient.agent === "codex" && recipient.hookRan) {
+  if (seesAtNextTurn(recipient) || recipient.agent === "codex" && recipient.hookRan) {
     return { id: "next-boundary", result: "armed", when: "next-prompt" };
   }
   return { id: "poll", result: "armed", when: "poll" };
@@ -31033,7 +31305,7 @@ function inboxStatus(recipient) {
   if (recipient.agent === "grok") {
     return `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`;
   }
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+  if (seesAtNextTurn(recipient)) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;
@@ -31060,7 +31332,9 @@ function launchHint(peer) {
 function deliveryHint(peer) {
   const launch = launchHint(peer);
   if (launch) return launch;
-  if (peer.agent === "copilot" && peer.hasListener) return "the host delivers messages as they arrive";
+  if (peer.agent === "copilot") {
+    return peer.hasListener ? "the host delivers messages as they arrive" : "sees messages at its next turn";
+  }
   if (peer.agent === "codex" || peer.hasListener) return void 0;
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);
@@ -31172,7 +31446,7 @@ function formatWaitResult(messages, reason, timeoutMs) {
 }
 
 // src/grok-delivery.ts
-import fs15 from "node:fs";
+import fs16 from "node:fs";
 var INBOX_URI = "telepathy://inbox";
 function attachGrokDelivery(server, currentId) {
   server.registerResource(
@@ -31260,7 +31534,7 @@ function attachGrokDelivery(server, currentId) {
     if (watched !== selfId) announced.clear();
     watched = selfId;
     try {
-      watcher = fs15.watch(inboxDir(selfId), () => void announce());
+      watcher = fs16.watch(inboxDir(selfId), () => void announce());
       watcher.on("error", () => {
         try {
           watcher?.close();
@@ -31283,20 +31557,20 @@ function attachGrokDelivery(server, currentId) {
 
 // src/auto-update.ts
 import { spawn as spawn4 } from "node:child_process";
-import fs17 from "node:fs";
-import path19 from "node:path";
+import fs18 from "node:fs";
+import path20 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/update-all.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs16 from "node:fs";
-import os6 from "node:os";
-import path18 from "node:path";
+import fs17 from "node:fs";
+import os7 from "node:os";
+import path19 from "node:path";
 
 // src/version-check.ts
-import path17 from "node:path";
+import path18 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path17.join(stateDir(), "github-version.json");
+var cacheFile = () => path18.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -31341,7 +31615,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os7.homedir()) {
   return new Promise((resolve) => {
     let output2 = "";
     const child = spawn3(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -31364,19 +31638,19 @@ function runHarnessCommand({ cmd, args }, cwd = os6.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path18.join(process.env.XDG_CACHE_HOME || path18.join(os6.homedir(), ".cache"), install.agent, "packages");
-  const relative = path18.relative(packages, install.dir).split(path18.sep);
-  const entry = path18.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path18.join(path18.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs16.renameSync(entry, aside);
+  const packages = path19.join(process.env.XDG_CACHE_HOME || path19.join(os7.homedir(), ".cache"), install.agent, "packages");
+  const relative = path19.relative(packages, install.dir).split(path19.sep);
+  const entry = path19.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path19.join(path19.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs17.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs16.rmSync(aside, { recursive: true, force: true });
+    fs17.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs16.rmSync(entry, { recursive: true, force: true });
-  fs16.renameSync(aside, entry);
+  fs17.rmSync(entry, { recursive: true, force: true });
+  fs17.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
@@ -31464,13 +31738,13 @@ function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path19.join(stateDir(), "config.json"));
+  const cfg = readJson(path20.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path19.join(stateDir(), "auto-update.json");
-var logFile = () => path19.join(stateDir(), "auto-update.log");
+var stampFile = () => path20.join(stateDir(), "auto-update.json");
+var logFile = () => path20.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -31481,7 +31755,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs17.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs18.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -31489,10 +31763,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path19.dirname(fileURLToPath2(import.meta.url));
+  const dir = path20.dirname(fileURLToPath2(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path19.join(dir, name);
-    if (fs17.existsSync(candidate)) return candidate;
+    const candidate = path20.join(dir, name);
+    if (fs18.existsSync(candidate)) return candidate;
   }
   return fileURLToPath2(import.meta.url);
 }
@@ -31523,15 +31797,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path20.dirname(path20.dirname(fileURLToPath3(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path20.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path20.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path21.dirname(path21.dirname(fileURLToPath3(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path21.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path21.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path20.join(path20.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
+    const monitor = path21.join(path21.dirname(fileURLToPath3(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {
@@ -31540,6 +31814,15 @@ async function startMcpServer() {
   function boundId() {
     return linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
   }
+  let copilotResumeSettled = agent !== "copilot";
+  const copilotResumeUntil = Date.now() + 6e4;
+  function pollCopilotResume() {
+    if (copilotResumeSettled || agent !== "copilot") return;
+    const look = claimResumedCopilot(agentPid, { cwd: sessionCwd() });
+    if (look.state === "claimed") debugLog("server", `claimed resumed copilot ${look.sessionId}`);
+    if (look.state !== "pending") copilotResumeSettled = true;
+  }
+  pollCopilotResume();
   const selfId = boundId();
   if (agent !== "codex" && isDeliveryOwner(selfId, agentPid)) {
     registerPresence(agent, agentPid, { cwd: sessionCwd() }, selfId);
@@ -31558,6 +31841,8 @@ async function startMcpServer() {
   armClaudeSocket(selfId);
   let activeId = selfId;
   const relink = setInterval(() => {
+    if (!copilotResumeSettled && Date.now() < copilotResumeUntil) pollCopilotResume();
+    else copilotResumeSettled = true;
     const id = boundId();
     if (!isDeliveryOwner(id, agentPid) || id === activeId) return;
     if (agent !== "codex") {

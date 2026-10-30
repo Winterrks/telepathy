@@ -80,6 +80,13 @@ built-in `ListAgents` and can reach them with its built-in `SendMessage`.
 The receiving side is what makes it feel like telepathy. Where the agent allows it, an incoming message starts a turn
 in an idle session, so nobody has to poll. Where it doesn't, the message rides along with the agent's next turn.
 
+`telepathy run <agent>` pushes each message into the hosted session as it arrives. A plain Copilot, Devin, Qwen, Kimi,
+Cursor, or Antigravity CLI session receives at its next turn through hooks. Claude Code does the same when it has no
+inbox socket, and wakes an idle session when it does. Grok Bot receives when `wait_for_messages` returns. A send
+succeeds only when the recipient's transcript contains `telepathy-id:<message id>`. The sender stops waiting at 100s
+and checks once more during a 10s grace, so a miss fails at 110s. An offline receiver fails immediately. Nothing is
+left queued for a later process. A failed send is withdrawn, so a later turn does not show it.
+
 ## Supported agents
 
 | Agent | How it receives a message | Tested live |
@@ -200,8 +207,13 @@ supported yet.
 copilot plugin marketplace add Winterrks/telepathy && copilot plugin install telepathy@telepathy
 ```
 
-Update: `copilot plugin update telepathy@telepathy`. Copilot CLI 1.0.105 or newer is required; 0.0.372 cannot load the plugin. Copilot asks before a tool
-runs for the first time, telepathy's included.
+Update: `copilot plugin update telepathy@telepathy`. Copilot CLI 1.0.105 or newer is required; 0.0.372 cannot load the plugin. Copilot asks for folder trust in each new directory, and it asks before a tool
+runs for the first time, telepathy's included. A plain `copilot` receives through its hooks at the next turn, including
+before the first prompt. `copilot --resume=<id>`, `copilot --resume <id>`, and `copilot --continue` reclaim that
+session's id and name when the MCP server starts, before the first prompt, when the process arguments agree with a
+`session.resume` event or a rewritten `workspace.yaml` for this directory and that signal is newer than the process.
+If the signals disagree, it stays `session-<pid>` until the first prompt. `telepathy run copilot` injects messages as
+they arrive. Leave that host with `/exit`, `/quit`, or Ctrl-C.
 
 ### Qwen Code
 
@@ -372,7 +384,7 @@ telepathy stop box
 
 `telepathy run claude`, `codex`, `opencode`, `kilo`, and `antigravity` (alias `agy`) exec that CLI with your arguments and a full terminal. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. `copilot` starts an ACP host (`copilot --acp`) so an incoming message can be injected while the session is idle. `telepathy run --acp <agent>` forces ACP where a launcher exists (`opencode acp`, `antigravity-acp`, or `claude-agent-acp` / `codex-acp` if those adapters are on PATH; `claude-code-acp` is the older Claude adapter name; `agy_acp_server.par` is the older Antigravity adapter name). Other known harnesses start their own CLI and print one line when a message will not wake them.
 
-`telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Antigravity is a long-lived `agy --input-format stream-json --output-format stream-json` (not `agy -p`), and it refuses to start on a consumer login. Copilot and Qwen use the ACP host. The terminal shows a short status line. The harness's raw stream is appended to a log under the telepathy state directory. Model text is written as normal output, not one line per chunk. `--name` is the only peer: when the agent already has the telepathy plugin, that plugin's server is given `TELEPATHY_NAME` and the host does not register a second peer. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An ACP turn that starts with a tool call or a permission request counts as delivered. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted. Ctrl-C during an interactive ACP turn cancels that turn; Ctrl-C while idle, or a second Ctrl-C, exits.
+`telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Antigravity is a long-lived `agy --input-format stream-json --output-format stream-json` (not `agy -p`), and it refuses to start on a consumer login. Copilot and Qwen use the ACP host. The terminal shows a short status line. The harness's raw stream is appended to a log under the telepathy state directory. Model text is written as normal output, not one line per chunk. `--name` is the only peer: when the agent already has the telepathy plugin, that plugin's server is given `TELEPATHY_NAME` and the host does not register a second peer. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An ACP turn that starts with a tool call or a permission request counts as delivered. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted. Ctrl-C during an interactive ACP turn cancels that turn; Ctrl-C while idle, or a second Ctrl-C, exits. `/exit` and `/quit` exit immediately, including while a turn or a permission question is open, and are not sent to the agent. Matching ignores case and surrounding whitespace.
 
 Auto-update runs at most once a day, from a session-start hook and from the MCP server, in a detached process. It does not block the session. Failures are written to `auto-update.log` in the state directory (`TELEPATHY_HOME`, or `~/.telepathy`). `TELEPATHY_AUTO_UPDATE=0` wins, and each harness's MCP config forwards that variable (Codex only forwards names listed in `env_vars`). A `TELEPATHY_HOME` other than `~/.telepathy` is a sandbox: auto-update does not touch installs outside it. `telepathy update` skips a copy that is already the current version, and it prints the Codex restart note only when a version changed.
 
@@ -429,7 +441,7 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | Piece | Mechanism |
 |---|---|
 | Tools | One stdio MCP server built on the official TypeScript SDK v2 (`@modelcontextprotocol/server`). OpenCode and Kilo Code get the same tools as native plugin tools |
-| Session identity | The harness's own session id when a hook, tool call, or environment variable reports one: `<agent>-<session id>`, stored under `~/.telepathy`. A resume (`claude --resume`, `codex resume`, an OpenCode session that continues) reclaims that id, its name, and its inbox. `TELEPATHY_NAME` or `--name` still replaces the name. A process that has not reported an id yet is `<agent>-<pid>`. Two live processes on one session id are one peer; the first one owns delivery and the listing says `duplicate session` |
+| Session identity | The harness's own session id when a hook, tool call, or environment variable reports one: `<agent>-<session id>`, stored under `~/.telepathy`. A resume (`claude --resume`, `codex resume`, `copilot --resume` / `copilot --continue`, an OpenCode session that continues) reclaims that id, its name, and its inbox. Copilot claims that id when its MCP server starts, before the first prompt, when the resume signals agree. `TELEPATHY_NAME` or `--name` still replaces the name. A process that has not reported an id yet is `<agent>-<pid>`. Two live processes on one session id are one peer; the first one owns delivery and the listing says `duplicate session` |
 | Claude receives | A plugin [monitor](https://code.claude.com/docs/en/plugins-reference#monitors): each line it prints becomes a notification that starts a turn when the session is idle |
 | Codex receives | `codex queue`, the Codex CLI's own "queue a message for an existing session". The running TUI picks it up within about 10 s. During a turn, the PostToolUse hook hands the message over from the inbox and removes it from the queue (`thread/queue/delete` on a short-lived `codex app-server`) |
 | OpenCode receives | The plugin runs inside OpenCode. OpenCode 2: `session.prompt` with `delivery: "steer"`, which starts a turn or joins the running one. OpenCode 1.x: `client.session.promptAsync` once the session goes idle |
@@ -454,10 +466,16 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   (`Message failed: … has no thread yet; prompt it once`) and nothing is written or queued. `codex resume <id>` is
   already that thread, keeps the name from the last time that thread was seen, and can be queued under the same
   110s confirm rules as any other thread. A bare `codex resume` stays `no thread yet` until SessionStart reports
-  the id. Two windows in the same directory stay two rows until each one has a thread id. Copilot
-  still registers its folder name at the first prompt; before that it shows up as `session-<pid>`.
+  the id. Two windows in the same directory stay two rows until each one has a thread id.
   Antigravity registers from `SessionStart`'s `conversationId`, so a resume with `--conversation` is the same
   peer and `/fork` is a new one.
+- **A resumed Copilot keeps its id before the first prompt.** A fresh `copilot` is `session-<pid>` until sessionStart.
+  `copilot --resume=<id>`, `copilot --resume <id>`, and `copilot --continue` claim the previous id and name when the
+  MCP server starts, if the launch flags and one post-start signal for this working directory agree: a `session.resume`
+  line in `$COPILOT_HOME/session-state/<id>/events.jsonl` whose cwd matches, or a rewritten `workspace.yaml`. Two such
+  sessions, or an event and a workspace that name different sessions, stay on the pid until the first prompt. A send
+  before that prompt is delivered at the next turn when the turn falls inside the confirm window; otherwise it fails
+  and the copy is withdrawn. The sessionStart hook binds the same id and does not create a second peer.
 - **A busy Codex gets messages after its next tool call.** The PostToolUse hook appends the message to the tool
   result. That is the mid-turn path. `codex queue` only runs the message after the turn ends, so it is the fallback
   when no further tool call happens. Whichever comes first wins: a message handed over mid-turn (or read with
@@ -634,8 +652,8 @@ claude --plugin-dir ./plugin      # try it in one Claude Code session without in
 - `test/integration.test.ts`: drives the built plugin through the official MCP client SDK, runs the real hooks,
   monitor and OpenCode plugin, and uses a fake `codex` binary that records what `codex queue` would receive.
 
-`npm run bundle` builds `plugin/dist` and also writes every agent's generated files (manifest versions, the Antigravity copy, rule
-files). Agents cache installed plugins by version, so bump the version in `package.json` when you change the plugin.
+`npm run bundle` builds `plugin/dist` and `cli/dist` and rewrites generated files (manifest versions, the Antigravity copy, rule
+files, `plugin/AGENTS.md`). Leave the version in `package.json` alone. The maintainer bumps it at release. Do not publish.
 
 ## License
 

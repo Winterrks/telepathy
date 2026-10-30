@@ -229,7 +229,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
         process.kill(-pid, signal);
         return;
       } catch {
-        // the child is already gone, or it is not a group leader
+        // The process group is already gone. Fall through to the child handle.
       }
     }
     if (child.exitCode === null && !child.killed) child.kill(signal);
@@ -355,8 +355,16 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   let cancelledThisTurn = false;
   let rl: readline.Interface | undefined;
   const releaseStdin = () => {
-    rl?.close();
+    const current = rl;
     rl = undefined;
+    current?.close();
+    // Closing readline from its own `line` callback does not drop stdin's ref. The host would
+    // stay up after the agent exits for as long as the caller's pipe stays open.
+    setImmediate(() => {
+      if (process.stdin.destroyed) return;
+      process.stdin.pause();
+      process.stdin.unref();
+    });
   };
   child.on('exit', () => releaseStdin());
 
@@ -375,8 +383,8 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     try {
       if (!cancelTurn()) {
         userStop = true;
-        releaseStdin();
         stopChild('SIGTERM');
+        releaseStdin();
       }
     } finally {
       handlingSigint = false;
@@ -386,13 +394,21 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   if (!options.headless) {
     rl = readline.createInterface({ input: process.stdin });
     rl.on('line', (line) => {
+      const text = line.trim();
+      // The host owns these. An idle Ctrl-C stops the child; so do /exit and /quit, without sending them.
+      if (/^\/(?:exit|quit)$/i.test(text)) {
+        clearAsk();
+        userStop = true;
+        stopChild('SIGTERM');
+        releaseStdin();
+        return;
+      }
       if (ask) {
         const answer = ask;
         ask = undefined;
         answer(line);
         return;
       }
-      const text = line.trim();
       if (text && session) void session.prompt(text);
     });
     rl.on('close', () => session?.close());
@@ -512,6 +528,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
               // The turn returned without an echo. Copilot may still flush events.jsonl.
               // Stop when the marker appears or the sender withdraws the copy (the confirm abort).
               while (!settled && !recalled()) {
+                if (child.exitCode !== null || child.signalCode) break;
                 if (eventsProven()) {
                   finish(true);
                   break;

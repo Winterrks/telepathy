@@ -332,11 +332,17 @@ function wakeAttempt(wake: WakeResult): DeliveryAttempt {
   };
 }
 
+/**
+ * Copilot's hooks are installed with the MCP server, so they hand the message over at the next turn
+ * even when sessionStart has not run yet. Other harnesses only get that line once a hook has run.
+ */
+function seesAtNextTurn(recipient: Peer): boolean {
+  if (recipient.agent === 'copilot') return true;
+  return !!agentSpec(recipient.agent).nextTurnHook && !!recipient.hookRan;
+}
+
 function inboxRung(recipient: Peer): DeliveryAttempt {
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
-    return { id: 'next-boundary', result: 'armed', when: 'next-prompt' };
-  }
-  if (recipient.agent === 'codex' && recipient.hookRan) {
+  if (seesAtNextTurn(recipient) || (recipient.agent === 'codex' && recipient.hookRan)) {
     return { id: 'next-boundary', result: 'armed', when: 'next-prompt' };
   }
   return { id: 'poll', result: 'armed', when: 'poll' };
@@ -419,7 +425,7 @@ function inboxStatus(recipient: Peer): string {
       `a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`
     );
   }
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+  if (seesAtNextTurn(recipient)) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;

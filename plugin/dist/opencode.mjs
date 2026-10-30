@@ -21900,7 +21900,9 @@ function launchHint(peer) {
 function deliveryHint(peer) {
   const launch = launchHint(peer);
   if (launch) return launch;
-  if (peer.agent === "copilot" && peer.hasListener) return "the host delivers messages as they arrive";
+  if (peer.agent === "copilot") {
+    return peer.hasListener ? "the host delivers messages as they arrive" : "sees messages at its next turn";
+  }
   if (peer.agent === "codex" || peer.hasListener) return void 0;
   if (peer.agent === "claude" && readClaudeSocket(peer.id)) {
     const inbound = crossSessionInbound(peer);
@@ -22336,11 +22338,12 @@ function wakeAttempt(wake) {
     detail: wake.ok ? void 0 : wake.detail
   };
 }
+function seesAtNextTurn(recipient) {
+  if (recipient.agent === "copilot") return true;
+  return !!agentSpec(recipient.agent).nextTurnHook && !!recipient.hookRan;
+}
 function inboxRung(recipient) {
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
-    return { id: "next-boundary", result: "armed", when: "next-prompt" };
-  }
-  if (recipient.agent === "codex" && recipient.hookRan) {
+  if (seesAtNextTurn(recipient) || recipient.agent === "codex" && recipient.hookRan) {
     return { id: "next-boundary", result: "armed", when: "next-prompt" };
   }
   return { id: "poll", result: "armed", when: "poll" };
@@ -22383,7 +22386,7 @@ function inboxStatus(recipient) {
   if (recipient.agent === "grok") {
     return `Message stored for ${ref}. No wait_for_messages call is parked. A Grok Bot session receives it from that call; a Grok Build session receives it at its next turn, or as soon as its telepathy monitor is running.`;
   }
-  if (agentSpec(recipient.agent).nextTurnHook && recipient.hookRan) {
+  if (seesAtNextTurn(recipient)) {
     return `Message stored for ${ref}. It can't be woken while idle, so it will see it at its next turn.`;
   }
   return `Message stored for ${ref}. It has no listener, so it will see it only when it calls read_messages.`;

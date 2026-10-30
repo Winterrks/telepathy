@@ -28,6 +28,7 @@ import {
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
+import { claimResumedCopilot } from './core/copilot-resume.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import {
   ALREADY_LISTENING,
@@ -93,9 +94,20 @@ function claudeWithoutMonitor(): boolean {
 // not register the daemon pid: one daemon hosts every thread. A TUI that has not been prompted yet is listed
 // from the process table until a thread id exists (see observeLaunchedCodex).
 // Any other harness is keyed by its session id once a hook has linked this process to one.
+// A resumed plain Copilot has not run sessionStart yet. Claim that id now when argv, the
+// session.resume event, and workspace.yaml agree; otherwise stay on the pid until the hook.
 function boundId(): string {
   return linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
 }
+let copilotResumeSettled = agent !== 'copilot';
+const copilotResumeUntil = Date.now() + 60_000;
+function pollCopilotResume(): void {
+  if (copilotResumeSettled || agent !== 'copilot') return;
+  const look = claimResumedCopilot(agentPid, { cwd: sessionCwd() });
+  if (look.state === 'claimed') debugLog('server', `claimed resumed copilot ${look.sessionId}`);
+  if (look.state !== 'pending') copilotResumeSettled = true;
+}
+pollCopilotResume();
 const selfId = boundId();
 if (agent !== 'codex' && isDeliveryOwner(selfId, agentPid)) {
   registerPresence(agent, agentPid, { cwd: sessionCwd() }, selfId);
@@ -115,6 +127,8 @@ armClaudeSocket(selfId);
 // The SessionStart hook may link this process after the server has started.
 let activeId = selfId;
 const relink = setInterval(() => {
+  if (!copilotResumeSettled && Date.now() < copilotResumeUntil) pollCopilotResume();
+  else copilotResumeSettled = true;
   const id = boundId();
   if (!isDeliveryOwner(id, agentPid) || id === activeId) return;
   if (agent !== 'codex') {
