@@ -29,9 +29,10 @@ export const FORWARDED_ENV = [
 ] as const;
 
 /**
- * Environment written into a Copilot `--additional-mcp-config` file, and passed on ACP `session/new`.
- * Copilot inherits `PATH` and otherwise uses only the `env` object in that file, so the variables the
- * server reads have to be listed. Everything else, including tokens, stays off disk.
+ * Variables written into Copilot's `--additional-mcp-config` file, and sent on ACP `session/new`.
+ * Copilot 1.0.105 passes its own full environment to the spawned MCP server anyway. This list only
+ * keeps tokens out of the temp file on disk. It does not restrict that server's runtime environment.
+ * On `session/new`, agents that accept stdio are given this list as the server env the protocol asks for.
  */
 const MCP_ENV_EXACT = new Set<string>([
   'PATH',

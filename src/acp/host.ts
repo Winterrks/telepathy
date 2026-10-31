@@ -70,8 +70,8 @@ interface McpServer {
 /**
  * The MCP server block for `session/new`. An empty list leaves the agent's own settings in place.
  * Send it only when initialize advertises stdio. Copilot advertises http and sse and rejects a stdio
- * server here (`--additional-mcp-config` is how that session gets one). The env list replaces the
- * server's environment, so it carries the variables the server reads, not the whole process environment.
+ * server here (`--additional-mcp-config` is how that session gets one). Agents that accept stdio are
+ * given this list as the server env the protocol asks for. Copilot does not use this list.
  */
 export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = process.env): McpServer[] {
   if (harnessProvidesMcp(agent)) return [];
@@ -115,8 +115,8 @@ function copilotCliMcp(agent: Agent, env: NodeJS.ProcessEnv): CliMcp | undefined
   const file = path.join(dir, 'mcp.json');
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
-  // Copilot 1.0.105 inherits PATH and takes every other variable from this object. Listing the whole
-  // process environment wrote tokens to disk. The server only needs its own settings plus HOME.
+  // The allowlist keeps tokens out of this temp file. Copilot 1.0.105 still passes its own full
+  // environment to the spawned server. The file does not restrict that process's environment.
   const serverEnv = mcpChildEnv(env);
   fs.writeFileSync(
     file,
