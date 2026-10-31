@@ -54,6 +54,12 @@ export function makeSandbox(): Sandbox {
   delete env.TELEPATHY_AGENT_PID;
   delete env.TELEPATHY_DEBUG;
   delete env.COPILOT_HOME;
+  // A suite started inside a live host inherits that host's delivery channel. A sandboxed server
+  // would post the test's messages into the real session. These are the variables telepathy reads
+  // when it delivers into a running host: Claude's inbox socket, and Antigravity's agentapi binary.
+  for (const key of ['CLAUDE_CODE_MESSAGING_SOCKET', 'CLAUDE_CODE_MESSAGING_TOKEN', 'ANTIGRAVITY_AGENTAPI_EXE']) {
+    delete env[key];
+  }
   // Production waits for a transcript. Tests assert the route's own status unless they opt in.
   env.TELEPATHY_CONFIRM_WAIT = '0';
   env.TELEPATHY_SANDBOX = '1';

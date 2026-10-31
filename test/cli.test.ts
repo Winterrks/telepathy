@@ -399,6 +399,9 @@ test('headless codex uses app-server turns and is offline once the supervisor ex
     const again = spawnCli(['run', '--headless', '--name', 'thread', 'codex'], w.env);
     try {
       await waitFor(() => (w.readLog().some((entry) => entry.method === 'thread/resume') ? true : undefined));
+      // thread/resume is logged while the plane is still opening. The headless record is written
+      // just before "is up", and stop before that record exists finds no peer.
+      await waitFor(() => (again.err().includes('is up') ? true : undefined));
     } finally {
       await stop(w.env, 'codex:thread', again.done, again.child);
     }
@@ -719,14 +722,38 @@ test('agents without a headless plane are refused', () => {
   }
 });
 
+test('a sandbox does not inherit a live host delivery channel', () => {
+  const previous = {
+    CLAUDE_CODE_MESSAGING_SOCKET: process.env.CLAUDE_CODE_MESSAGING_SOCKET,
+    CLAUDE_CODE_MESSAGING_TOKEN: process.env.CLAUDE_CODE_MESSAGING_TOKEN,
+    ANTIGRAVITY_AGENTAPI_EXE: process.env.ANTIGRAVITY_AGENTAPI_EXE,
+  };
+  process.env.CLAUDE_CODE_MESSAGING_SOCKET = '/tmp/real-claude.sock';
+  process.env.CLAUDE_CODE_MESSAGING_TOKEN = 'real-token';
+  process.env.ANTIGRAVITY_AGENTAPI_EXE = '/Applications/Antigravity.app/language_server';
+  const sb = makeSandbox();
+  try {
+    assert.equal(sb.env.CLAUDE_CODE_MESSAGING_SOCKET, undefined);
+    assert.equal(sb.env.CLAUDE_CODE_MESSAGING_TOKEN, undefined);
+    assert.equal(sb.env.ANTIGRAVITY_AGENTAPI_EXE, undefined);
+  } finally {
+    sb.cleanup();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test('the bundled CLI starts with a shebang when the bundle has been built', () => {
   const file = path.join(ROOT, 'cli', 'dist', 'telepathy.mjs');
   if (!fs.existsSync(file)) return;
   const text = fs.readFileSync(file, 'utf8');
   assert.ok(text.startsWith('#!/usr/bin/env node\n'));
   assert.ok(fs.statSync(file).mode & 0o111);
-  const version = spawnSync(process.execPath, [file, '--version'], { encoding: 'utf8' });
-  assert.equal(version.stdout.trim(), '0.9.0');
+  const reported = spawnSync(process.execPath, [file, '--version'], { encoding: 'utf8' });
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')) as { version: string };
+  assert.equal(reported.stdout.trim(), pkg.version);
 });
 
 test('an ACP update that echoes the prompt confirms before the turn finishes', async () => {
@@ -1468,26 +1495,43 @@ test('a Copilot session is reachable before the first prompt, including after re
   const w = world({ FAKE_ACP_SESSION_ID: 'sess-keep' });
   plantCopilot(w.env.HOME as string);
   confirmEnv();
-  process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
+  const previousAbort = process.env.TELEPATHY_CONFIRM_ABORT_MS;
+  const previousGrace = process.env.TELEPATHY_CONFIRM_GRACE_MS;
+  // The marker is usually visible at once. A loaded machine can spend this window inside `ps`
+  // before the host's echo is on disk. Success still returns as soon as the marker appears.
+  process.env.TELEPATHY_CONFIRM_ABORT_MS = '30000';
+  process.env.TELEPATHY_CONFIRM_GRACE_MS = '2000';
   const peerId = 'copilot-sess-keep';
   const self = sender();
+  let logFrom = 0;
 
   const waitReady = async () => {
-    await waitFor(() => {
+    const from = logFrom;
+    const pid = await waitFor(() => {
+      const started = w
+        .readLog()
+        .slice(from)
+        .find((entry) => entry.event === 'start' && entry.cmd === 'copilot' && typeof entry.pid === 'number');
+      if (!started?.pid) return undefined;
+      clearProcessListCache();
       const peer = readPeer(peerId);
-      return peer && isPeerAlive(peer) && peer.stableName === 'gem' ? peer : undefined;
-    });
+      if (!peer || !isPeerAlive(peer) || peer.stableName !== 'gem') return undefined;
+      return started.pid;
+    }, 60_000);
+    logFrom = w.readLog().length;
+    return pid;
   };
-  const hidePidPlaceholder = () => {
-    const starts = w.readLog().filter((entry) => entry.event === 'start' && entry.cmd === 'copilot');
-    const pid = starts[starts.length - 1]?.pid;
-    assert.equal(typeof pid, 'number');
-    registerPresence('copilot', pid as number, { cwd: '/work' });
-    registerStableName('copilot', `copilot-${pid}`, 'gem');
-    const listed = listPeers().filter((peer) => peer.agent === 'copilot');
-    assert.deepEqual(listed.map((peer) => peer.id), [peerId]);
-    const resolved = resolvePeer('copilot:gem', listPeers());
-    assert.equal('peer' in resolved && resolved.peer.id, peerId);
+  const hidePidPlaceholder = async (pid: number) => {
+    const listed = await waitFor(() => {
+      clearProcessListCache();
+      registerPresence('copilot', pid, { cwd: '/work' });
+      registerStableName('copilot', `copilot-${pid}`, 'gem');
+      const rows = listPeers().filter((peer) => peer.agent === 'copilot');
+      if (rows.length !== 1 || rows[0]?.id !== peerId) return undefined;
+      const resolved = resolvePeer('copilot:gem', rows);
+      if (!('peer' in resolved) || resolved.peer.id !== peerId || !isPeerAlive(resolved.peer)) return undefined;
+      return rows;
+    }, 60_000);
     const described = describePeer(listed[0] as NonNullable<(typeof listed)[number]>);
     assert.match(described, /the host delivers messages as they arrive/);
     assert.doesNotMatch(described, /next turn|no listener/);
@@ -1495,41 +1539,51 @@ test('a Copilot session is reachable before the first prompt, including after re
 
   const first = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
   try {
-    await waitReady();
-    hidePidPlaceholder();
-    const sent = await sendMessage(self, 'copilot:gem', 'before any prompt');
-    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
-    assert.equal(w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('before any prompt')), true);
-    first.child.stdin.end();
-    await first.done;
-  } finally {
-    if (first.child.exitCode === null) first.child.kill('SIGKILL');
-  }
+    try {
+      const pid = await waitReady();
+      await hidePidPlaceholder(pid);
+      const sent = await sendMessage(self, 'copilot:gem', 'before any prompt');
+      assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+      assert.equal(w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('before any prompt')), true);
+      first.child.stdin.end();
+      await first.done;
+    } finally {
+      if (first.child.exitCode === null) first.child.kill('SIGKILL');
+    }
 
-  const resumed = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
-  try {
-    await waitReady();
-    hidePidPlaceholder();
-    const sent = await sendMessage(self, 'copilot:gem', 'after restart');
-    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
-    resumed.child.stdin.end();
-    await resumed.done;
-  } finally {
-    if (resumed.child.exitCode === null) resumed.child.kill('SIGKILL');
-  }
+    const resumed = spawnCli(['run', '--name', 'gem', 'copilot'], w.env);
+    try {
+      const pid = await waitReady();
+      await hidePidPlaceholder(pid);
+      const sent = await sendMessage(self, 'copilot:gem', 'after restart');
+      assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+      resumed.child.stdin.end();
+      await resumed.done;
+    } finally {
+      if (resumed.child.exitCode === null) resumed.child.kill('SIGKILL');
+    }
 
-  const explicit = spawnCli(['run', 'copilot', '--resume', 'sess-keep'], w.env);
-  try {
-    await waitReady();
-    const resolved = resolvePeer('copilot:gem', listPeers());
-    assert.equal('peer' in resolved && resolved.peer.id, peerId);
-    assert.equal(isPeerAlive('peer' in resolved ? resolved.peer : undefined), true);
-    const sent = await sendMessage(self, 'copilot:gem', 'after explicit resume');
-    assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
-    explicit.child.stdin.end();
-    await explicit.done;
+    const explicit = spawnCli(['run', 'copilot', '--resume', 'sess-keep'], w.env);
+    try {
+      await waitReady();
+      const resolved = await waitFor(() => {
+        clearProcessListCache();
+        const found = resolvePeer('copilot:gem', listPeers());
+        return 'peer' in found && found.peer.id === peerId && isPeerAlive(found.peer) ? found : undefined;
+      }, 60_000);
+      assert.equal(resolved.peer.id, peerId);
+      const sent = await sendMessage(self, 'copilot:gem', 'after explicit resume');
+      assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
+      explicit.child.stdin.end();
+      await explicit.done;
+    } finally {
+      if (explicit.child.exitCode === null) explicit.child.kill('SIGKILL');
+    }
   } finally {
-    if (explicit.child.exitCode === null) explicit.child.kill('SIGKILL');
+    if (previousAbort === undefined) delete process.env.TELEPATHY_CONFIRM_ABORT_MS;
+    else process.env.TELEPATHY_CONFIRM_ABORT_MS = previousAbort;
+    if (previousGrace === undefined) delete process.env.TELEPATHY_CONFIRM_GRACE_MS;
+    else process.env.TELEPATHY_CONFIRM_GRACE_MS = previousGrace;
     w.restore();
   }
 });
