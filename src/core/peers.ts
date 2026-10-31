@@ -457,7 +457,13 @@ export function configuredStableName(explicit?: string): string | undefined {
  */
 export function registerStableName(agent: Agent, id: string, explicit?: string): void {
   const name = configuredStableName(explicit);
-  if (!name) return;
+  if (!name) {
+    // `telepathy mcp` used to read argv[0] (`mcp`) as `--name`. That identity sticks across resume
+    // until this process starts again without the bogus name. A real `--name mcp` still writes it below.
+    const file = path.join(peerDir(id), 'identity.json');
+    if (readJson<{ name?: string }>(file)?.name === 'mcp') fs.rmSync(file, { force: true });
+    return;
+  }
   writeJsonAtomic(path.join(peerDir(id), 'identity.json'), { name, pid: process.pid, at: new Date().toISOString() });
   adoptStableInbox(agent, id, name);
 }

@@ -215,7 +215,7 @@ function isSameProcess(pid, recordedStart) {
 }
 function psField(pid, field) {
   try {
-    return execFileSync(psCommand(), ["-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
+    return execFileSync(psCommand(), ["-ww", "-o", `${field}=`, "-p", String(pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).trim();
   } catch {
     return void 0;
   }
@@ -374,6 +374,14 @@ function claudeSocketArmed(id2) {
   return !!record && isSameProcess(record.pid, record.procStart);
 }
 
+// src/core/argv.ts
+function argvFlag(argv2, name) {
+  const index = argv2.indexOf(name);
+  if (index < 0) return void 0;
+  const value = argv2[index + 1];
+  return value && !value.startsWith("--") ? value : void 0;
+}
+
 // src/monitor.ts
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
@@ -382,7 +390,7 @@ if (process.env.CLAUDE_CODE_MESSAGING_SOCKET && (rewake || !once)) {
   debugLog("monitor", "CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener");
   process.exit(0);
 }
-var { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf("--agent") + 1]));
+var { agent, pid: agentPid } = findAgent(parseAgent(argvFlag(argv, "--agent")));
 var id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
 var listenerFile2 = () => path7.join(peerDir(id), "listener.json");
 var draining = false;

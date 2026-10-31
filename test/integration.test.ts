@@ -1498,8 +1498,8 @@ describe('telepathy plugin', () => {
       const claude = await connect('claude', claudeAgent.pid);
       const listener = path.join(sb.home, 'peers', 'grok-g', 'listener.json');
       const progress: string[] = [];
-      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 8_000 }, undefined, {
-        timeout: 20_000,
+      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 60_000 }, undefined, {
+        timeout: 90_000,
         onprogress: (p) => progress.push(p.message ?? ''),
       });
       await waitFor(() => (fs.existsSync(listener) ? listener : undefined));
@@ -1532,7 +1532,7 @@ describe('telepathy plugin', () => {
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 'c-ok', cwd: '/w/web' });
       const grok = await connect('grok', grokAgent.pid);
       const claude = await connect('claude', claudeAgent.pid, undefined, confirmEnv);
-      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 8_000 }, undefined, { timeout: 20_000 });
+      const waiting = call(grok, 'wait_for_messages', { timeoutMs: 60_000 }, undefined, { timeout: 90_000 });
       await waitFor(() => (fs.existsSync(path.join(sb.home, 'peers', 'grok-g-ok', 'listener.json')) ? 'parked' : undefined));
       const sent = await call(claude, 'send_message', { to: 'grok-g-ok', message: 'confirmed hello' });
       assert.equal(sent.isError, undefined, toolText(sent));

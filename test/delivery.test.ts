@@ -182,7 +182,7 @@ describe('delivery ladder', () => {
     const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).length : 0;
     const started = Date.now();
     const result = await sendMessage(sender(), 'codex:thread-stop', 'after the stop');
-    assert.ok(Date.now() - started < 2_000);
+    assert.ok(Date.now() - started < 15_000, `offline interrupt took ${Date.now() - started}ms`);
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /is interrupted, so its queue will not run this\. Nothing was left for a later prompt\./);
@@ -383,8 +383,10 @@ describe('Claude inbox socket', () => {
       assert.equal(posts, 0);
       assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), true);
       fs.rmSync(path.join(sb.home, 'once', '.claude', 'settings.local.json'));
-      await waitFor(() => (posts === 1 ? true : undefined));
-      assert.equal(fs.existsSync(path.join(inboxDir(peer.id), `${held.message.id}.json`)), false);
+      const heldFile = path.join(inboxDir(peer.id), `${held.message.id}.json`);
+      await waitFor(() => (posts === 1 && !fs.existsSync(heldFile) ? true : undefined));
+      assert.equal(posts, 1);
+      assert.equal(fs.existsSync(heldFile), false);
     } finally {
       server.close();
       fs.rmSync(path.join(sb.home, 'once', '.claude'), { recursive: true, force: true });

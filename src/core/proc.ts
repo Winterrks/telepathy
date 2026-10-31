@@ -85,7 +85,8 @@ export function commandLines(maxAgeMs = 500): Map<number, string> {
   const table = new Map<number, string>();
   let out = '';
   try {
-    out = execFileSync(psCommand(), ['-Ao', 'pid=,args='], {
+    // -ww: macOS ps otherwise clips argv at the terminal width, which can hide `--resume`.
+    out = execFileSync(psCommand(), ['-ww', '-Ao', 'pid=,args='], {
       encoding: 'utf8',
       env: { ...process.env, LC_ALL: 'C' },
       maxBuffer: 16 * 1024 * 1024,
@@ -112,7 +113,7 @@ export const isStreamJsonClaude = (pid: number): boolean =>
 /** One `ps` column for one process; only needed for agents that run as node or Python scripts. */
 function psField(pid: number, field: 'args' | 'ucomm'): string | undefined {
   try {
-    return execFileSync(psCommand(), ['-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
+    return execFileSync(psCommand(), ['-ww', '-o', `${field}=`, '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } }).trim();
   } catch {
     return undefined;
   }

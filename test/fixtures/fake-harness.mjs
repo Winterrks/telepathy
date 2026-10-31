@@ -201,14 +201,34 @@ if (args.includes('--sleep')) {
       return;
     }
     if (msg.method === 'initialize') {
-      send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name, version: '0' } } });
-    } else if (msg.method === 'session/new') {
-      send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: process.env.FAKE_ACP_SESSION_ID || 'sess-acp' } });
-    } else if (msg.method === 'session/load') {
-      if (process.env.FAKE_ACP_LOAD_FAIL === '1') {
-        send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'session not found' } });
+      // Copilot 1.0.105 advertises http and sse only. A stdio server on session/new is rejected.
+      // FAKE_ACP_NO_STDIO makes any harness do the same, so a session/new injection fails the test.
+      const noStdio = name === 'copilot' || process.env.FAKE_ACP_NO_STDIO === '1';
+      const mcpCapabilities = noStdio ? { http: true, sse: true } : { stdio: true, http: true, sse: true };
+      send({
+        jsonrpc: '2.0',
+        id: msg.id,
+        result: { protocolVersion: 1, agentCapabilities: { mcpCapabilities }, agentInfo: { name, version: '0' } },
+      });
+    } else if (msg.method === 'session/new' || msg.method === 'session/load') {
+      const noStdio = name === 'copilot' || process.env.FAKE_ACP_NO_STDIO === '1';
+      if (noStdio) {
+        for (const server of msg.params?.mcpServers ?? []) {
+          const type = server?.type;
+          if (type && type !== 'stdio' && type !== 'local') continue;
+          const label = server?.name || 'mcp';
+          log({ event: 'reject-mcp', name: label, type: type || 'stdio' });
+          process.stderr.write(`[rust:acp::mcp_servers] Rejecting non-http/sse MCP server "${label}" from client\n`);
+        }
+      }
+      if (msg.method === 'session/load') {
+        if (process.env.FAKE_ACP_LOAD_FAIL === '1') {
+          send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'session not found' } });
+        } else {
+          send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
+        }
       } else {
-        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
+        send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: process.env.FAKE_ACP_SESSION_ID || 'sess-acp' } });
       }
     } else if (msg.method === 'session/prompt') {
       if (process.env.FAKE_ACP_AUTH_LATE === '1') {

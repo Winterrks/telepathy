@@ -279,7 +279,7 @@ function launchCwd(argv: string[] = process.argv): string {
   let cwd = process.cwd();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === '--cwd' && argv[i + 1]) cwd = path.resolve(argv[++i]);
+    if (arg === '--cwd' && argv[i + 1] && !argv[i + 1].startsWith('--')) cwd = path.resolve(argv[++i]);
     else if (arg.startsWith('--cwd=')) cwd = path.resolve(arg.slice('--cwd='.length));
   }
   return cwd;

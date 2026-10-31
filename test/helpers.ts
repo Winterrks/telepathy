@@ -31,7 +31,9 @@ export function makeSandbox(): Sandbox {
   const codexProcs = path.join(base, 'codex-procs.json');
   const previousProcs = process.env.TELEPATHY_CODEX_PROCS;
   const previousAuto = process.env.TELEPATHY_AUTO_UPDATE;
+  const previousSandbox = process.env.TELEPATHY_SANDBOX;
   process.env.TELEPATHY_AUTO_UPDATE = '0';
+  process.env.TELEPATHY_SANDBOX = '1';
   fs.mkdirSync(codexHome, { recursive: true });
   fs.writeFileSync(codexProcs, '[]');
   fs.chmodSync(FAKE_CODEX, 0o755);
@@ -54,6 +56,7 @@ export function makeSandbox(): Sandbox {
   delete env.COPILOT_HOME;
   // Production waits for a transcript. Tests assert the route's own status unless they opt in.
   env.TELEPATHY_CONFIRM_WAIT = '0';
+  env.TELEPATHY_SANDBOX = '1';
   for (const key of [
     'TELEPATHY_CONFIRM_ABORT_MS',
     'TELEPATHY_CONFIRM_GRACE_MS',
@@ -78,6 +81,8 @@ export function makeSandbox(): Sandbox {
       else process.env.TELEPATHY_CODEX_PROCS = previousProcs;
       if (previousAuto === undefined) delete process.env.TELEPATHY_AUTO_UPDATE;
       else process.env.TELEPATHY_AUTO_UPDATE = previousAuto;
+      if (previousSandbox === undefined) delete process.env.TELEPATHY_SANDBOX;
+      else process.env.TELEPATHY_SANDBOX = previousSandbox;
     },
   };
 }

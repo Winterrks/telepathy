@@ -27,3 +27,36 @@ export const FORWARDED_ENV = [
   'TELEPATHY_PS_BIN',
   'CODEX_HOME',
 ] as const;
+
+/**
+ * Environment written into a Copilot `--additional-mcp-config` file, and passed on ACP `session/new`.
+ * Copilot inherits `PATH` and otherwise uses only the `env` object in that file, so the variables the
+ * server reads have to be listed. Everything else, including tokens, stays off disk.
+ */
+const MCP_ENV_EXACT = new Set<string>([
+  'PATH',
+  'HOME',
+  'USER',
+  'LOGNAME',
+  'TMPDIR',
+  'TMP',
+  'TEMP',
+  'LANG',
+  'LC_ALL',
+  'LC_CTYPE',
+  'COPILOT_HOME',
+  'XDG_CONFIG_HOME',
+  'XDG_CACHE_HOME',
+  'XDG_DATA_HOME',
+  'XDG_RUNTIME_DIR',
+  ...FORWARDED_ENV,
+]);
+
+export function mcpChildEnv(env: NodeJS.ProcessEnv): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== 'string' || !value) continue;
+    if (key.startsWith('TELEPATHY_') || MCP_ENV_EXACT.has(key)) out[key] = value;
+  }
+  return out;
+}

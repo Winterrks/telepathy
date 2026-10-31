@@ -6,6 +6,7 @@ import { runCommand } from './cli/run.ts';
 import { formatHeadlessPs, stopHeadless } from './headless/peer.ts';
 import { statusReport } from './cli/status.ts';
 import { isCliEntry } from './cli/entry.ts';
+import { argvFlag } from './core/argv.ts';
 
 const HELP = `telepathy ${VERSION}
 
@@ -58,8 +59,9 @@ async function main(argv: string[]): Promise<number> {
     const dryRun = rest.includes('--dry-run');
     const removeLegacy = rest.includes('--remove-legacy');
     const onlyEq = rest.find((arg) => arg.startsWith('--only='));
-    const onlyFlag = rest.indexOf('--only');
-    const only = onlyEq ? parseOnly(onlyEq.slice('--only='.length)) : onlyFlag >= 0 ? parseOnly(rest[onlyFlag + 1]) : undefined;
+    const onlyValue = argvFlag(rest, '--only');
+    if (rest.includes('--only') && !onlyValue && !onlyEq) throw new Error('--only needs a value');
+    const only = onlyEq ? parseOnly(onlyEq.slice('--only='.length)) : parseOnly(onlyValue);
     return installAll({ dryRun, only, removeLegacy });
   }
   if (cmd === 'config') return configCommand(rest);

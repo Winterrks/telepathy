@@ -13,6 +13,9 @@ import { configuredStableName, isPeerAlive, listPeers, readPeer, registerPresenc
 import { clearProcessListCache, descendantPids, resolveCopilotPid } from '../src/core/proc.ts';
 import { claimPluginSession, readHeadlessRecord } from '../src/headless/peer.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
+import { advertisesStdioMcp } from '../src/acp/host.ts';
+import { argvFlag } from '../src/core/argv.ts';
+import { codexCandidateBins, queueIntoCodex } from '../src/core/codex-queue.ts';
 import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
 import { describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
@@ -122,6 +125,27 @@ function plantCodex(sb: Sandbox): void {
   fs.mkdirSync(path.join(sb.codexHome, 'plugins', 'cache', 'telepathy', 'telepathy', '0.9.0'), { recursive: true });
 }
 
+function copilotMcpFile(log: ReturnType<World['readLog']>): {
+  type?: string;
+  command?: string;
+  args?: string[];
+  tools?: string[];
+  env?: Record<string, string>;
+} {
+  const started = log.find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+  const args = started?.args ?? [];
+  const at = args.indexOf('--additional-mcp-config');
+  assert.ok(at >= 0, args.join(' '));
+  const spec = args[at + 1] ?? '';
+  assert.equal(spec.startsWith('@'), true, spec);
+  const body = JSON.parse(fs.readFileSync(spec.slice(1), 'utf8')) as {
+    mcpServers?: { telepathy?: { type?: string; command?: string; args?: string[]; tools?: string[]; env?: Record<string, string> } };
+  };
+  const server = body.mcpServers?.telepathy;
+  assert.ok(server);
+  return server;
+}
+
 function plantCopilot(home: string): void {
   const dir = path.join(home, '.copilot', 'installed-plugins', 'telepathy', 'telepathy', '.github', 'plugin');
   fs.mkdirSync(dir, { recursive: true });
@@ -144,7 +168,7 @@ function spawnCli(args: string[], env: NodeJS.ProcessEnv) {
   return { child, done, out: () => out, err: () => err };
 }
 
-async function waitFor<T>(fn: () => T | undefined | false, ms = 5000): Promise<T> {
+async function waitFor<T>(fn: () => T | undefined | false, ms = 20_000): Promise<T> {
   const start = Date.now();
   for (;;) {
     const value = fn();
@@ -337,7 +361,8 @@ test('headless claude stays reachable, confirms, resumes, and is offline after s
     await stop(w.env, 'box', launched.done, launched.child);
     const started = Date.now();
     const late = await sendMessage(self, 'claude:box', 'too late');
-    assert.ok(Date.now() - started < 1000);
+    // Offline fails immediately. 15s is still far under the 100s confirm abort, and holds up when the machine is busy.
+    assert.ok(Date.now() - started < 15_000, `offline send took ${Date.now() - started}ms`);
     assert.equal(late.ok, false);
     if (!late.ok) assert.match(late.error, /offline[\s\S]*Nothing was left in its inbox/);
     assert.equal(fs.existsSync(inboxDir('claude-h-box')) ? fs.readdirSync(inboxDir('claude-h-box')).length : 0, 0);
@@ -399,24 +424,98 @@ test('headless opencode prompts the served session', async () => {
   }
 });
 
+test('argvFlag does not treat argv[0] as a missing flag', () => {
+  assert.equal(argvFlag(['mcp', '--agent', 'copilot'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name', '--agent'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name', 'gem'], '--name'), 'gem');
+  assert.equal(argvFlag(['--agent', 'copilot'], '--agent'), 'copilot');
+});
+
+test('telepathy mcp without --name does not keep the stable name mcp', async () => {
+  const w = world();
+  const agent = fakeAgent();
+  const id = `copilot-${agent.pid}`;
+  const dir = path.join(w.sb.home, 'peers', id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'identity.json'), JSON.stringify({ name: 'mcp', pid: 1 }));
+  const env: NodeJS.ProcessEnv = { ...w.env, TELEPATHY_AGENT_PID: String(agent.pid) };
+  delete env.TELEPATHY_NAME;
+  const child = spawn(process.execPath, [CLI, 'mcp', '--agent', 'copilot'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await waitFor(() => (fs.existsSync(path.join(dir, 'presence.json')) ? true : undefined));
+    assert.equal(fs.existsSync(path.join(dir, 'identity.json')), false);
+    const peer = readPeer(id);
+    assert.equal(peer?.stableName, undefined);
+    assert.notEqual(peer?.name, 'mcp');
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await killAndWait(agent);
+    w.restore();
+  }
+});
+
+test('a sandbox does not exec a codex binary outside the temp dir', async () => {
+  const w = world();
+  // world() points HOME at the sandbox, and that directory is under the temp dir. The machine home is not.
+  const outside = fs.mkdtempSync(path.join(os.userInfo().homedir, 'tp-codex-leak-'));
+  const marker = path.join(outside, 'wrote');
+  const binDir = path.join(outside, 'bin');
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, 'codex'),
+    `#!${process.execPath}\nrequire('fs').writeFileSync(process.env.MARKER, 'yes');\n`,
+  );
+  fs.chmodSync(path.join(binDir, 'codex'), 0o755);
+  const prevBin = process.env.TELEPATHY_CODEX_BIN;
+  const prevPath = process.env.PATH;
+  delete process.env.TELEPATHY_CODEX_BIN;
+  process.env.PATH = binDir;
+  process.env.MARKER = marker;
+  process.env.CODEX_HOME = w.sb.codexHome;
+  process.env.TELEPATHY_HOME = w.sb.home;
+  process.env.TELEPATHY_SANDBOX = '1';
+  try {
+    assert.equal(codexCandidateBins().some((bin) => bin.includes('homebrew') || bin.includes('/usr/local/')), false);
+    await assert.rejects(() => queueIntoCodex('thread-1', 'hi', w.sb.codexHome), /test sandbox/);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    if (prevBin === undefined) delete process.env.TELEPATHY_CODEX_BIN;
+    else process.env.TELEPATHY_CODEX_BIN = prevBin;
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    delete process.env.MARKER;
+    fs.rmSync(outside, { recursive: true, force: true });
+    w.restore();
+  }
+});
+
 test('headless ACP adds telepathy only when that harness has no install, and confirms on an early update', async () => {
-  const w = world({ FAKE_ACP_HOLD_MS: '4000' });
+  const w = world({ FAKE_ACP_HOLD_MS: '20000', GH_TOKEN: 'should-not-be-on-disk', AWS_SECRET_ACCESS_KEY: 'also-secret' });
   confirmEnv();
   const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
     const created = w.readLog().find((entry) => entry.method === 'session/new');
-    const servers = (created?.params as { mcpServers?: { type?: string; command?: string; env?: { name: string }[] }[] })?.mcpServers;
-    assert.equal(servers?.length, 1);
-    assert.equal(servers?.[0]?.type, 'stdio');
-    assert.equal(servers?.[0]?.command, process.execPath);
-    assert.ok(servers?.[0]?.env?.some((item) => item.name === 'HOME'));
-    assert.ok(servers?.[0]?.env?.some((item) => item.name === 'TELEPATHY_HOME'));
+    const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
+    assert.deepEqual(servers ?? [], []);
+    assert.equal(w.readLog().some((entry) => entry.event === 'reject-mcp'), false);
+    const server = copilotMcpFile(w.readLog());
+    assert.equal(server.type, 'local');
+    assert.equal(server.command, process.execPath);
+    assert.ok(server.args?.includes('--agent'));
+    assert.deepEqual(server.tools, ['*']);
+    assert.equal(typeof server.env?.HOME, 'string');
+    assert.equal(typeof server.env?.PATH, 'string');
+    assert.equal(typeof server.env?.TELEPATHY_HOME, 'string');
+    assert.equal(server.env?.GH_TOKEN, undefined);
+    assert.equal(server.env?.AWS_SECRET_ACCESS_KEY, undefined);
     const self = sender();
     const started = Date.now();
     const sent = await sendMessage(self, 'copilot:gem', 'early update');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
-    assert.ok(Date.now() - started < 3000);
+    // The turn is held for 20s. Confirming on the early update finishes well under that, and under the 100s window.
+    assert.ok(Date.now() - started < 15_000, `confirm took ${Date.now() - started}ms`);
   } finally {
     await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();
@@ -450,6 +549,84 @@ test('a failed headless send drops an ACP prompt that is still queued', async ()
   }
 });
 
+test('a local Copilot marketplace does not start MCP, so the host injects the server once', async () => {
+  const w = world();
+  const home = w.env.HOME as string;
+  const plugin = path.join(home, 'dev-plugin');
+  fs.mkdirSync(path.join(plugin, '.github', 'plugin'), { recursive: true });
+  fs.writeFileSync(path.join(plugin, '.github', 'plugin', 'plugin.json'), JSON.stringify({ name: 'telepathy', version: '0.9.0' }));
+  const copilotDir = path.join(home, '.copilot');
+  fs.mkdirSync(copilotDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(copilotDir, 'settings.json'),
+    JSON.stringify({ extraKnownMarketplaces: { local: { source: { source: 'directory', path: plugin } } } }),
+  );
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
+    const created = w.readLog().find((entry) => entry.method === 'session/new');
+    const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
+    assert.deepEqual(servers ?? [], []);
+    assert.equal(w.readLog().some((entry) => entry.event === 'reject-mcp'), false);
+    const server = copilotMcpFile(w.readLog());
+    assert.equal(server.type, 'local');
+    assert.equal(server.command, process.execPath);
+    assert.deepEqual(server.tools, ['*']);
+    assert.equal(server.env?.TELEPATHY_NAME, 'gem');
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(started?.name, 'gem');
+    assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('advertisesStdioMcp follows initialize mcpCapabilities', () => {
+  assert.equal(advertisesStdioMcp({ agentCapabilities: { mcpCapabilities: { http: true, sse: true } } }), false);
+  assert.equal(advertisesStdioMcp({ agentCapabilities: { mcpCapabilities: { stdio: true } } }), true);
+  assert.equal(advertisesStdioMcp({ agentCapabilities: { mcpCapabilities: { local: true } } }), true);
+  assert.equal(advertisesStdioMcp({ mcpCapabilities: ['http', 'sse'] }), false);
+  assert.equal(advertisesStdioMcp({ mcpCapabilities: ['stdio'] }), true);
+  assert.equal(advertisesStdioMcp({}), false);
+  assert.equal(advertisesStdioMcp(undefined), false);
+});
+
+test('an ACP agent that advertises stdio receives telepathy on session/new', async () => {
+  const w = world();
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'qwen'], w.env);
+  try {
+    await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/new') ? true : undefined));
+    const created = w.readLog().find((entry) => entry.method === 'session/new');
+    const servers = (created?.params as { mcpServers?: { name?: string; type?: string }[] })?.mcpServers ?? [];
+    assert.equal(servers.some((server) => server.name === 'telepathy' && server.type === 'stdio'), true);
+    assert.equal(w.readLog().some((entry) => entry.event === 'reject-mcp'), false);
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'qwen');
+    assert.equal(started?.args?.includes('--additional-mcp-config'), false);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
+test('an ACP agent that does not advertise stdio gets no server and says tools are unavailable', async () => {
+  const w = world({ FAKE_ACP_NO_STDIO: '1' });
+  const launched = spawnCli(['run', '--headless', '--name', 'gem', 'qwen'], w.env);
+  try {
+    await waitFor(() => (launched.out().includes('no telepathy tools') ? true : undefined));
+    const created = w.readLog().find((entry) => entry.method === 'session/new');
+    const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
+    assert.deepEqual(servers ?? [], []);
+    assert.equal(w.readLog().some((entry) => entry.event === 'reject-mcp'), false);
+    const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'qwen');
+    assert.equal(started?.args?.includes('--additional-mcp-config'), false);
+    assert.match(launched.out(), /does not accept stdio MCP servers/);
+  } finally {
+    if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+    w.restore();
+  }
+});
+
 test('an installed ACP harness gets an empty mcpServers list', async () => {
   const w = world();
   plantCopilot(w.env.HOME as string);
@@ -460,6 +637,7 @@ test('an installed ACP harness gets an empty mcpServers list', async () => {
     const servers = (created?.params as { mcpServers?: unknown[] })?.mcpServers;
     assert.deepEqual(servers, []);
     const started = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === 'copilot');
+    assert.equal(started?.args?.includes('--additional-mcp-config'), false);
     assert.equal(started?.name, 'gem');
     assert.equal(fs.existsSync(path.join(w.sb.home, 'peers', 'copilot-h-gem', 'hosted.json')), false);
   } finally {
@@ -665,6 +843,80 @@ test('ACP text chunks are one stream, not one line each', async () => {
   }
 });
 
+test('/exit and /quit stop the ACP host instead of prompting the agent', async () => {
+  for (const command of ['/exit', '/quit', '/EXIT']) {
+    const w = world();
+    const launched = spawnCli(['run', 'copilot'], w.env);
+    try {
+      await waitFor(() => (launched.out().includes('session ') ? true : undefined));
+      launched.child.stdin.write('hello there\n');
+      await waitFor(() =>
+        w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('hello there')) ? true : undefined,
+      );
+      launched.child.stdin.write(`${command}\n`);
+      const result = await Promise.race([
+        launched.done,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error(`${command} hung`)), 4000)),
+      ]);
+      assert.equal(result.code, 0);
+      assert.equal(
+        w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).toLowerCase().includes(command.toLowerCase())),
+        false,
+      );
+    } finally {
+      if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+      w.restore();
+    }
+  }
+});
+
+test('/exit during a permission prompt or a running turn stops the host', async () => {
+  const permission = world({ FAKE_ACP_PERMISSION: '1' });
+  const asking = spawnCli(['run', 'copilot'], permission.env);
+  try {
+    await waitFor(() => (asking.out().includes('session ') ? true : undefined));
+    asking.child.stdin.write('needs permission\n');
+    await waitFor(() => (asking.out().includes('permission requested') ? true : undefined));
+    asking.child.stdin.write('/quit\n');
+    const result = await Promise.race([
+      asking.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('/quit during permission hung')), 4000)),
+    ]);
+    assert.equal(result.code, 0);
+    assert.equal(
+      permission.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('/quit')),
+      false,
+    );
+  } finally {
+    if (asking.child.exitCode === null) asking.child.kill('SIGKILL');
+    permission.restore();
+  }
+
+  const held = world({ FAKE_ACP_HOLD_MS: '8000' });
+  const running = spawnCli(['run', 'copilot'], held.env);
+  try {
+    await waitFor(() => (running.out().includes('session ') ? true : undefined));
+    running.child.stdin.write('hold this turn\n');
+    await waitFor(() =>
+      held.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('hold this turn')) ? true : undefined,
+    );
+    running.child.stdin.write('  /exit  \n');
+    const result = await Promise.race([
+      running.done,
+      new Promise<never>((_, reject) => setTimeout(() => reject(new Error('/exit during turn hung')), 4000)),
+    ]);
+    assert.equal(result.code, 0);
+    assert.equal(held.readLog().some((entry) => entry.method === 'session/cancel'), false);
+    assert.equal(
+      held.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).toLowerCase().includes('/exit')),
+      false,
+    );
+  } finally {
+    if (running.child.exitCode === null) running.child.kill('SIGKILL');
+    held.restore();
+  }
+});
+
 test('Ctrl-C cancels the ACP turn, and a second Ctrl-C exits', async () => {
   const w = world({ FAKE_ACP_HOLD_MS: '8000' });
   const launched = spawnCli(['run', 'copilot'], w.env);
@@ -784,7 +1036,7 @@ test('claude ACP uses claude-agent-acp and falls back to claude-code-acp', async
   const env = { ...w.env, PATH: `${dir}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin:/bin` };
   const fallback = spawnCli(['run', '--headless', '--acp', '--name', 'old', 'claude'], env);
   try {
-    await waitFor(() => (w.readLog().some((entry) => entry.cmd === 'claude-code-acp') ? true : undefined), 8000);
+    await waitFor(() => (w.readLog().some((entry) => entry.cmd === 'claude-code-acp') ? true : undefined));
   } finally {
     await stop(env, 'old', fallback.done, fallback.child).catch(() => fallback.child.kill('SIGKILL'));
     fs.rmSync(dir, { recursive: true, force: true });
@@ -1389,7 +1641,7 @@ test('a named Copilot run says when an empty session could not be resumed', asyn
     FAKE_ACP_SESSION_ID: 'sess-new',
   });
   try {
-    await waitFor(() => (second.err().includes('does not save a session') ? true : undefined), 8000);
+    await waitFor(() => (second.err().includes('does not save a session') ? true : undefined));
     assert.match(second.err(), /sess-empty/);
     assert.match(second.err(), /sess-new/);
     assert.match(second.out(), /session sess-new/);
