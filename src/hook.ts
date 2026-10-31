@@ -32,6 +32,7 @@ import {
 import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import { statusFromHooks, writeStatus } from './core/status.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
+import { argvFlag } from './core/argv.ts';
 import { antigravitySurface, expandHomePath, type AntigravitySurface } from './core/antigravity.ts';
 
 /**
@@ -480,7 +481,7 @@ async function main(): Promise<void> {
   const agentIndex = argv.indexOf('--agent');
   const [action, event] = argv.filter((_, i) => agentIndex < 0 || (i !== agentIndex && i !== agentIndex + 1));
   const input = await readStdin();
-  const { agent, pid: agentPid } = findAgent(parseAgent(argv[agentIndex + 1]));
+  const { agent, pid: agentPid } = findAgent(parseAgent(argvFlag(argv, '--agent')));
   debugLog('hook', `${agent} ${action}${event ? ` ${event}` : ''} (agent pid ${agentPid})`);
 
   if (action === 'session-start') sessionStart(agent, agentPid, input);

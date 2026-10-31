@@ -2,9 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/update-all.ts
 import { spawn } from "node:child_process";
-import fs3 from "node:fs";
-import os3 from "node:os";
-import path4 from "node:path";
+import fs4 from "node:fs";
+import os4 from "node:os";
+import path5 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -160,6 +160,11 @@ function inRoots(dir, roots) {
   const resolved = resolveReal(dir);
   return roots.some((root) => resolved === root || resolved.startsWith(root + path2.sep));
 }
+function outsideIsolatedHome(dir) {
+  const roots = isolatedStateRoots();
+  if (!roots) return false;
+  return !inRoots(dir, roots);
+}
 function readVersion(file) {
   try {
     const version = JSON.parse(fs2.readFileSync(file, "utf8")).version;
@@ -314,7 +319,7 @@ function launchCwd(argv = process.argv) {
   let cwd = process.cwd();
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
-    if (arg === "--cwd" && argv[i + 1]) cwd = path2.resolve(argv[++i]);
+    if (arg === "--cwd" && argv[i + 1] && !argv[i + 1].startsWith("--")) cwd = path2.resolve(argv[++i]);
     else if (arg.startsWith("--cwd=")) cwd = path2.resolve(arg.slice("--cwd=".length));
   }
   return cwd;
@@ -439,10 +444,51 @@ function installsInScope(installs = findInstalls()) {
   return installs.filter((install) => inRoots(install.dir, roots));
 }
 
-// src/version-check.ts
+// src/core/sandbox-launch.ts
+import fs3 from "node:fs";
+import os3 from "node:os";
 import path3 from "node:path";
+function inTestSandbox() {
+  return process.env.TELEPATHY_SANDBOX === "1";
+}
+function realpathOr(file) {
+  try {
+    return fs3.realpathSync(file);
+  } catch {
+    return path3.resolve(file);
+  }
+}
+function resolveOnPath(cmd, env = process.env) {
+  if (cmd.includes("/") || cmd.includes("\\")) {
+    const abs = path3.resolve(cmd);
+    return fs3.existsSync(abs) ? abs : void 0;
+  }
+  for (const dir of (env.PATH ?? "").split(path3.delimiter)) {
+    if (!dir) continue;
+    const candidate = path3.join(dir, cmd);
+    if (fs3.existsSync(candidate)) return candidate;
+  }
+  return void 0;
+}
+function sandboxAllowsExecutable(file) {
+  if (!inTestSandbox()) return true;
+  const resolved = realpathOr(file);
+  const configured = process.env.TELEPATHY_CODEX_BIN;
+  if (configured && realpathOr(configured) === resolved) return true;
+  const tmp = realpathOr(os3.tmpdir());
+  return resolved === tmp || resolved.startsWith(tmp + path3.sep);
+}
+function sandboxSpawnBlock(cmd, env = process.env) {
+  if (!inTestSandbox()) return void 0;
+  const resolved = resolveOnPath(cmd, env);
+  if (!resolved || sandboxAllowsExecutable(resolved)) return void 0;
+  return `refusing to run ${resolved} from a test sandbox`;
+}
+
+// src/version-check.ts
+import path4 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path3.join(stateDir(), "github-version.json");
+var cacheFile = () => path4.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -487,7 +533,15 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os3.homedir()) {
+function runHarnessCommand({ cmd, args }, cwd = os4.homedir()) {
+  const blocked = sandboxSpawnBlock(cmd);
+  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (cmd === "codex" && inTestSandbox()) {
+    const home2 = configuredEnv("CODEX_HOME");
+    if (!home2 || outsideIsolatedHome(home2)) {
+      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` });
+    }
+  }
   return new Promise((resolve) => {
     let output = "";
     const child = spawn(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
@@ -510,19 +564,19 @@ function runHarnessCommand({ cmd, args }, cwd = os3.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path4.join(process.env.XDG_CACHE_HOME || path4.join(os3.homedir(), ".cache"), install.agent, "packages");
-  const relative = path4.relative(packages, install.dir).split(path4.sep);
-  const entry = path4.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path4.join(path4.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs3.renameSync(entry, aside);
+  const packages = path5.join(process.env.XDG_CACHE_HOME || path5.join(os4.homedir(), ".cache"), install.agent, "packages");
+  const relative = path5.relative(packages, install.dir).split(path5.sep);
+  const entry = path5.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path5.join(path5.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs4.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs3.rmSync(aside, { recursive: true, force: true });
+    fs4.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs3.rmSync(entry, { recursive: true, force: true });
-  fs3.renameSync(aside, entry);
+  fs4.rmSync(entry, { recursive: true, force: true });
+  fs4.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 var lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";

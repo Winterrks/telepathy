@@ -98,13 +98,14 @@ describe('transcript confirmation', () => {
   });
 
   test('a tool call that already used most of the window does not wait out the rest of the abort', async () => {
-    arm('5000', '5000');
-    beginToolCall(Date.now() - 9_000);
+    arm('30000', '5000');
+    beginToolCall(Date.now() - 34_000);
     const { from, to } = pair();
     const started = Date.now();
     try {
       const result = await sendMessage(from, to.id, 'almost out of time');
-      assert.ok(Date.now() - started < 3_000);
+      // About 1s of grace is left. Waiting out a fresh 30s abort would miss this.
+      assert.ok(Date.now() - started < 15_000, `confirm took ${Date.now() - started}ms`);
       assert.equal(result.ok, false);
       if (result.ok) return;
       assertNoRepeatedSentence(result.error);

@@ -5,6 +5,7 @@ import { debugLog } from './core/debug.ts';
 import { claimInbox, formatMonitorLine } from './core/messages.ts';
 import { ensureDir, inboxDir, peerDir, readJson } from './core/paths.ts';
 import { isDeliveryOwner, linkedPeerId, peerId, registerListener } from './core/peers.ts';
+import { argvFlag } from './core/argv.ts';
 import { findAgent, isAlive, isSameProcess, parseAgent } from './core/proc.ts';
 
 /**
@@ -28,7 +29,7 @@ if (process.env.CLAUDE_CODE_MESSAGING_SOCKET && (rewake || !once)) {
   debugLog('monitor', 'CLAUDE_CODE_MESSAGING_SOCKET is set; exiting without registering a listener');
   process.exit(0);
 }
-const { agent, pid: agentPid } = findAgent(parseAgent(argv[argv.indexOf('--agent') + 1]));
+const { agent, pid: agentPid } = findAgent(parseAgent(argvFlag(argv, '--agent')));
 let id = linkedPeerId(agent, agentPid) ?? peerId(agent, agentPid);
 const listenerFile = () => path.join(peerDir(id), 'listener.json');
 

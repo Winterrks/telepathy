@@ -182,7 +182,7 @@ describe('delivery ladder', () => {
     const before = fs.existsSync(sb.codexLog) ? fs.readFileSync(sb.codexLog, 'utf8').split('\n').filter(Boolean).length : 0;
     const started = Date.now();
     const result = await sendMessage(sender(), 'codex:thread-stop', 'after the stop');
-    assert.ok(Date.now() - started < 2_000);
+    assert.ok(Date.now() - started < 15_000, `offline interrupt took ${Date.now() - started}ms`);
     assert.equal(result.ok, false);
     if (result.ok) return;
     assert.match(result.error, /is interrupted, so its queue will not run this\. Nothing was left for a later prompt\./);

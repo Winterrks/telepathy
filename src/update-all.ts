@@ -3,7 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { agentLabel } from './core/agents.ts';
-import { installsInScope, isNewer, type Install, isOpencodeNpmInstall } from './core/installs.ts';
+import { installsInScope, isNewer, type Install, isOpencodeNpmInstall, outsideIsolatedHome } from './core/installs.ts';
+import { configuredEnv } from './core/paths.ts';
+import { inTestSandbox, sandboxSpawnBlock } from './core/sandbox-launch.ts';
 import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
 
 /**
@@ -52,6 +54,14 @@ function stepsFor(install: Install): Step[] | 'cache' {
 
 /** Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). */
 export function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
+  const blocked = sandboxSpawnBlock(cmd);
+  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (cmd === 'codex' && inTestSandbox()) {
+    const home = configuredEnv('CODEX_HOME');
+    if (!home || outsideIsolatedHome(home)) {
+      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home ?? 'CODEX_HOME unset'})` });
+    }
+  }
   return new Promise((resolve) => {
     let output = '';
     const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });

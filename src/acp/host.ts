@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import type { Agent } from '../core/agents.ts';
 import { harnessProvidesMcp } from '../cli/launch.ts';
+import { mcpChildEnv } from '../mcp-env.ts';
 import { copilotLogHasMarker } from '../core/confirm.ts';
 import { copilotEventsFile, readSession, sessionPeerId } from '../core/peers.ts';
 import { VERSION } from '../core/version.ts';
@@ -69,8 +70,8 @@ interface McpServer {
 /**
  * The MCP server block for `session/new`. An empty list leaves the agent's own settings in place.
  * Send it only when initialize advertises stdio. Copilot advertises http and sse and rejects a stdio
- * server here (`--additional-mcp-config` is how that session gets one). The env array replaces the
- * server's environment, so it carries the variables the user already has.
+ * server here (`--additional-mcp-config` is how that session gets one). The env list replaces the
+ * server's environment, so it carries the variables the server reads, not the whole process environment.
  */
 export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = process.env): McpServer[] {
   if (harnessProvidesMcp(agent)) return [];
@@ -82,9 +83,7 @@ export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = proce
       name: 'telepathy',
       command: process.execPath,
       args,
-      env: Object.entries(env)
-        .filter((item): item is [string, string] => typeof item[1] === 'string')
-        .map(([name, value]) => ({ name, value })),
+      env: Object.entries(mcpChildEnv(env)).map(([name, value]) => ({ name, value })),
     },
   ];
 }
@@ -116,10 +115,9 @@ function copilotCliMcp(agent: Agent, env: NodeJS.ProcessEnv): CliMcp | undefined
   const file = path.join(dir, 'mcp.json');
   const entry = mcpEntry();
   const args = entry.viaCli ? [entry.file, 'mcp', '--agent', agent] : [entry.file, '--agent', agent];
-  const serverEnv: Record<string, string> = {};
-  for (const [key, value] of Object.entries(env)) {
-    if (typeof value === 'string') serverEnv[key] = value;
-  }
+  // Copilot 1.0.105 inherits PATH and takes every other variable from this object. Listing the whole
+  // process environment wrote tokens to disk. The server only needs its own settings plus HOME.
+  const serverEnv = mcpChildEnv(env);
   fs.writeFileSync(
     file,
     JSON.stringify({

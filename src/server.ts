@@ -28,6 +28,7 @@ import {
   selfPeer,
   sessionPeerId,
 } from './core/peers.ts';
+import { argvFlag } from './core/argv.ts';
 import { claimResumedCopilot } from './core/copilot-resume.ts';
 import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
 import {
@@ -50,10 +51,7 @@ import { scheduleAutoUpdate } from './auto-update.ts';
  */
 export async function startMcpServer(): Promise<void> {
 const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const value = argv[argv.indexOf(name) + 1];
-  return value && !value.startsWith('--') ? value : undefined;
-};
+const flag = (name: string) => argvFlag(argv, name);
 const { agent, pid: agentPid } = findAgent(parseAgent(flag('--agent')));
 
 /**

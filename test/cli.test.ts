@@ -14,6 +14,8 @@ import { clearProcessListCache, descendantPids, resolveCopilotPid } from '../src
 import { claimPluginSession, readHeadlessRecord } from '../src/headless/peer.ts';
 import { FORWARDED_ENV } from '../src/mcp-env.ts';
 import { advertisesStdioMcp } from '../src/acp/host.ts';
+import { argvFlag } from '../src/core/argv.ts';
+import { codexCandidateBins, queueIntoCodex } from '../src/core/codex-queue.ts';
 import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
 import { describePeer } from '../src/core/listing.ts';
 import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
@@ -422,8 +424,74 @@ test('headless opencode prompts the served session', async () => {
   }
 });
 
+test('argvFlag does not treat argv[0] as a missing flag', () => {
+  assert.equal(argvFlag(['mcp', '--agent', 'copilot'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name', '--agent'], '--name'), undefined);
+  assert.equal(argvFlag(['mcp', '--name', 'gem'], '--name'), 'gem');
+  assert.equal(argvFlag(['--agent', 'copilot'], '--agent'), 'copilot');
+});
+
+test('telepathy mcp without --name does not keep the stable name mcp', async () => {
+  const w = world();
+  const agent = fakeAgent();
+  const id = `copilot-${agent.pid}`;
+  const dir = path.join(w.sb.home, 'peers', id);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'identity.json'), JSON.stringify({ name: 'mcp', pid: 1 }));
+  const env: NodeJS.ProcessEnv = { ...w.env, TELEPATHY_AGENT_PID: String(agent.pid) };
+  delete env.TELEPATHY_NAME;
+  const child = spawn(process.execPath, [CLI, 'mcp', '--agent', 'copilot'], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  try {
+    await waitFor(() => (fs.existsSync(path.join(dir, 'presence.json')) ? true : undefined));
+    assert.equal(fs.existsSync(path.join(dir, 'identity.json')), false);
+    const peer = readPeer(id);
+    assert.equal(peer?.stableName, undefined);
+    assert.notEqual(peer?.name, 'mcp');
+  } finally {
+    if (child.exitCode === null) child.kill('SIGKILL');
+    await killAndWait(agent);
+    w.restore();
+  }
+});
+
+test('a sandbox does not exec a codex binary outside the temp dir', async () => {
+  const w = world();
+  // world() points HOME at the sandbox, and that directory is under the temp dir. The machine home is not.
+  const outside = fs.mkdtempSync(path.join(os.userInfo().homedir, 'tp-codex-leak-'));
+  const marker = path.join(outside, 'wrote');
+  const binDir = path.join(outside, 'bin');
+  fs.mkdirSync(binDir);
+  fs.writeFileSync(
+    path.join(binDir, 'codex'),
+    `#!${process.execPath}\nrequire('fs').writeFileSync(process.env.MARKER, 'yes');\n`,
+  );
+  fs.chmodSync(path.join(binDir, 'codex'), 0o755);
+  const prevBin = process.env.TELEPATHY_CODEX_BIN;
+  const prevPath = process.env.PATH;
+  delete process.env.TELEPATHY_CODEX_BIN;
+  process.env.PATH = binDir;
+  process.env.MARKER = marker;
+  process.env.CODEX_HOME = w.sb.codexHome;
+  process.env.TELEPATHY_HOME = w.sb.home;
+  process.env.TELEPATHY_SANDBOX = '1';
+  try {
+    assert.equal(codexCandidateBins().some((bin) => bin.includes('homebrew') || bin.includes('/usr/local/')), false);
+    await assert.rejects(() => queueIntoCodex('thread-1', 'hi', w.sb.codexHome), /test sandbox/);
+    assert.equal(fs.existsSync(marker), false);
+  } finally {
+    if (prevBin === undefined) delete process.env.TELEPATHY_CODEX_BIN;
+    else process.env.TELEPATHY_CODEX_BIN = prevBin;
+    if (prevPath === undefined) delete process.env.PATH;
+    else process.env.PATH = prevPath;
+    delete process.env.MARKER;
+    fs.rmSync(outside, { recursive: true, force: true });
+    w.restore();
+  }
+});
+
 test('headless ACP adds telepathy only when that harness has no install, and confirms on an early update', async () => {
-  const w = world({ FAKE_ACP_HOLD_MS: '4000' });
+  const w = world({ FAKE_ACP_HOLD_MS: '20000', GH_TOKEN: 'should-not-be-on-disk', AWS_SECRET_ACCESS_KEY: 'also-secret' });
   confirmEnv();
   const launched = spawnCli(['run', '--headless', '--name', 'gem', 'copilot'], w.env);
   try {
@@ -438,12 +506,16 @@ test('headless ACP adds telepathy only when that harness has no install, and con
     assert.ok(server.args?.includes('--agent'));
     assert.deepEqual(server.tools, ['*']);
     assert.equal(typeof server.env?.HOME, 'string');
+    assert.equal(typeof server.env?.PATH, 'string');
     assert.equal(typeof server.env?.TELEPATHY_HOME, 'string');
+    assert.equal(server.env?.GH_TOKEN, undefined);
+    assert.equal(server.env?.AWS_SECRET_ACCESS_KEY, undefined);
     const self = sender();
     const started = Date.now();
     const sent = await sendMessage(self, 'copilot:gem', 'early update');
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
-    assert.ok(Date.now() - started < 3000);
+    // The turn is held for 20s. Confirming on the early update finishes well under that, and under the 100s window.
+    assert.ok(Date.now() - started < 15_000, `confirm took ${Date.now() - started}ms`);
   } finally {
     await stop(w.env, 'gem', launched.done, launched.child).catch(() => launched.child.kill('SIGKILL'));
     w.restore();

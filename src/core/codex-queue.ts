@@ -4,16 +4,36 @@ import path from 'node:path';
 import readline from 'node:readline';
 import { promisify } from 'node:util';
 import { debugLog } from './debug.ts';
+import { configuredEnv } from './paths.ts';
+import { outsideIsolatedHome } from './installs.ts';
+import { inTestSandbox, resolveOnPath, sandboxAllowsExecutable } from './sandbox-launch.ts';
 import { archivePending, type Message, pendingMessages } from './messages.ts';
 import { VERSION } from './version.ts';
 
 const execFileAsync = promisify(execFile);
 
-function codexCandidates(): string[] {
+export function codexCandidateBins(): string[] {
   const configured = process.env.TELEPATHY_CODEX_BIN;
   if (configured) return [configured];
+  // A test sandbox must not fall through to the machine install. Those absolute paths ignore PATH.
+  if (inTestSandbox()) return ['codex'];
   // MCP servers and hooks may run with a minimal PATH, so also try the usual install locations.
   return ['codex', '/opt/homebrew/bin/codex', '/usr/local/bin/codex', path.join(os.homedir(), '.local', 'bin', 'codex')];
+}
+
+/** A sandbox with no in-sandbox CODEX_HOME would make Codex write the real `~/.codex`. */
+function sandboxCodexHomeBlock(codexHome: string | undefined): string | undefined {
+  if (!inTestSandbox()) return undefined;
+  const home = codexHome || configuredEnv('CODEX_HOME');
+  if (!home || outsideIsolatedHome(home)) return `refusing to launch codex outside the test sandbox (${home ?? 'CODEX_HOME unset'})`;
+  return undefined;
+}
+
+function sandboxBinaryBlock(bin: string): string | undefined {
+  if (!inTestSandbox()) return undefined;
+  const resolved = resolveOnPath(bin);
+  if (!resolved || sandboxAllowsExecutable(resolved)) return undefined;
+  return `refusing to run ${resolved} from a test sandbox`;
 }
 
 const codexEnv = (codexHome: string | undefined) => ({ ...process.env, ...(codexHome ? { CODEX_HOME: codexHome } : {}) });
@@ -23,9 +43,13 @@ const codexEnv = (codexHome: string | undefined) => ({ ...process.env, ...(codex
  * queued item's id, which `codex queue` prints, when it can be read.
  */
 export async function queueIntoCodex(threadId: string, text: string, codexHome: string | undefined): Promise<string | undefined> {
+  const blocked = sandboxCodexHomeBlock(codexHome);
+  if (blocked) throw new Error(blocked);
   const args = ['queue', `--thread=${threadId}`, `--message=${text}`];
   let lastError: unknown;
-  for (const bin of codexCandidates()) {
+  for (const bin of codexCandidateBins()) {
+    const binary = sandboxBinaryBlock(bin);
+    if (binary) throw new Error(binary);
     try {
       const { stdout } = await execFileAsync(bin, args, { env: codexEnv(codexHome), timeout: 30_000, maxBuffer: 1024 * 1024 });
       return /Queued message (\S+) for thread/.exec(stdout)?.[1];
@@ -54,7 +78,9 @@ export async function deleteFromCodexQueue(
   timeoutMs = 10_000,
 ): Promise<Map<string, boolean> | undefined> {
   if (!queueIds.length) return new Map();
-  for (const bin of codexCandidates()) {
+  if (sandboxCodexHomeBlock(codexHome)) return undefined;
+  for (const bin of codexCandidateBins()) {
+    if (sandboxBinaryBlock(bin)) return undefined;
     try {
       return await appServerDeletes(bin, threadId, queueIds, codexHome, timeoutMs);
     } catch (err) {
