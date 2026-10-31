@@ -213,12 +213,14 @@ before the first prompt. `copilot --resume=<id>` and `copilot --resume <id>` rec
 `session.resume` for this directory, newer than the process. A fresh `copilot` in the same folder rewrites
 `workspace.yaml` and does not write `session.resume`, so that file does not block the named resume. `--continue` and a
 bare `--resume` still claim nothing when two sessions in the folder were touched after the process started. If the
-signals disagree, it stays `session-<pid>` until the first prompt. `telepathy run copilot` injects messages as they
+signals disagree, it stays `copilot-<pid>` until the first prompt. `telepathy run copilot` injects messages as they
 arrive. Copilot's ACP initialize advertises http and sse only, and it rejects a stdio server on `session/new`.
 A `plugin install` copy under `installed-plugins` starts telepathy's server, so the host leaves that command line alone.
 A plugin loaded with `plugin marketplace add <dir>` does not start the server. The host adds it for that session with
 `copilot --acp --additional-mcp-config @<file>`, the same local server the plugin manifest uses. That file lists
-telepathy's own variables (`TELEPATHY_HOME`, `TELEPATHY_NAME`, `PATH`, `HOME`) so tokens stay off disk. Copilot
+every `TELEPATHY_*` name, plus `CODEX_HOME`, `COPILOT_HOME`, `PATH`, `HOME`, `USER`, `LOGNAME`, `TMPDIR`, `TMP`,
+`TEMP`, `LANG`, `LC_ALL`, `LC_CTYPE`, `XDG_CONFIG_HOME`, `XDG_CACHE_HOME`, `XDG_DATA_HOME`, and `XDG_RUNTIME_DIR`,
+so tokens outside that list stay off disk. Copilot
 1.0.105 still passes its own full environment to the spawned server. The file does not restrict that process. Leave that host with
 `/exit`, `/quit`, or Ctrl-C.
 
@@ -476,7 +478,7 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   the id. Two windows in the same directory stay two rows until each one has a thread id.
   Antigravity registers from `SessionStart`'s `conversationId`, so a resume with `--conversation` is the same
   peer and `/fork` is a new one.
-- **A resumed Copilot keeps its id before the first prompt.** A fresh `copilot` is `session-<pid>` until sessionStart.
+- **A resumed Copilot keeps its id before the first prompt.** A fresh `copilot` is `copilot-<pid>` until sessionStart.
   `copilot --resume=<id>` and `copilot --resume <id>` claim that session when its own `session.resume` in
   `$COPILOT_HOME/session-state/<id>/events.jsonl` is newer than the process and the cwd matches. Another session that
   only rewrote `workspace.yaml` is not a second candidate. `--continue` and a bare `--resume` claim the one post-start
