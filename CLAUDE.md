@@ -34,4 +34,4 @@ npm run check          # typecheck, bundle, test
 
 Commit the bundle with the source change. Do not add `build`, `prepare`, `install`, or `postinstall` scripts.
 
-Never bump the version or publish without the maintainer. The version stays `0.9.0` until they release.
+Never bump the version or publish without the maintainer. The version stays `0.10.0` until they release.

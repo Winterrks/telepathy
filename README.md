@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.9.0" src="https://img.shields.io/badge/version-0.9.0-6d28d9">
+  <img alt="version 0.10.0" src="https://img.shields.io/badge/version-0.10.0-6d28d9">
   <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local only, no network" src="https://img.shields.io/badge/network-none-6d28d9">
 </p>
@@ -376,7 +376,7 @@ The same updates are `telepathy update` (and `telepathy update --dry-run`) once 
 
 ## The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.9.0. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.10.0. Requires Node 20 or newer.
 
 ```sh
 telepathy update [--dry-run]          # every installed copy, each with that harness's own updater

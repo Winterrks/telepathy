@@ -768,7 +768,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.9.0" : "0.0.0-dev";
+    VERSION = true ? "0.10.0" : "0.0.0-dev";
   }
 });
 
