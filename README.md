@@ -217,8 +217,9 @@ signals disagree, it stays `session-<pid>` until the first prompt. `telepathy ru
 arrive. Copilot's ACP initialize advertises http and sse only, and it rejects a stdio server on `session/new`.
 A `plugin install` copy under `installed-plugins` starts telepathy's server, so the host leaves that command line alone.
 A plugin loaded with `plugin marketplace add <dir>` does not start the server. The host adds it for that session with
-`copilot --acp --additional-mcp-config @<file>`, the same local server the plugin manifest uses. That file carries
-telepathy's own variables (`TELEPATHY_HOME`, `TELEPATHY_NAME`, `PATH`, `HOME`), not the rest of the environment. Leave that host with
+`copilot --acp --additional-mcp-config @<file>`, the same local server the plugin manifest uses. That file lists
+telepathy's own variables (`TELEPATHY_HOME`, `TELEPATHY_NAME`, `PATH`, `HOME`) so tokens stay off disk. Copilot
+1.0.105 still passes its own full environment to the spawned server. The file does not restrict that process. Leave that host with
 `/exit`, `/quit`, or Ctrl-C.
 
 ### Qwen Code
