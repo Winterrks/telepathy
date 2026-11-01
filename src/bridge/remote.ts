@@ -4,7 +4,7 @@ import { formatAgo } from '../core/listing.ts';
 import { type Message, newMessageId, type Party, partyOf } from '../core/messages.ts';
 import { envDurationMs } from '../core/paths.ts';
 import { type Peer, peerRef, resolvePeer } from '../core/peers.ts';
-import { call } from './client.ts';
+import { call, UNREACHABLE } from './client.ts';
 import { isOnline, knownDevices, logEvent, preview, type RemoteDevice, type RemotePeerWire } from './state.ts';
 
 /**
@@ -157,7 +157,9 @@ export async function sendRemote(self: Peer, target: RemoteTarget, body: string)
     const code = ((err as Error & { cause?: { code?: string } }).cause ?? {}).code;
     const why = (err as Error).name === 'TimeoutError' ? 'it did not answer before the wait ended' : (err as Error).message;
     // A refused or unroutable connection never reached that device, so nothing there needs withdrawing.
-    const error = ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN'].includes(code ?? '')
+    const error = code === UNREACHABLE
+      ? `Message failed: device ${device.slug} is offline (${(err as Error).message}). Nothing was sent.`
+      : ['ECONNREFUSED', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN'].includes(code ?? '')
       ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.`
       : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). ` +
         'That device withdraws any copy it could not confirm, so a later turn there will not show it.';

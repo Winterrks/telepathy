@@ -510,7 +510,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.11.0" : "0.0.0-dev";
+var VERSION = true ? "0.11.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";

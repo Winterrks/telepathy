@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -11,7 +12,17 @@ import { listPeers } from '../core/peers.ts';
 import { procStart } from '../core/proc.ts';
 import { peerStatus, statusText } from '../core/status.ts';
 import { VERSION } from '../core/version.ts';
-import { call, type Hello, hello, requestAad, responseAad, type WireRequest, type WireResponse } from './client.ts';
+import {
+  call,
+  type Hello,
+  hello,
+  REVERSE_ROUTES,
+  requestAad,
+  responseAad,
+  type Target,
+  type WireRequest,
+  type WireResponse,
+} from './client.ts';
 import { commitment, confirmMac, type KeyPair, macEqual, newKeyPair, open, pairKey, randomNonce, seal, shortCode, type PairTranscript } from './crypto.ts';
 import { startMdns } from './mdns.ts';
 import {
@@ -22,6 +33,7 @@ import {
   deviceIdentity,
   logEvent,
   manualHosts,
+  onlineWindowMs,
   pairingDir,
   preview,
   PROTOCOL,
@@ -84,6 +96,26 @@ const SKEW_MS = 120_000;
 const MAX_LAN_FOUND = 64;
 // A 100,000-character message of multibyte text, sealed and base64-encoded, fits.
 const MAX_BODY = 2 * 1024 * 1024;
+
+/**
+ * A device that can't accept connections (a firewall, NAT) keeps a request open to each device it can reach.
+ * This is how long that request waits here for something to carry back; it stays inside the online window.
+ */
+const holdMs = () => Math.min(envDurationMs('TELEPATHY_BRIDGE_HOLD_MS', 10_000), Math.max(500, onlineWindowMs() / 2));
+/**
+ * A request for such a device leaves within this or fails as never sent. Its sender's deadline is counted from
+ * when it asked, so a request may not sit here longer than the margin the sender keeps back.
+ */
+const PICKUP_MS = 1_000;
+const MAX_REVERSE_BATCH = 16;
+
+/** The two ends of a request: its socket's addresses, or, for one that came back over a reverse connection, the address this device dialed. */
+interface Conn {
+  remote: string;
+  local: string;
+}
+const v4 = (addr: string | undefined) => (addr ?? '').replace(/^::ffff:/, '');
+const hostOf = (addr: string) => addr.replace(/:\d+$/, '');
 
 /** One line, at most `max` characters: what another device says ends up in listings agents read. */
 const clean = (value: unknown, max: number) =>
@@ -188,7 +220,7 @@ export async function runDaemon(): Promise<number> {
   };
 
   /** A request from a paired device (sealed) or from a device of the same user on the tailnet (plain). */
-  const authenticate = async (req: http.IncomingMessage, wire: WireRequest, route: string) => {
+  const authenticate = async (conn: Conn, wire: WireRequest, route: string) => {
     if (typeof wire.device !== 'string' || !DEVICE_ID.test(wire.device)) return { error: 'malformed request' };
     if (wire.sealed) {
       const trusted = trustedDevices();
@@ -210,10 +242,8 @@ export async function runDaemon(): Promise<number> {
       seenNonces.set(replayKey, Date.now());
       return { body, key, nonce: wire.sealed.n };
     }
-    const remote = req.socket.remoteAddress ?? '';
-    const local = req.socket.localAddress ?? '';
     const tn = await currentTailnet();
-    if (!tn || !isTailscaleIp(local) || !isTailscaleIp(remote) || !(await sameTailnetUser(remote.replace(/^::ffff:/, ''), tn.userId))) {
+    if (!tn || !isTailscaleIp(conn.local) || !isTailscaleIp(conn.remote) || !(await sameTailnetUser(conn.remote, tn.userId))) {
       return { error: 'not trusted: pair with `telepathy bridge pair`, or use a device of the same Tailscale user' };
     }
     return { body: wire.body };
@@ -254,16 +284,40 @@ export async function runDaemon(): Promise<number> {
       child.stdin.end(JSON.stringify(payload));
     });
 
-  const handlers: Record<string, (req: http.IncomingMessage, raw: unknown) => Promise<WireResponse>> = {
-    '/v1/peers': async (req, raw) => {
+  // Reverse connections, on the side that is reached: the device that keeps a request open here, by id.
+  interface Outgoing {
+    id: string;
+    route: string;
+    wire: WireRequest;
+  }
+  interface Link {
+    name: string;
+    trust: 'tailscale' | 'paired';
+    addr: string;
+    version: string;
+    peers: RemotePeerWire[];
+    seenAt: number;
+    /** Ends the request that device has waiting here now, if any. */
+    release?: () => void;
+    queue: Outgoing[];
+    waiting: Map<string, (response: WireResponse) => void>;
+  }
+  const links = new Map<string, Link>();
+  /** When this device last reached each device directly. */
+  const directAt = new Map<string, number>();
+  const reachedDirectly = (id: string) => Date.now() - (directAt.get(id) ?? 0) < onlineWindowMs();
+  const linkFresh = (link: Link) => !!link.release || Date.now() - link.seenAt < onlineWindowMs();
+
+  const handlers: Record<string, (conn: Conn, raw: unknown, gone?: AbortSignal) => Promise<WireResponse>> = {
+    '/v1/peers': async (conn, raw) => {
       const wire = raw as WireRequest;
-      const auth = await authenticate(req, wire, '/v1/peers');
+      const auth = await authenticate(conn, wire, '/v1/peers');
       if ('error' in auth) return { error: auth.error };
       return reply(auth, wire, '/v1/peers', { peers: localPeersWire() });
     },
-    '/v1/send': async (req, raw) => {
+    '/v1/send': async (conn, raw) => {
       const wire = raw as WireRequest;
-      const auth = await authenticate(req, wire, '/v1/send');
+      const auth = await authenticate(conn, wire, '/v1/send');
       if ('error' in auth) return { error: auth.error };
       const input = (auth.body ?? {}) as { from?: { id?: string; agent?: string; name?: string; address?: string }; to?: unknown; body?: unknown; budgetMs?: unknown };
       const from = input.from;
@@ -293,7 +347,7 @@ export async function runDaemon(): Promise<number> {
       });
       return reply(auth, wire, '/v1/send', result);
     },
-    '/v1/pair/start': async (req, raw) => {
+    '/v1/pair/start': async (conn, raw) => {
       const body = raw as { id?: string; name?: string; commit?: string };
       if (!pairingOpen()) return { error: `pairing is not open on ${self.name}; run \`telepathy bridge pair\` there first` };
       if (typeof body.id !== 'string' || !DEVICE_ID.test(body.id) || typeof body.commit !== 'string' || !body.commit) {
@@ -302,7 +356,7 @@ export async function runDaemon(): Promise<number> {
       if (pairs.size >= 4) return { error: 'too many pairing attempts; try again in a minute' };
       const session: PairSession = {
         id: randomNonce().replace(/[^a-zA-Z0-9]/g, '').slice(0, 16),
-        initiator: { id: body.id, name: safeName(body.name), addr: req.socket.remoteAddress?.replace(/^::ffff:/, '') ?? '' },
+        initiator: { id: body.id, name: safeName(body.name), addr: conn.remote },
         commit: body.commit,
         keys: newKeyPair(),
         nonce: randomNonce(),
@@ -311,7 +365,7 @@ export async function runDaemon(): Promise<number> {
       pairs.set(session.id, session);
       return { body: { session: session.id, id: self.id, name: self.name, publicKey: session.keys.publicKey, nonce: session.nonce } };
     },
-    '/v1/pair/reveal': async (_req, raw) => {
+    '/v1/pair/reveal': async (_conn, raw) => {
       const body = raw as { session?: string; publicKey?: string; nonce?: string };
       const session = body.session ? pairs.get(body.session) : undefined;
       if (!session || !body.publicKey || !body.nonce) return { error: 'unknown pairing session' };
@@ -342,7 +396,7 @@ export async function runDaemon(): Promise<number> {
       });
       return { body: { ok: true } };
     },
-    '/v1/pair/confirm': async (_req, raw) => {
+    '/v1/pair/confirm': async (_conn, raw) => {
       const body = raw as { session?: string; mac?: string; port?: number };
       const session = body.session ? pairs.get(body.session) : undefined;
       if (!session?.key || !body.mac) return { error: 'unknown pairing session' };
@@ -378,6 +432,94 @@ export async function runDaemon(): Promise<number> {
       });
       writeJsonAtomic(stateFile, { ...readJson<Record<string, unknown>>(stateFile), state: 'paired' });
       return { body: { mac: confirmMac(session.key, 'responder') } };
+    },
+    // A device this one could not connect to, asking for requests to carry back. It is authenticated like any
+    // request, and what it carries back is checked on that device as if it had come in directly.
+    '/v1/reverse': async (conn, raw, gone) => {
+      const wire = raw as WireRequest;
+      const auth = await authenticate(conn, wire, '/v1/reverse');
+      if ('error' in auth) return { error: auth.error };
+      const input = (auth.body ?? {}) as { peers?: unknown; version?: unknown };
+      const link: Link = links.get(wire.device) ?? {
+        name: '',
+        trust: 'tailscale',
+        addr: '',
+        version: '?',
+        peers: [],
+        seenAt: 0,
+        queue: [],
+        waiting: new Map(),
+      };
+      link.name = safeName(wire.name);
+      link.trust = auth.key ? 'paired' : 'tailscale';
+      link.addr = conn.remote;
+      link.version = safeName(input.version, '?').slice(0, 20);
+      link.peers = Array.isArray(input.peers) ? (input.peers as RemotePeerWire[]).slice(0, 500).flatMap(cleanPeer) : [];
+      link.seenAt = Date.now();
+      links.set(wire.device, link);
+      if (!reachedDirectly(wire.device)) {
+        // One waiting request per device: a newer one means the older connection is gone.
+        link.release?.();
+        if (!link.queue.length) {
+          await new Promise<void>((resolve) => {
+            const done = () => {
+              clearTimeout(timer);
+              gone?.removeEventListener('abort', done);
+              if (link.release === done) link.release = undefined;
+              resolve();
+            };
+            const timer = setTimeout(done, holdMs());
+            link.release = done;
+            gone?.addEventListener('abort', done);
+          });
+        }
+        link.seenAt = Date.now();
+        // Its connection closed while it waited: whatever is queued waits for the next one.
+        if (gone?.aborted) return { error: 'closed' };
+      }
+      const requests = link.queue.splice(0, MAX_REVERSE_BATCH);
+      return reply(auth, wire, '/v1/reverse', { direct: reachedDirectly(wire.device), requests });
+    },
+    '/v1/reverse/done': async (conn, raw) => {
+      const wire = raw as WireRequest;
+      const auth = await authenticate(conn, wire, '/v1/reverse/done');
+      if ('error' in auth) return { error: auth.error };
+      const input = (auth.body ?? {}) as { id?: unknown; response?: unknown };
+      const finish = typeof input.id === 'string' ? links.get(wire.device)?.waiting.get(input.id) : undefined;
+      const valid = !!input.response && typeof input.response === 'object';
+      if (finish && valid) finish(input.response as WireResponse);
+      return reply(auth, wire, '/v1/reverse/done', { ok: !!finish && valid });
+    },
+    // This machine's own processes, handing a request for a device reached in reverse. Loopback only: anything
+    // that arrives on another address is not this machine's.
+    '/v1/outbox': async (conn, raw) => {
+      if (conn.local !== '127.0.0.1' || conn.remote !== '127.0.0.1') return { error: 'not found' };
+      const input = raw as { device?: unknown; route?: unknown; wire?: unknown; timeoutMs?: unknown };
+      if (typeof input.route !== 'string' || !REVERSE_ROUTES.includes(input.route) || !input.wire || typeof input.wire !== 'object') {
+        return { error: 'malformed request' };
+      }
+      const link = typeof input.device === 'string' ? links.get(input.device) : undefined;
+      if (!link || !linkFresh(link)) return { error: 'it is not connected to this device right now', unreachable: true };
+      const outgoing: Outgoing = { id: randomUUID(), route: input.route, wire: input.wire as WireRequest };
+      const timeoutMs = Math.max(1000, Math.min(130_000, Number(input.timeoutMs) || 0));
+      return await new Promise<WireResponse>((resolve) => {
+        const finish = (response: WireResponse) => {
+          clearTimeout(pickup);
+          clearTimeout(timer);
+          link.waiting.delete(outgoing.id);
+          resolve(response);
+        };
+        const pickup = setTimeout(() => {
+          const at = link.queue.indexOf(outgoing);
+          if (at < 0) return;
+          link.queue.splice(at, 1);
+          finish({ error: 'it did not pick the request up, so nothing reached it', unreachable: true });
+        }, PICKUP_MS);
+        const timer = setTimeout(() => finish({ error: 'it did not answer in time' }), timeoutMs);
+        link.waiting.set(outgoing.id, finish);
+        link.queue.push(outgoing);
+        link.release?.();
+      });
     },
   };
 
@@ -416,9 +558,15 @@ export async function runDaemon(): Promise<number> {
       } catch {
         return send(400, { error: 'bad JSON' });
       }
-      handler(req, raw).then(
-        (out) => send(out.error ? 403 : 200, out),
-        (err: Error) => send(500, { error: err.message }),
+      const gone = new AbortController();
+      res.on('close', () => gone.abort());
+      handler({ remote: v4(req.socket.remoteAddress), local: v4(req.socket.localAddress) }, raw, gone.signal).then(
+        (out) => {
+          if (!res.destroyed) send(out.error ? 403 : 200, out);
+        },
+        (err: Error) => {
+          if (!res.destroyed) send(500, { error: err.message });
+        },
       );
     });
   };
@@ -472,6 +620,62 @@ export async function runDaemon(): Promise<number> {
         lanFound.set(found.addr, { id: found.id, at: Date.now() });
       })
     : () => {};
+
+  // Reverse connections, on the side that can't be reached: one open request to each device this one reaches.
+  const stopping = new AbortController();
+  const reverseLoops = new Map<string, { running: boolean; retryAt: number }>();
+  /** What each device said last about reaching this one. */
+  const reachesUs = new Map<string, { how: 'direct' | 'reverse'; at: number }>();
+
+  const serveReverse = async (target: Target, request: { id?: unknown; route?: unknown; wire?: unknown }) => {
+    if (typeof request.id !== 'string' || typeof request.route !== 'string' || !REVERSE_ROUTES.includes(request.route)) return;
+    const wire = request.wire as WireRequest | undefined;
+    let response: WireResponse;
+    if (!wire || typeof wire !== 'object' || wire.device !== target.id) {
+      response = { error: 'malformed request' };
+    } else {
+      // It came over the connection this device opened to that address, so it is checked as a request from there.
+      const remote = hostOf(target.addr);
+      const tn = isTailscaleIp(remote) ? await currentTailnet() : undefined;
+      const local = tn?.selfIps.find((ip) => ip.includes('.')) ?? '';
+      try {
+        response = await handlers[request.route]({ remote, local }, wire);
+      } catch (err) {
+        response = { error: (err as Error).message };
+      }
+    }
+    await call(target, '/v1/reverse/done', { id: request.id, response }, 10_000, stopping.signal).catch(() => {});
+  };
+
+  const runReverse = async (target: Target, state: { running: boolean; retryAt: number }) => {
+    state.running = true;
+    try {
+      while (!stopping.signal.aborted) {
+        let answer: { direct?: unknown; requests?: unknown };
+        try {
+          answer = await call(target, '/v1/reverse', { peers: localPeersWire(), version: VERSION }, Math.max(holdMs(), 10_000) + 5000, stopping.signal);
+        } catch (err) {
+          // A bridge from before 0.11.1 has no reverse route; don't ask it on every pass.
+          state.retryAt = Date.now() + (/not found/.test((err as Error).message) ? 300_000 : pollMs());
+          return;
+        }
+        reachesUs.set(target.id, { how: answer.direct === true ? 'direct' : 'reverse', at: Date.now() });
+        const requests = Array.isArray(answer.requests) ? answer.requests.slice(0, MAX_REVERSE_BATCH) : [];
+        for (const request of requests) void serveReverse(target, (request ?? {}) as { id?: unknown });
+        // It reaches this device directly now; the next discovery pass asks again.
+        if (answer.direct === true) return;
+      }
+    } finally {
+      state.running = false;
+    }
+  };
+
+  const ensureReverse = (target: Target) => {
+    const state = reverseLoops.get(target.id) ?? { running: false, retryAt: 0 };
+    reverseLoops.set(target.id, state);
+    if (state.running || Date.now() < state.retryAt || stopping.signal.aborted) return;
+    void runReverse(target, state);
+  };
 
   let discovering = false;
   const discover = async () => {
@@ -532,8 +736,13 @@ export async function runDaemon(): Promise<number> {
             return;
           }
           try {
-            const listed = await call<{ peers: RemotePeerWire[] }>({ id, addr: seen.addr, trust }, '/v1/peers', {}, 2500);
-            updated.set(id, { ...base, lastSeen: now, peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [] });
+            const target: Target = { id, addr: seen.addr, trust };
+            const listed = await call<{ peers: RemotePeerWire[] }>(target, '/v1/peers', {}, 2500);
+            updated.set(id, { ...base, lastSeen: now, peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [], reach: 'direct' });
+            directAt.set(id, Date.now());
+            // That device may be waiting on this one in reverse; tell it now that it is reached directly.
+            links.get(id)?.release?.();
+            ensureReverse(target);
             // Re-read: a `bridge forget` during this pass must not be undone by the snapshot.
             const current = trustedDevices();
             if (paired && Object.hasOwn(current, id) && current[id].addr !== seen.addr) trustDevice({ ...current[id], addr: seen.addr });
@@ -542,6 +751,29 @@ export async function runDaemon(): Promise<number> {
           }
         }),
       );
+
+      // Devices this one could not connect to, but which keep a connection open to it.
+      for (const [id, link] of links) {
+        if (!linkFresh(link) || reachedDirectly(id)) continue;
+        const before = updated.get(id);
+        updated.set(id, {
+          id,
+          name: link.name,
+          slug: before?.slug ?? '',
+          addr: link.addr,
+          route: isTailscaleIp(link.addr) ? 'tailscale' : 'lan',
+          trusted: true,
+          trust: link.trust,
+          lastSeen: new Date(link.release ? Date.now() : link.seenAt).toISOString(),
+          version: link.version,
+          peers: link.peers,
+          reach: 'reverse',
+        });
+      }
+      for (const device of updated.values()) {
+        const said = reachesUs.get(device.id);
+        device.reachesUs = said && Date.now() - said.at < 2 * onlineWindowMs() ? said.how : undefined;
+      }
 
       const day = Date.now() - 86_400_000;
       const devices = [...updated.values()].filter((d) => Date.parse(d.lastSeen) > day || Object.hasOwn(trusted, d.id));
@@ -573,6 +805,8 @@ export async function runDaemon(): Promise<number> {
     const stop = () => {
       clearInterval(poll);
       clearInterval(rebind);
+      stopping.abort();
+      for (const link of links.values()) link.release?.();
       stopMdns();
       for (const server of servers.values()) server.close();
       const record = readJson<DaemonRecord>(daemonFile());

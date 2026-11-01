@@ -26,6 +26,7 @@ Do not weaken these.
 - Tests set `TELEPATHY_SANDBOX=1`. That process must not exec a Codex binary outside the temp dir or with a `CODEX_HOME` outside the sandbox. Telepathy never writes `config.toml` itself.
 - A send to `<address>@<device>` goes from the sender's process to that device's bridge with the sender's remaining deadline less a margin. That bridge runs `deliverLocal` in a `telepathy bridge deliver` child, under the same confirm, and answers inside it. An offline device fails at once. Nothing is queued on either side.
 - The bridge trusts a device only by `tailscale whois` (same user, not shared in, on both tailnet addresses) or by a pair key. Pairing is a commitment, an X25519 exchange, and a 6-digit code both users confirm. Do not add a plain-JSON path for anything else, and do not bind 0.0.0.0.
+- A device others can't connect to (firewall, NAT) holds `/v1/reverse` open on each device it reaches. Requests for it go from the sender's process to its own bridge's `/v1/outbox` (loopback only, `/v1/peers` and `/v1/send` only), out on that held request, and back on `/v1/reverse/done`. The receiving device runs them through the same `authenticate` as a direct request, with the address it dialed as the remote end. A request not picked up within 1s fails as never sent, so the sender's deadline still holds.
 - Messages are wrapped in `<telepathy-peer-message>`; telepathy's own lines in `<telepathy-note kind=…>`. The body escapes `<telepathy-`. The `telepathy-id:` marker stays inside the tag.
 - `telepathy run <agent>` is the ACP host wherever the harness has an ACP mode; `--tui` execs the vendor CLI.
 - `start_agent` spawns `agent.mjs` (from `src/agent-main.ts`) detached. It strips the parent's session markers from the environment, sets the harness's auto mode (never bypass/yolo), model and effort over ACP, and sends each turn's last run of agent text to the parent with `deliverLocal` and `kind: agent-result`. Permission requests go to the parent; only the parent's `answer_permission` answers them. `state.json` reaches `stopped` only after the transcript is flushed.
@@ -45,4 +46,4 @@ npm run check          # typecheck, bundle, test
 
 Commit the bundle with the source change. Do not add `build`, `prepare`, `install`, or `postinstall` scripts.
 
-Never bump the version or publish without the maintainer. The version stays `0.11.0` until they release.
+Never bump the version or publish without the maintainer. The version stays `0.11.1` until they release.

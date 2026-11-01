@@ -26,6 +26,12 @@ export function bridgePort(): number {
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
 }
 
+/** The port this machine's running bridge listens on: its own record, since a session need not share its environment. */
+export function localBridgePort(): number {
+  const port = readJson<{ port?: unknown }>(daemonFile())?.port;
+  return typeof port === 'number' && Number.isInteger(port) && port > 0 && port < 65536 ? port : bridgePort();
+}
+
 /** A device counts as online while its last answer is this recent. */
 export const onlineWindowMs = () => envDurationMs('TELEPATHY_BRIDGE_ONLINE_MS', 15_000);
 
@@ -129,6 +135,13 @@ export interface RemoteDevice {
   lastSeen: string;
   version?: string;
   peers: RemotePeerWire[];
+  /**
+   * How this device reaches it. `reverse`: it does not accept connections (a firewall, NAT), so it keeps one open
+   * to this device and requests go back over that connection.
+   */
+  reach?: 'direct' | 'reverse';
+  /** How it reaches this device, as it said last. `reverse` means it could not connect here. */
+  reachesUs?: 'direct' | 'reverse';
 }
 
 export interface RemoteState {

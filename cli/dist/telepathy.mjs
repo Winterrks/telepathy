@@ -758,7 +758,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.11.0" : "0.0.0-dev";
+    VERSION = true ? "0.11.1" : "0.0.0-dev";
   }
 });
 
@@ -5631,6 +5631,10 @@ function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
 }
+function localBridgePort() {
+  const port = readJson(daemonFile())?.port;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536 ? port : bridgePort();
+}
 function deviceIdentity() {
   const stored2 = readJson(deviceFile());
   if (stored2?.id && stored2.name) return stored2;
@@ -5754,7 +5758,7 @@ async function hello(addr, timeoutMs2 = 1500) {
     return void 0;
   }
 }
-async function call(target, path42, body, timeoutMs2) {
+async function call(target, path42, body, timeoutMs2, signal) {
   const self2 = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
@@ -5762,14 +5766,17 @@ async function call(target, path42, body, timeoutMs2) {
   const wire = { device: self2.id, name: self2.name };
   if (key) wire.sealed = seal(key, requestAad(path42, self2.id, target.id), body);
   else wire.body = body;
-  const res = await fetch(`${baseUrl(target.addr)}${path42}`, {
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path42);
+  const timeout = AbortSignal.timeout(timeoutMs2);
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path42}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(wire),
-    signal: AbortSignal.timeout(timeoutMs2)
+    // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
+    body: JSON.stringify(reverse ? { device: target.id, route: path42, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-  if (reply.error) throw new Error(reply.error);
+  if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
     return open(key, responseAad(path42, self2.id, target.id, wire.sealed.n), reply.sealed);
@@ -5787,15 +5794,17 @@ async function pairCall(addr, path42, body, timeoutMs2) {
   if (reply.error) throw new Error(reply.error);
   return reply.body;
 }
-var requestAad, responseAad, baseUrl;
+var UNREACHABLE, requestAad, responseAad, baseUrl, REVERSE_ROUTES;
 var init_client = __esm({
   "src/bridge/client.ts"() {
     "use strict";
     init_crypto();
     init_state();
+    UNREACHABLE = "TELEPATHY_UNREACHABLE";
     requestAad = (path42, from, to) => `req ${path42} ${from}->${to}`;
     responseAad = (path42, from, to, nonce) => `res ${path42} ${from}->${to} ${nonce}`;
     baseUrl = (addr) => `http://${addr}`;
+    REVERSE_ROUTES = ["/v1/peers", "/v1/send"];
   }
 });
 
@@ -5887,7 +5896,7 @@ async function sendRemote(self2, target, body) {
   } catch (err) {
     const code = (err.cause ?? {}).code;
     const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
-    const error62 = ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
+    const error62 = code === UNREACHABLE ? `Message failed: device ${device.slug} is offline (${err.message}). Nothing was sent.` : ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
     logEvent({ dir: "out", device: device.slug, from: from.address, to: `${target.query}@${device.slug}`, ok: false, status: error62, preview: preview(body) });
     return { ok: false, error: error62 };
   }
@@ -6741,7 +6750,7 @@ var require_ip_codec = __commonJS({
       const v4Size = 4;
       const v6Regex = /^(::)?(((\d{1,3}\.){3}(\d{1,3}){1})?([0-9a-f]){0,4}:{0,2}){1,8}(::)?$/i;
       const v6Size = 16;
-      const v4 = {
+      const v42 = {
         name: "v4",
         size: v4Size,
         isFormat: (ip) => v4Regex.test(ip),
@@ -6767,7 +6776,7 @@ var require_ip_codec = __commonJS({
           return `${buff[offset++]}.${buff[offset++]}.${buff[offset++]}.${buff[offset]}`;
         }
       };
-      exports2.v4 = v4;
+      exports2.v4 = v42;
       const v6 = {
         name: "v6",
         size: v6Size,
@@ -6878,12 +6887,12 @@ var require_ip_codec = __commonJS({
       const name = "ip";
       exports2.name = name;
       function sizeOf(ip) {
-        if (v4.isFormat(ip)) return v4.size;
+        if (v42.isFormat(ip)) return v42.size;
         if (v6.isFormat(ip)) return v6.size;
         throw Error(`Invalid ip address: ${ip}`);
       }
       function familyOf(string4) {
-        return sizeOf(string4) === v4.size ? 1 : 2;
+        return sizeOf(string4) === v42.size ? 1 : 2;
       }
       function encode3(ip, buff, offset) {
         offset = ~~offset;
@@ -6891,21 +6900,21 @@ var require_ip_codec = __commonJS({
         if (typeof buff === "function") {
           buff = buff(offset + size);
         }
-        if (size === v4.size) {
-          return v4.encode(ip, buff, offset);
+        if (size === v42.size) {
+          return v42.encode(ip, buff, offset);
         }
         return v6.encode(ip, buff, offset);
       }
       function decode3(buff, offset, length) {
         offset = ~~offset;
         length = length || buff.length - offset;
-        if (length === v4.size) {
-          return v4.decode(buff, offset, length);
+        if (length === v42.size) {
+          return v42.decode(buff, offset, length);
         }
         if (length === v6.size) {
           return v6.decode(buff, offset, length);
         }
-        throw Error(`Invalid buffer size needs to be ${v4.size} for v4 or ${v6.size} for v6.`);
+        throw Error(`Invalid buffer size needs to be ${v42.size} for v4 or ${v6.size} for v6.`);
       }
       return "default" in exports2 ? exports2.default : exports2;
     })({});
@@ -40230,6 +40239,7 @@ init_version();
 init_client();
 init_crypto();
 import { spawn as spawn9 } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs27 from "node:fs";
 import http from "node:http";
 import os15 from "node:os";
@@ -40353,8 +40363,8 @@ async function sameTailnetUser(ip, userId) {
   return same;
 }
 function isTailscaleIp(ip) {
-  const v4 = ip.replace(/^::ffff:/, "");
-  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(v4);
+  const v42 = ip.replace(/^::ffff:/, "");
+  const m = /^(\d+)\.(\d+)\.\d+\.\d+$/.exec(v42);
   if (m) return Number(m[1]) === 100 && Number(m[2]) >= 64 && Number(m[2]) <= 127;
   return ip.toLowerCase().startsWith("fd7a:115c:a1e0:");
 }
@@ -40388,6 +40398,11 @@ var pollMs = () => envDurationMs("TELEPATHY_BRIDGE_POLL_MS", 3e3);
 var SKEW_MS = 12e4;
 var MAX_LAN_FOUND = 64;
 var MAX_BODY = 2 * 1024 * 1024;
+var holdMs = () => Math.min(envDurationMs("TELEPATHY_BRIDGE_HOLD_MS", 1e4), Math.max(500, onlineWindowMs() / 2));
+var PICKUP_MS = 1e3;
+var MAX_REVERSE_BATCH = 16;
+var v4 = (addr) => (addr ?? "").replace(/^::ffff:/, "");
+var hostOf2 = (addr) => addr.replace(/:\d+$/, "");
 var clean = (value, max) => String(value ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
 var ADDRESS = /^[\p{L}\p{N}._:-]{1,200}$/u;
 function cleanPeer(raw) {
@@ -40460,7 +40475,7 @@ async function runDaemon() {
     }
     return net2;
   };
-  const authenticate = async (req, wire, route) => {
+  const authenticate = async (conn, wire, route) => {
     if (typeof wire.device !== "string" || !DEVICE_ID.test(wire.device)) return { error: "malformed request" };
     if (wire.sealed) {
       const trusted = trustedDevices();
@@ -40481,10 +40496,8 @@ async function runDaemon() {
       seenNonces.set(replayKey, Date.now());
       return { body, key, nonce: wire.sealed.n };
     }
-    const remote = req.socket.remoteAddress ?? "";
-    const local = req.socket.localAddress ?? "";
     const tn = await currentTailnet();
-    if (!tn || !isTailscaleIp(local) || !isTailscaleIp(remote) || !await sameTailnetUser(remote.replace(/^::ffff:/, ""), tn.userId)) {
+    if (!tn || !isTailscaleIp(conn.local) || !isTailscaleIp(conn.remote) || !await sameTailnetUser(conn.remote, tn.userId)) {
       return { error: "not trusted: pair with `telepathy bridge pair`, or use a device of the same Tailscale user" };
     }
     return { body: wire.body };
@@ -40519,16 +40532,20 @@ async function runDaemon() {
     });
     child.stdin.end(JSON.stringify(payload));
   });
+  const links = /* @__PURE__ */ new Map();
+  const directAt = /* @__PURE__ */ new Map();
+  const reachedDirectly = (id) => Date.now() - (directAt.get(id) ?? 0) < onlineWindowMs();
+  const linkFresh = (link) => !!link.release || Date.now() - link.seenAt < onlineWindowMs();
   const handlers = {
-    "/v1/peers": async (req, raw) => {
+    "/v1/peers": async (conn, raw) => {
       const wire = raw;
-      const auth = await authenticate(req, wire, "/v1/peers");
+      const auth = await authenticate(conn, wire, "/v1/peers");
       if ("error" in auth) return { error: auth.error };
       return reply(auth, wire, "/v1/peers", { peers: localPeersWire() });
     },
-    "/v1/send": async (req, raw) => {
+    "/v1/send": async (conn, raw) => {
       const wire = raw;
-      const auth = await authenticate(req, wire, "/v1/send");
+      const auth = await authenticate(conn, wire, "/v1/send");
       if ("error" in auth) return { error: auth.error };
       const input2 = auth.body ?? {};
       const from = input2.from;
@@ -40557,7 +40574,7 @@ async function runDaemon() {
       });
       return reply(auth, wire, "/v1/send", result);
     },
-    "/v1/pair/start": async (req, raw) => {
+    "/v1/pair/start": async (conn, raw) => {
       const body = raw;
       if (!pairingOpen()) return { error: `pairing is not open on ${self2.name}; run \`telepathy bridge pair\` there first` };
       if (typeof body.id !== "string" || !DEVICE_ID.test(body.id) || typeof body.commit !== "string" || !body.commit) {
@@ -40566,7 +40583,7 @@ async function runDaemon() {
       if (pairs.size >= 4) return { error: "too many pairing attempts; try again in a minute" };
       const session = {
         id: randomNonce().replace(/[^a-zA-Z0-9]/g, "").slice(0, 16),
-        initiator: { id: body.id, name: safeName(body.name), addr: req.socket.remoteAddress?.replace(/^::ffff:/, "") ?? "" },
+        initiator: { id: body.id, name: safeName(body.name), addr: conn.remote },
         commit: body.commit,
         keys: newKeyPair(),
         nonce: randomNonce(),
@@ -40575,7 +40592,7 @@ async function runDaemon() {
       pairs.set(session.id, session);
       return { body: { session: session.id, id: self2.id, name: self2.name, publicKey: session.keys.publicKey, nonce: session.nonce } };
     },
-    "/v1/pair/reveal": async (_req, raw) => {
+    "/v1/pair/reveal": async (_conn, raw) => {
       const body = raw;
       const session = body.session ? pairs.get(body.session) : void 0;
       if (!session || !body.publicKey || !body.nonce) return { error: "unknown pairing session" };
@@ -40606,7 +40623,7 @@ async function runDaemon() {
       });
       return { body: { ok: true } };
     },
-    "/v1/pair/confirm": async (_req, raw) => {
+    "/v1/pair/confirm": async (_conn, raw) => {
       const body = raw;
       const session = body.session ? pairs.get(body.session) : void 0;
       if (!session?.key || !body.mac) return { error: "unknown pairing session" };
@@ -40642,6 +40659,92 @@ async function runDaemon() {
       });
       writeJsonAtomic(stateFile2, { ...readJson(stateFile2), state: "paired" });
       return { body: { mac: confirmMac(session.key, "responder") } };
+    },
+    // A device this one could not connect to, asking for requests to carry back. It is authenticated like any
+    // request, and what it carries back is checked on that device as if it had come in directly.
+    "/v1/reverse": async (conn, raw, gone) => {
+      const wire = raw;
+      const auth = await authenticate(conn, wire, "/v1/reverse");
+      if ("error" in auth) return { error: auth.error };
+      const input2 = auth.body ?? {};
+      const link = links.get(wire.device) ?? {
+        name: "",
+        trust: "tailscale",
+        addr: "",
+        version: "?",
+        peers: [],
+        seenAt: 0,
+        queue: [],
+        waiting: /* @__PURE__ */ new Map()
+      };
+      link.name = safeName(wire.name);
+      link.trust = auth.key ? "paired" : "tailscale";
+      link.addr = conn.remote;
+      link.version = safeName(input2.version, "?").slice(0, 20);
+      link.peers = Array.isArray(input2.peers) ? input2.peers.slice(0, 500).flatMap(cleanPeer) : [];
+      link.seenAt = Date.now();
+      links.set(wire.device, link);
+      if (!reachedDirectly(wire.device)) {
+        link.release?.();
+        if (!link.queue.length) {
+          await new Promise((resolve) => {
+            const done = () => {
+              clearTimeout(timer2);
+              gone?.removeEventListener("abort", done);
+              if (link.release === done) link.release = void 0;
+              resolve();
+            };
+            const timer2 = setTimeout(done, holdMs());
+            link.release = done;
+            gone?.addEventListener("abort", done);
+          });
+        }
+        link.seenAt = Date.now();
+        if (gone?.aborted) return { error: "closed" };
+      }
+      const requests = link.queue.splice(0, MAX_REVERSE_BATCH);
+      return reply(auth, wire, "/v1/reverse", { direct: reachedDirectly(wire.device), requests });
+    },
+    "/v1/reverse/done": async (conn, raw) => {
+      const wire = raw;
+      const auth = await authenticate(conn, wire, "/v1/reverse/done");
+      if ("error" in auth) return { error: auth.error };
+      const input2 = auth.body ?? {};
+      const finish = typeof input2.id === "string" ? links.get(wire.device)?.waiting.get(input2.id) : void 0;
+      const valid = !!input2.response && typeof input2.response === "object";
+      if (finish && valid) finish(input2.response);
+      return reply(auth, wire, "/v1/reverse/done", { ok: !!finish && valid });
+    },
+    // This machine's own processes, handing a request for a device reached in reverse. Loopback only: anything
+    // that arrives on another address is not this machine's.
+    "/v1/outbox": async (conn, raw) => {
+      if (conn.local !== "127.0.0.1" || conn.remote !== "127.0.0.1") return { error: "not found" };
+      const input2 = raw;
+      if (typeof input2.route !== "string" || !REVERSE_ROUTES.includes(input2.route) || !input2.wire || typeof input2.wire !== "object") {
+        return { error: "malformed request" };
+      }
+      const link = typeof input2.device === "string" ? links.get(input2.device) : void 0;
+      if (!link || !linkFresh(link)) return { error: "it is not connected to this device right now", unreachable: true };
+      const outgoing = { id: randomUUID(), route: input2.route, wire: input2.wire };
+      const timeoutMs2 = Math.max(1e3, Math.min(13e4, Number(input2.timeoutMs) || 0));
+      return await new Promise((resolve) => {
+        const finish = (response) => {
+          clearTimeout(pickup);
+          clearTimeout(timer2);
+          link.waiting.delete(outgoing.id);
+          resolve(response);
+        };
+        const pickup = setTimeout(() => {
+          const at = link.queue.indexOf(outgoing);
+          if (at < 0) return;
+          link.queue.splice(at, 1);
+          finish({ error: "it did not pick the request up, so nothing reached it", unreachable: true });
+        }, PICKUP_MS);
+        const timer2 = setTimeout(() => finish({ error: "it did not answer in time" }), timeoutMs2);
+        link.waiting.set(outgoing.id, finish);
+        link.queue.push(outgoing);
+        link.release?.();
+      });
     }
   };
   function reply(auth, wire, route, value) {
@@ -40677,9 +40780,15 @@ async function runDaemon() {
       } catch {
         return send(400, { error: "bad JSON" });
       }
-      handler(req, raw).then(
-        (out) => send(out.error ? 403 : 200, out),
-        (err) => send(500, { error: err.message })
+      const gone = new AbortController();
+      res.on("close", () => gone.abort());
+      handler({ remote: v4(req.socket.remoteAddress), local: v4(req.socket.localAddress) }, raw, gone.signal).then(
+        (out) => {
+          if (!res.destroyed) send(out.error ? 403 : 200, out);
+        },
+        (err) => {
+          if (!res.destroyed) send(500, { error: err.message });
+        }
       );
     });
   };
@@ -40726,6 +40835,54 @@ async function runDaemon() {
     if (!lanFound.has(found.addr) && lanFound.size >= MAX_LAN_FOUND) return;
     lanFound.set(found.addr, { id: found.id, at: Date.now() });
   }) : () => {
+  };
+  const stopping = new AbortController();
+  const reverseLoops = /* @__PURE__ */ new Map();
+  const reachesUs = /* @__PURE__ */ new Map();
+  const serveReverse = async (target, request) => {
+    if (typeof request.id !== "string" || typeof request.route !== "string" || !REVERSE_ROUTES.includes(request.route)) return;
+    const wire = request.wire;
+    let response;
+    if (!wire || typeof wire !== "object" || wire.device !== target.id) {
+      response = { error: "malformed request" };
+    } else {
+      const remote = hostOf2(target.addr);
+      const tn = isTailscaleIp(remote) ? await currentTailnet() : void 0;
+      const local = tn?.selfIps.find((ip) => ip.includes(".")) ?? "";
+      try {
+        response = await handlers[request.route]({ remote, local }, wire);
+      } catch (err) {
+        response = { error: err.message };
+      }
+    }
+    await call(target, "/v1/reverse/done", { id: request.id, response }, 1e4, stopping.signal).catch(() => {
+    });
+  };
+  const runReverse = async (target, state) => {
+    state.running = true;
+    try {
+      while (!stopping.signal.aborted) {
+        let answer;
+        try {
+          answer = await call(target, "/v1/reverse", { peers: localPeersWire(), version: VERSION }, Math.max(holdMs(), 1e4) + 5e3, stopping.signal);
+        } catch (err) {
+          state.retryAt = Date.now() + (/not found/.test(err.message) ? 3e5 : pollMs());
+          return;
+        }
+        reachesUs.set(target.id, { how: answer.direct === true ? "direct" : "reverse", at: Date.now() });
+        const requests = Array.isArray(answer.requests) ? answer.requests.slice(0, MAX_REVERSE_BATCH) : [];
+        for (const request of requests) void serveReverse(target, request ?? {});
+        if (answer.direct === true) return;
+      }
+    } finally {
+      state.running = false;
+    }
+  };
+  const ensureReverse = (target) => {
+    const state = reverseLoops.get(target.id) ?? { running: false, retryAt: 0 };
+    reverseLoops.set(target.id, state);
+    if (state.running || Date.now() < state.retryAt || stopping.signal.aborted) return;
+    void runReverse(target, state);
   };
   let discovering = false;
   const discover = async () => {
@@ -40783,8 +40940,12 @@ async function runDaemon() {
             return;
           }
           try {
-            const listed = await call({ id, addr: seen.addr, trust }, "/v1/peers", {}, 2500);
-            updated.set(id, { ...base2, lastSeen: now2, peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [] });
+            const target = { id, addr: seen.addr, trust };
+            const listed = await call(target, "/v1/peers", {}, 2500);
+            updated.set(id, { ...base2, lastSeen: now2, peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [], reach: "direct" });
+            directAt.set(id, Date.now());
+            links.get(id)?.release?.();
+            ensureReverse(target);
             const current = trustedDevices();
             if (paired && Object.hasOwn(current, id) && current[id].addr !== seen.addr) trustDevice({ ...current[id], addr: seen.addr });
           } catch {
@@ -40792,6 +40953,27 @@ async function runDaemon() {
           }
         })
       );
+      for (const [id, link] of links) {
+        if (!linkFresh(link) || reachedDirectly(id)) continue;
+        const before = updated.get(id);
+        updated.set(id, {
+          id,
+          name: link.name,
+          slug: before?.slug ?? "",
+          addr: link.addr,
+          route: isTailscaleIp(link.addr) ? "tailscale" : "lan",
+          trusted: true,
+          trust: link.trust,
+          lastSeen: new Date(link.release ? Date.now() : link.seenAt).toISOString(),
+          version: link.version,
+          peers: link.peers,
+          reach: "reverse"
+        });
+      }
+      for (const device of updated.values()) {
+        const said = reachesUs.get(device.id);
+        device.reachesUs = said && Date.now() - said.at < 2 * onlineWindowMs() ? said.how : void 0;
+      }
       const day = Date.now() - 864e5;
       const devices = [...updated.values()].filter((d) => Date.parse(d.lastSeen) > day || Object.hasOwn(trusted, d.id));
       const taken = /* @__PURE__ */ new Set();
@@ -40818,6 +41000,8 @@ async function runDaemon() {
     const stop2 = () => {
       clearInterval(poll);
       clearInterval(rebind);
+      stopping.abort();
+      for (const link of links.values()) link.release?.();
       stopMdns();
       for (const server of servers.values()) server.close();
       const record2 = readJson(daemonFile());
@@ -41102,6 +41286,23 @@ async function watch(once) {
     });
   });
 }
+function firewallHint(port) {
+  const lines = ["This device does not accept connections from other devices. Messages still go both ways over the connection it opens."];
+  if (process.platform !== "darwin") return [...lines, `To let devices connect directly, allow incoming TCP port ${port} in this device's firewall.`];
+  let node2 = process.execPath;
+  try {
+    node2 = fs28.realpathSync(node2);
+  } catch {
+  }
+  const fw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
+  return [
+    ...lines,
+    "To let devices connect directly, allow incoming connections for node (System Settings \u2192 Network \u2192 Firewall \u2192 Options), or run:",
+    `  sudo ${fw} --add "${node2}"`,
+    `  sudo ${fw} --unblockapp "${node2}"`,
+    "A new node version (brew upgrade node) needs this again."
+  ];
+}
 function render(withMessages, now2 = Date.now()) {
   const self2 = deviceIdentity();
   const daemon = readDaemon();
@@ -41116,6 +41317,7 @@ function render(withMessages, now2 = Date.now()) {
     lines.push(`  ${peerRef(peer)}${status ? ` \xB7 ${status}` : ""}`);
   }
   const devices = readRemoteState()?.devices ?? [];
+  let blocked = false;
   lines.push("", devices.length ? "Devices:" : "Devices: none found yet.");
   for (const device of devices) {
     const online = daemon && isOnline(device, now2);
@@ -41128,11 +41330,17 @@ function render(withMessages, now2 = Date.now()) {
       lines.push(`  ${device.slug} \xB7 ${trust} \xB7 offline, last seen ${formatAgo(now2 - Date.parse(device.lastSeen))}`);
       continue;
     }
-    lines.push(`  ${device.slug} \xB7 ${trust} \xB7 ${device.addr} \xB7 ${device.peers.length} session${device.peers.length === 1 ? "" : "s"}`);
+    const over = device.reach === "reverse" ? ` \xB7 over its own connection (${device.slug} does not accept connections)` : "";
+    lines.push(`  ${device.slug} \xB7 ${trust} \xB7 ${device.addr} \xB7 ${device.peers.length} session${device.peers.length === 1 ? "" : "s"}${over}`);
+    if (device.reachesUs === "reverse") {
+      blocked = true;
+      lines.push(`    ${device.slug} can't connect to this device, so it reaches it over this device's connection.`);
+    }
     for (const peer of device.peers) {
       lines.push(`    ${peer.address}@${device.slug} [${peer.id}@${device.slug}]${peer.status ? ` \xB7 ${peer.status}` : ""}`);
     }
   }
+  if (blocked) lines.push("", ...firewallHint(daemon?.port ?? bridgePort()));
   if (withMessages) {
     const events = recentEvents(15);
     lines.push("", events.length ? "Messages between devices:" : "Messages between devices: none yet.");

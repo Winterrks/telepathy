@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.11.0" : "0.0.0-dev";
+    VERSION = true ? "0.11.1" : "0.0.0-dev";
   }
 });
 
@@ -3275,6 +3275,14 @@ import crypto5 from "node:crypto";
 import fs16 from "node:fs";
 import os8 from "node:os";
 import path18 from "node:path";
+function bridgePort() {
+  const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
+}
+function localBridgePort() {
+  const port = readJson(daemonFile())?.port;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536 ? port : bridgePort();
+}
 function deviceIdentity() {
   const stored2 = readJson(deviceFile());
   if (stored2?.id && stored2.name) return stored2;
@@ -3321,7 +3329,7 @@ function logEvent(event) {
   } catch {
   }
 }
-var bridgeDir, deviceFile, trustedFile, remoteFile, eventsFile, onlineWindowMs, isOnline, preview;
+var bridgeDir, deviceFile, trustedFile, remoteFile, daemonFile, eventsFile, onlineWindowMs, isOnline, preview;
 var init_state = __esm({
   "src/bridge/state.ts"() {
     "use strict";
@@ -3331,6 +3339,7 @@ var init_state = __esm({
     deviceFile = () => path18.join(bridgeDir(), "device.json");
     trustedFile = () => path18.join(bridgeDir(), "trusted.json");
     remoteFile = () => path18.join(bridgeDir(), "remote.json");
+    daemonFile = () => path18.join(bridgeDir(), "daemon.json");
     eventsFile = () => path18.join(bridgeDir(), "events.jsonl");
     onlineWindowMs = () => envDurationMs("TELEPATHY_BRIDGE_ONLINE_MS", 15e3);
     isOnline = (device, now = Date.now()) => now - Date.parse(device.lastSeen) < onlineWindowMs();
@@ -3339,7 +3348,7 @@ var init_state = __esm({
 });
 
 // src/bridge/client.ts
-async function call(target, path33, body, timeoutMs2) {
+async function call(target, path33, body, timeoutMs2, signal) {
   const self2 = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
@@ -3347,29 +3356,34 @@ async function call(target, path33, body, timeoutMs2) {
   const wire = { device: self2.id, name: self2.name };
   if (key) wire.sealed = seal(key, requestAad(path33, self2.id, target.id), body);
   else wire.body = body;
-  const res = await fetch(`${baseUrl(target.addr)}${path33}`, {
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path33);
+  const timeout = AbortSignal.timeout(timeoutMs2);
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path33}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(wire),
-    signal: AbortSignal.timeout(timeoutMs2)
+    // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
+    body: JSON.stringify(reverse ? { device: target.id, route: path33, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-  if (reply.error) throw new Error(reply.error);
+  if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
     return open2(key, responseAad(path33, self2.id, target.id, wire.sealed.n), reply.sealed);
   }
   return reply.body;
 }
-var requestAad, responseAad, baseUrl;
+var UNREACHABLE, requestAad, responseAad, baseUrl, REVERSE_ROUTES;
 var init_client = __esm({
   "src/bridge/client.ts"() {
     "use strict";
     init_crypto();
     init_state();
+    UNREACHABLE = "TELEPATHY_UNREACHABLE";
     requestAad = (path33, from, to) => `req ${path33} ${from}->${to}`;
     responseAad = (path33, from, to, nonce) => `res ${path33} ${from}->${to} ${nonce}`;
     baseUrl = (addr) => `http://${addr}`;
+    REVERSE_ROUTES = ["/v1/peers", "/v1/send"];
   }
 });
 
@@ -3461,7 +3475,7 @@ async function sendRemote(self2, target, body) {
   } catch (err) {
     const code = (err.cause ?? {}).code;
     const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
-    const error62 = ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
+    const error62 = code === UNREACHABLE ? `Message failed: device ${device.slug} is offline (${err.message}). Nothing was sent.` : ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
     logEvent({ dir: "out", device: device.slug, from: from.address, to: `${target.query}@${device.slug}`, ok: false, status: error62, preview: preview(body) });
     return { ok: false, error: error62 };
   }

@@ -350,7 +350,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.11.0" : "0.0.0-dev";
+var VERSION = true ? "0.11.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -2597,7 +2597,16 @@ var bridgeDir = () => path15.join(stateDir(), "bridge");
 var deviceFile = () => path15.join(bridgeDir(), "device.json");
 var trustedFile = () => path15.join(bridgeDir(), "trusted.json");
 var remoteFile = () => path15.join(bridgeDir(), "remote.json");
+var daemonFile = () => path15.join(bridgeDir(), "daemon.json");
 var eventsFile = () => path15.join(bridgeDir(), "events.jsonl");
+function bridgePort() {
+  const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
+}
+function localBridgePort() {
+  const port = readJson(daemonFile())?.port;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536 ? port : bridgePort();
+}
 var onlineWindowMs = () => envDurationMs("TELEPATHY_BRIDGE_ONLINE_MS", 15e3);
 function deviceIdentity() {
   const stored = readJson(deviceFile());
@@ -2649,10 +2658,12 @@ function logEvent(event) {
 var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
+var UNREACHABLE = "TELEPATHY_UNREACHABLE";
 var requestAad = (path20, from, to) => `req ${path20} ${from}->${to}`;
 var responseAad = (path20, from, to, nonce) => `res ${path20} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
-async function call(target, path20, body, timeoutMs) {
+var REVERSE_ROUTES = ["/v1/peers", "/v1/send"];
+async function call(target, path20, body, timeoutMs, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
@@ -2660,14 +2671,17 @@ async function call(target, path20, body, timeoutMs) {
   const wire = { device: self.id, name: self.name };
   if (key) wire.sealed = seal(key, requestAad(path20, self.id, target.id), body);
   else wire.body = body;
-  const res = await fetch(`${baseUrl(target.addr)}${path20}`, {
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path20);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path20}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify(wire),
-    signal: AbortSignal.timeout(timeoutMs)
+    // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
+    body: JSON.stringify(reverse ? { device: target.id, route: path20, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-  if (reply.error) throw new Error(reply.error);
+  if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
     return open(key, responseAad(path20, self.id, target.id, wire.sealed.n), reply.sealed);
@@ -2765,7 +2779,7 @@ async function sendRemote(self, target, body) {
   } catch (err) {
     const code = (err.cause ?? {}).code;
     const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
-    const error = ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
+    const error = code === UNREACHABLE ? `Message failed: device ${device.slug} is offline (${err.message}). Nothing was sent.` : ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
     logEvent({ dir: "out", device: device.slug, from: from.address, to: `${target.query}@${device.slug}`, ok: false, status: error, preview: preview(body) });
     return { ok: false, error };
   }

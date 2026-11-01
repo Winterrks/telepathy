@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.11.0" src="https://img.shields.io/badge/version-0.11.0-6d28d9">
+  <img alt="version 0.11.1" src="https://img.shields.io/badge/version-0.11.1-6d28d9">
   <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local, or your own devices with the bridge" src="https://img.shields.io/badge/network-local%20%2B%20your%20devices-6d28d9">
 </p>
@@ -435,7 +435,7 @@ The same updates are `telepathy update` (and `telepathy update --dry-run`) once 
 
 ## The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.11.0. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.11.1. Requires Node 20 or newer.
 
 ```sh
 telepathy setup [--dry-run]           # install, update, approve hooks and install ACP adapters, everywhere
@@ -497,6 +497,12 @@ telepathy bridge watch                # live view: devices, their sessions, and 
 - **Where it listens:** port 47380 (`TELEPATHY_BRIDGE_PORT`, the same on every device) on loopback, this device's
   Tailscale address, and its private LAN addresses, never on every interface. `telepathy bridge start --no-lan` or
   `--no-tailscale` turns one off. macOS may ask once whether Node may accept incoming connections.
+- **A device that can't accept connections:** a firewall (macOS holds `node` until someone clicks Allow, and asks
+  again after a Node upgrade) or NAT can stop other devices from connecting to one, while it can still connect out.
+  It then keeps one connection open to each device it reaches, and their messages to it travel back over that
+  connection. Each request is checked there exactly as if it had come in directly, and the confirm rule is the same.
+  `telepathy bridge status` says so on both devices, and on the blocked one prints the firewall commands that let
+  devices connect directly.
 - **Names:** a device is called by its host name. `telepathy bridge name <name>` changes it.
 
 ## Subagents

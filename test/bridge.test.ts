@@ -328,3 +328,95 @@ describe('bridge between two devices', () => {
     }
   });
 });
+
+describe('a device that does not accept connections', () => {
+  let alpha: Device;
+  let gamma: Device;
+  const agents: ChildProcess[] = [];
+  // Accepts and never answers: what a macOS firewall holding `node` looks like from the other device.
+  const held = new Set<net.Socket>();
+  const blackHole = net.createServer((socket) => {
+    held.add(socket);
+    socket.on('close', () => held.delete(socket));
+  });
+
+  before(async () => {
+    await new Promise<void>((resolve) => blackHole.listen(0, '127.0.0.1', resolve));
+    alpha = await device('alpha', { TELEPATHY_BRIDGE_HOLD_MS: '1000' });
+    gamma = await device('gamma', { TELEPATHY_BRIDGE_HOLD_MS: '1000' });
+    await startDaemon(alpha);
+    await startDaemon(gamma);
+    // Gamma tells alpha its bridge is at the black hole, so alpha can never connect to it. Gamma reaches alpha.
+    const port = (blackHole.address() as net.AddressInfo).port;
+    await pair({ ...gamma, env: { ...gamma.env, TELEPATHY_BRIDGE_PORT: String(port) } }, alpha);
+  });
+
+  after(async () => {
+    for (const child of [...agents, alpha?.daemon, gamma?.daemon]) if (child) await killAndWait(child);
+    for (const socket of held) socket.destroy();
+    blackHole.close();
+    alpha?.sb.cleanup();
+    gamma?.sb.cleanup();
+  });
+
+  test('its sessions are listed over the connection it keeps open, and both status screens say so', async () => {
+    const qwenG = fakeAgent();
+    agents.push(qwenG);
+    runHook(gamma.sb, 'qwen', qwenG.pid, 'session-start', { session_id: 'g-g', cwd: '/w/notes' });
+    await waitFor(() =>
+      remoteState(alpha).devices.some(
+        (d) => d.slug === 'gamma' && d.trusted && (d as { reach?: string }).reach === 'reverse' && d.peers.some((p) => p.address.startsWith('qwen:notes')),
+      )
+        ? true
+        : undefined,
+    );
+    const here = cli(alpha.env, 'bridge', 'status').stdout;
+    assert.match(here, /gamma · paired · 127\.0\.0\.1 · 1 session · over its own connection \(gamma does not accept connections\)/);
+    assert.doesNotMatch(here, /does not accept connections from other devices/);
+    await waitFor(() => (/alpha can't connect to this device/.test(cli(gamma.env, 'bridge', 'status').stdout) ? true : undefined));
+    const there = cli(gamma.env, 'bridge', 'status').stdout;
+    assert.match(there, /This device does not accept connections from other devices\. Messages still go both ways/);
+  });
+
+  test('a message to it goes out over that connection and is checked there like a direct one', async () => {
+    const qwenA = fakeAgent();
+    agents.push(qwenA);
+    runHook(alpha.sb, 'qwen', qwenA.pid, 'session-start', { session_id: 'g-a', cwd: '/w/web' });
+    const client = await connectServer(alpha.sb, 'qwen', qwenA.pid);
+    try {
+      const sent = toolText(await client.callTool({ name: 'send_message', arguments: { to: 'qwen:notes@gamma', message: 'over the reverse connection' } }));
+      assert.match(sent, /^Message stored for qwen:notes-q[0-9a-f]{2}@gamma \[qwen-g-g@gamma\]/);
+      const inbox = path.join(gamma.sb.home, 'peers', 'qwen-g-g', 'inbox');
+      const msg = JSON.parse(fs.readFileSync(path.join(inbox, fs.readdirSync(inbox)[0]), 'utf8'));
+      assert.match(msg.from.address, /^qwen:web-q[0-9a-f]{2}@alpha$/);
+      assert.equal(msg.body, 'over the reverse connection');
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('the outbox carries only the routes a device serves', async () => {
+    const res = await fetch(`http://127.0.0.1:${alpha.port}/v1/outbox`, {
+      method: 'POST',
+      body: JSON.stringify({ device: 'ffffffffffffffff', route: '/v1/reverse', wire: {} }),
+    });
+    assert.equal(res.status, 403);
+    assert.match(((await res.json()) as { error: string }).error, /malformed request/, 'only the routes a device serves can go out');
+  });
+
+  test('once it stops, a send fails as never sent instead of waiting out the clock', async () => {
+    await killAndWait(gamma.daemon!);
+    gamma.daemon = undefined;
+    const qwenA = agents[1] as ChildProcess & { pid: number };
+    const client = await connectServer(alpha.sb, 'qwen', qwenA.pid);
+    try {
+      const started = Date.now();
+      const result = await client.callTool({ name: 'send_message', arguments: { to: 'qwen:notes@gamma', message: 'still there?' } });
+      assert.equal(result.isError, true);
+      assert.match(toolText(result), /^Message failed: device gamma is offline \(.*\)\. Nothing was sent\.$/);
+      assert.ok(Date.now() - started < 4000, 'well inside the confirm window');
+    } finally {
+      await client.close();
+    }
+  });
+});

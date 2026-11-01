@@ -320,6 +320,29 @@ async function watch(once: boolean): Promise<number> {
   });
 }
 
+/**
+ * Other devices could not connect to this one. Messages still flow over the connection this device keeps open,
+ * but the cause is usually a firewall, and on macOS the usual one is the application firewall holding `node`.
+ */
+function firewallHint(port: number): string[] {
+  const lines = ['This device does not accept connections from other devices. Messages still go both ways over the connection it opens.'];
+  if (process.platform !== 'darwin') return [...lines, `To let devices connect directly, allow incoming TCP port ${port} in this device's firewall.`];
+  let node = process.execPath;
+  try {
+    node = fs.realpathSync(node);
+  } catch {
+    // the path as it is
+  }
+  const fw = '/usr/libexec/ApplicationFirewall/socketfilterfw';
+  return [
+    ...lines,
+    'To let devices connect directly, allow incoming connections for node (System Settings → Network → Firewall → Options), or run:',
+    `  sudo ${fw} --add "${node}"`,
+    `  sudo ${fw} --unblockapp "${node}"`,
+    'A new node version (brew upgrade node) needs this again.',
+  ];
+}
+
 /** Status and the live view: this device, its sessions, every device the daemon has seen, and recent messages. */
 function render(withMessages: boolean, now = Date.now()): string {
   const self = deviceIdentity();
@@ -337,6 +360,7 @@ function render(withMessages: boolean, now = Date.now()): string {
     lines.push(`  ${peerRef(peer)}${status ? ` · ${status}` : ''}`);
   }
   const devices = readRemoteState()?.devices ?? [];
+  let blocked = false;
   lines.push('', devices.length ? 'Devices:' : 'Devices: none found yet.');
   for (const device of devices) {
     const online = daemon && isOnline(device, now);
@@ -349,11 +373,17 @@ function render(withMessages: boolean, now = Date.now()): string {
       lines.push(`  ${device.slug} · ${trust} · offline, last seen ${formatAgo(now - Date.parse(device.lastSeen))}`);
       continue;
     }
-    lines.push(`  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}`);
+    const over = device.reach === 'reverse' ? ` · over its own connection (${device.slug} does not accept connections)` : '';
+    lines.push(`  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}${over}`);
+    if (device.reachesUs === 'reverse') {
+      blocked = true;
+      lines.push(`    ${device.slug} can't connect to this device, so it reaches it over this device's connection.`);
+    }
     for (const peer of device.peers) {
       lines.push(`    ${peer.address}@${device.slug} [${peer.id}@${device.slug}]${peer.status ? ` · ${peer.status}` : ''}`);
     }
   }
+  if (blocked) lines.push('', ...firewallHint(daemon?.port ?? bridgePort()));
   if (withMessages) {
     const events = recentEvents(15);
     lines.push('', events.length ? 'Messages between devices:' : 'Messages between devices: none yet.');

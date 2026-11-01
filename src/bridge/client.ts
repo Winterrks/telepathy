@@ -1,5 +1,5 @@
 import { open, seal, type Sealed } from './crypto.ts';
-import { DEVICE_ID, deviceIdentity, PROTOCOL, safeName, trustedDevices } from './state.ts';
+import { DEVICE_ID, deviceIdentity, localBridgePort, PROTOCOL, safeName, trustedDevices } from './state.ts';
 
 /** What `GET /v1/hello` says. It needs no trust, so it carries no session data. */
 export interface Hello {
@@ -23,7 +23,12 @@ export interface WireResponse {
   sealed?: Sealed;
   body?: unknown;
   error?: string;
+  /** From this machine's own bridge: the device is not connected, so the request never reached it. */
+  unreachable?: boolean;
 }
+
+/** The error a call throws when the request never reached the device. */
+export const UNREACHABLE = 'TELEPATHY_UNREACHABLE';
 
 export const requestAad = (path: string, from: string, to: string) => `req ${path} ${from}->${to}`;
 export const responseAad = (path: string, from: string, to: string, nonce: string) => `res ${path} ${from}->${to} ${nonce}`;
@@ -52,13 +57,20 @@ export interface Target {
   id: string;
   addr: string;
   trust?: 'tailscale' | 'paired';
+  reach?: 'direct' | 'reverse';
 }
+
+/** Routes that may go to a device over the connection it keeps open to this one. */
+export const REVERSE_ROUTES = ['/v1/peers', '/v1/send'];
 
 /**
  * One authenticated call. A paired device gets a sealed body and must answer sealed under the same key.
  * Without a key, plain JSON goes only to a device trusted through the tailnet.
+ *
+ * A device that does not accept connections is reached through this machine's own bridge, which hands the
+ * request, as built here, to the connection that device keeps open. It is checked there as if it came directly.
  */
-export async function call<T>(target: Target, path: string, body: unknown, timeoutMs: number): Promise<T> {
+export async function call<T>(target: Target, path: string, body: unknown, timeoutMs: number, signal?: AbortSignal): Promise<T> {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : undefined;
@@ -66,14 +78,17 @@ export async function call<T>(target: Target, path: string, body: unknown, timeo
   const wire: WireRequest = { device: self.id, name: self.name };
   if (key) wire.sealed = seal(key, requestAad(path, self.id, target.id), body);
   else wire.body = body;
-  const res = await fetch(`${baseUrl(target.addr)}${path}`, {
+  const reverse = target.reach === 'reverse' && REVERSE_ROUTES.includes(path);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(wire),
-    signal: AbortSignal.timeout(timeoutMs),
+    // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
+    body: JSON.stringify(reverse ? { device: target.id, route: path, wire, timeoutMs: Math.max(1000, timeoutMs - 500) } : wire),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout,
   });
   const reply = (await res.json().catch(() => ({ error: `HTTP ${res.status}` }))) as WireResponse;
-  if (reply.error) throw new Error(reply.error);
+  if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error('the answer was not sealed');
     return open<T>(key, responseAad(path, self.id, target.id, wire.sealed.n), reply.sealed);
