@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.11.1" : "0.0.0-dev";
+    VERSION = true ? "0.11.2" : "0.0.0-dev";
   }
 });
 
@@ -3432,6 +3432,10 @@ function formatRemoteListings(listings, now = Date.now()) {
       lines.push(`Device ${device.slug} (${via}) is offline, last seen ${formatAgo(now - Date.parse(device.lastSeen))}.`);
       continue;
     }
+    if (device.incompatible) {
+      lines.push(`Device ${device.slug} (${via}) runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Its sessions show once both run the same version.`);
+      continue;
+    }
     lines.push(`On device ${device.slug} (${via}), ${peers.length} session${peers.length === 1 ? "" : "s"}:`);
     for (const { peer, status, delivery } of peers) {
       const notes = [peer.cwd ? `cwd ${peer.cwd}` : "", status ?? "", delivery ?? ""].filter(Boolean);
@@ -3453,6 +3457,12 @@ async function sendRemote(self2, target, body) {
     return {
       ok: false,
       error: `Message failed: device ${device.slug} is offline (its telepathy bridge is not answering). Nothing was sent.`
+    };
+  }
+  if (device.incompatible) {
+    return {
+      ok: false,
+      error: `Message failed: device ${device.slug} runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Nothing was sent. The older one updates by itself when its auto-update is on; \`telepathy update\` there updates now.`
     };
   }
   const unqualified = device.peers.map((wire) => asPeer(wire, device, false));
@@ -3508,6 +3518,7 @@ var init_remote = __esm({
     init_messages();
     init_paths();
     init_peers();
+    init_version();
     init_client();
     init_state();
     qualify = (value, device) => `${value}@${device.slug}`;
@@ -33925,15 +33936,15 @@ function autoUpdateEntry() {
   }
   return fileURLToPath3(import.meta.url);
 }
-function scheduleAutoUpdate(reason) {
+function scheduleAutoUpdate(reason, options = {}) {
   try {
     if (process.argv.includes("--telepathy-auto-update")) return;
     if (!autoUpdateEnabled()) return;
-    if (recentlyChecked()) return;
+    if (!options.force && recentlyChecked()) return;
     const child = spawn6(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, TELEPATHY_HOME: stateDir() }
+      env: { ...process.env, TELEPATHY_HOME: stateDir(), ...options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: "1" } : {} }
     });
     child.on("error", (err) => logAutoUpdate(`spawn failed (${reason}): ${err.message}`));
     child.unref();

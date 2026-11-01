@@ -5,14 +5,16 @@ import readline from 'node:readline/promises';
 import { resolveArgvPath } from '../cli/entry.ts';
 import { beginToolCall, confirmAbortMs, confirmGraceMs } from '../core/confirm.ts';
 import { deliverLocal } from '../core/deliver.ts';
+import { isNewer } from '../core/installs.ts';
 import { formatAgo } from '../core/listing.ts';
 import type { Party } from '../core/messages.ts';
 import { ensureDir, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { listPeers, peerRef } from '../core/peers.ts';
 import { peerStatus, statusText } from '../core/status.ts';
+import { VERSION } from '../core/version.ts';
 import { hello, pairCall } from './client.ts';
 import { commitment, confirmMac, macEqual, newKeyPair, pairKey, randomNonce, shortCode, type PairTranscript } from './crypto.ts';
-import { readDaemon, readSettings, runDaemon, writeSettings } from './daemon.ts';
+import { type DaemonRecord, readDaemon, readSettings, runDaemon, writeSettings } from './daemon.ts';
 import {
   bridgeDir,
   bridgePort,
@@ -21,7 +23,9 @@ import {
   isOnline,
   manualHosts,
   pairingDir,
+  PROTOCOL,
   readRemoteState,
+  type RemoteDevice,
   recentEvents,
   renameDevice,
   safeName,
@@ -220,6 +224,10 @@ async function pairWith(target: string): Promise<number> {
     console.error(`No telepathy bridge answered at ${addr}. Start it there with: telepathy bridge start`);
     return 1;
   }
+  if (there.protocol !== PROTOCOL) {
+    console.error(`${there.name} runs telepathy ${there.version}, which this one (${VERSION}) can't talk to. Update both to the same version, then pair.`);
+    return 1;
+  }
   if (Object.hasOwn(trustedDevices(), there.id)) {
     console.log(`Already paired with ${there.name}.`);
     return 0;
@@ -343,6 +351,53 @@ function firewallHint(port: number): string[] {
   ];
 }
 
+const names = (list: string[]) => (list.length < 3 ? list.join(' and ') : `${list.slice(0, -1).join(', ')} and ${list.at(-1)}`);
+
+/** What the running bridge says about its version: a restart it is waiting for, or one that failed. */
+function versionLines(daemon: DaemonRecord, now: number): string[] {
+  if (!daemon.version) {
+    return ['This bridge started before telepathy 0.11.2 and does not restart into updates. Restart it once: telepathy bridge stop && telepathy bridge start'];
+  }
+  const restart = daemon.restart;
+  if (restart?.at) {
+    const behind = restart.waitingFor.length ? ` ${names(restart.waitingFor)} ${restart.waitingFor.length === 1 ? 'does' : 'do'} not have it yet.` : '';
+    return [`telepathy ${restart.into} is installed. This bridge restarts into it in ${Math.max(0, Math.round((restart.at - now) / 1000))}s.${behind}`];
+  }
+  if (restart) {
+    const minutes = Math.max(1, Math.ceil((restart.until - now) / 60_000));
+    const waiting = restart.waitingFor.length ? `once ${names(restart.waitingFor)} ${restart.waitingFor.length === 1 ? 'has' : 'have'} it too, or ` : '';
+    return [`telepathy ${restart.into} is installed. This bridge restarts into it ${waiting}within ${minutes} min, together with the devices it reaches.`];
+  }
+  if (daemon.failedInto) {
+    return [`This bridge could not restart into telepathy ${daemon.failedInto}, so it still runs ${daemon.version}. See ${path.join(bridgeDir(), 'daemon.log')}.`];
+  }
+  if (VERSION !== '0.0.0-dev' && daemon.version !== VERSION) {
+    return [`This bridge runs telepathy ${daemon.version} and this command is ${VERSION}. The bridge restarts into the installed version by itself.`];
+  }
+  return [];
+}
+
+/** A device's version, when it is not the one this bridge runs. */
+function versionNote(device: RemoteDevice, ours: string): string {
+  const notes: string[] = [];
+  if (device.version && device.version !== ours) notes.push(`telepathy ${device.version}`);
+  if (device.installed) notes.push(`${device.installed} installed`);
+  if (notes.length && device.autoUpdate === false) notes.push('auto-update off');
+  return notes.length ? ` · ${notes.join(', ')}` : '';
+}
+
+/** A device on a protocol this one can't speak, and which side updates. */
+function incompatibleLine(device: RemoteDevice, ours: string): string {
+  const where = device.trusted ? (device.trust === 'tailscale' ? 'your tailnet' : 'paired') : `${device.route} ${device.addr}`;
+  const theirs = device.version ?? '?';
+  const fix = !device.trusted
+    ? 'Pairing needs versions that match.'
+    : theirs !== '?' && isNewer(theirs, ours)
+      ? 'This device checks for updates and restarts into it.'
+      : 'It updates when it sees this one, if its auto-update is on; `telepathy update` there updates now.';
+  return `  ${device.slug} · ${where} · runs telepathy ${theirs}, which this one (${ours}) can't talk to. ${fix}`;
+}
+
 /** Status and the live view: this device, its sessions, every device the daemon has seen, and recent messages. */
 function render(withMessages: boolean, now = Date.now()): string {
   const self = deviceIdentity();
@@ -350,9 +405,11 @@ function render(withMessages: boolean, now = Date.now()): string {
   const lines: string[] = [];
   lines.push(
     daemon
-      ? `telepathy bridge · ${self.name} · listening on ${daemon.listening.join(', ')}`
+      ? `telepathy bridge${daemon.version ? ` ${daemon.version}` : ''} · ${self.name} · listening on ${daemon.listening.join(', ')}`
       : `telepathy bridge · ${self.name} · not running (telepathy bridge start)`,
   );
+  if (daemon) lines.push(...versionLines(daemon, now));
+  const ours = daemon?.version ?? VERSION;
   const local = listPeers();
   lines.push('', `This device, ${local.length} session${local.length === 1 ? '' : 's'}:`);
   for (const peer of local) {
@@ -364,6 +421,10 @@ function render(withMessages: boolean, now = Date.now()): string {
   lines.push('', devices.length ? 'Devices:' : 'Devices: none found yet.');
   for (const device of devices) {
     const online = daemon && isOnline(device, now);
+    if (online && device.incompatible) {
+      lines.push(incompatibleLine(device, ours));
+      continue;
+    }
     if (!device.trusted) {
       lines.push(`  ${device.slug} · ${device.route} ${device.addr} · not paired (telepathy bridge pair ${device.slug})`);
       continue;
@@ -374,7 +435,9 @@ function render(withMessages: boolean, now = Date.now()): string {
       continue;
     }
     const over = device.reach === 'reverse' ? ` · over its own connection (${device.slug} does not accept connections)` : '';
-    lines.push(`  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}${over}`);
+    lines.push(
+      `  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}${over}${versionNote(device, ours)}`,
+    );
     if (device.reachesUs === 'reverse') {
       blocked = true;
       lines.push(`    ${device.slug} can't connect to this device, so it reaches it over this device's connection.`);

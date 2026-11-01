@@ -19,6 +19,10 @@ export const daemonFile = () => path.join(bridgeDir(), 'daemon.json');
 export const eventsFile = () => path.join(bridgeDir(), 'events.jsonl');
 export const pairingDir = () => path.join(bridgeDir(), 'pairing');
 
+/**
+ * The bridge wire protocol. Raise it with any change an older bridge would misread. Devices on different
+ * protocols still see each other's `/v1/hello`, update toward the newer version, and restart together.
+ */
 export const PROTOCOL = 1;
 
 export function bridgePort(): number {
@@ -133,7 +137,14 @@ export interface RemoteDevice {
   /** `tailscale` (same user on the tailnet) or `paired`. */
   trust?: 'tailscale' | 'paired';
   lastSeen: string;
+  /** The telepathy version its bridge runs. */
   version?: string;
+  /** A newer version installed there, which its bridge restarts into. */
+  installed?: string;
+  /** False when that device has auto-update off. */
+  autoUpdate?: boolean;
+  /** It speaks another wire protocol: listed, but nothing is sent to it until both run versions that match. */
+  incompatible?: boolean;
   peers: RemotePeerWire[];
   /**
    * How this device reaches it. `reverse`: it does not accept connections (a firewall, NAT), so it keeps one open

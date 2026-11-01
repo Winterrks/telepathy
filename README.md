@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.11.1" src="https://img.shields.io/badge/version-0.11.1-6d28d9">
+  <img alt="version 0.11.2" src="https://img.shields.io/badge/version-0.11.2-6d28d9">
   <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local, or your own devices with the bridge" src="https://img.shields.io/badge/network-local%20%2B%20your%20devices-6d28d9">
 </p>
@@ -435,7 +435,7 @@ The same updates are `telepathy update` (and `telepathy update --dry-run`) once 
 
 ## The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.11.1. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.11.2. Requires Node 20 or newer.
 
 ```sh
 telepathy setup [--dry-run]           # install, update, approve hooks and install ACP adapters, everywhere
@@ -466,7 +466,7 @@ something failed.
 
 `telepathy run --headless <agent> --name <name> [--cwd <dir>]` keeps a peer up until `telepathy stop`. Claude Code stays on `claude -p` with stream-json stdin. Codex is an app-server thread. OpenCode (and Kilo) is `serve` plus a session prompt. Antigravity is a long-lived `agy --input-format stream-json --output-format stream-json` (not `agy -p`), and it refuses to start on a consumer login. Copilot and Qwen use the ACP host. The terminal shows a short status line. The harness's raw stream is appended to a log under the telepathy state directory. Model text is written as normal output, not one line per chunk. `--name` is the only peer: when the agent already has the telepathy plugin, that plugin's server is given `TELEPATHY_NAME` and the host does not register a second peer. A send succeeds only when the transcript shows the message id, inside the same 110 second confirm. An ACP turn that starts with a tool call or a permission request counts as delivered. An exited peer fails immediately and leaves nothing in the inbox. A failed send withdraws its copy, including a stream-json line or ACP prompt that has not been submitted. Ctrl-C during an interactive ACP turn cancels that turn; Ctrl-C while idle, or a second Ctrl-C, exits. `/exit` and `/quit` exit immediately, including while a turn or a permission question is open, and are not sent to the agent. Matching ignores case and surrounding whitespace.
 
-Auto-update runs at most once a day, from a session-start hook and from the MCP server, in a detached process. It does not block the session. Failures are written to `auto-update.log` in the state directory (`TELEPATHY_HOME`, or `~/.telepathy`). `TELEPATHY_AUTO_UPDATE=0` wins, and each harness's MCP config forwards that variable (Codex only forwards names listed in `env_vars`). A `TELEPATHY_HOME` other than `~/.telepathy` is a sandbox: auto-update does not touch installs outside it. `telepathy update` skips a copy that is already the current version, and it prints the Codex restart note only when a version changed. When `telepathy-cli` is installed globally (`npm root -g`) and npm has a newer version, `telepathy update` and auto-update also run `npm install -g telepathy-cli@<version>`; a CLI run from a git checkout is left alone.
+Auto-update runs at most once a day, from a session-start hook, the MCP server and the [bridge](#across-devices), in a detached process. When the bridge sees a newer version on one of your other devices, it runs the check at once instead (at most once an hour for each version). It does not block the session. Failures are written to `auto-update.log` in the state directory (`TELEPATHY_HOME`, or `~/.telepathy`). `TELEPATHY_AUTO_UPDATE=0` wins, and each harness's MCP config forwards that variable (Codex only forwards names listed in `env_vars`). A `TELEPATHY_HOME` other than `~/.telepathy` is a sandbox: auto-update does not touch installs outside it. `telepathy update` skips a copy that is already the current version, and it prints the Codex restart note only when a version changed. When `telepathy-cli` is installed globally (`npm root -g`) and npm has a newer version, `telepathy update` and auto-update also run `npm install -g telepathy-cli@<version>`; a CLI run from a git checkout is left alone.
 
 ## Across devices
 
@@ -503,6 +503,15 @@ telepathy bridge watch                # live view: devices, their sessions, and 
   connection. Each request is checked there exactly as if it had come in directly, and the confirm rule is the same.
   `telepathy bridge status` says so on both devices, and on the blocked one prints the firewall commands that let
   devices connect directly.
+- **Updates:** the bridge restarts itself into a new version. It notices when the telepathy it runs from is replaced
+  (by auto-update, `telepathy update`, or `npm install -g telepathy-cli`), waits until the devices it reaches have
+  that version too, and then they all restart at one moment they agree on, so your devices don't spend long on
+  versions that can't talk to each other. A device that sees a newer version on another one checks for updates at
+  once; what it installs comes from npm and GitHub, never from the other device. A device with auto-update off isn't
+  waited for, and the wait ends after 10 minutes (`TELEPATHY_BRIDGE_RESTART_WAIT_MS`). A delivery in progress finishes
+  first, and if the new bridge does not start, the running one keeps going. `telepathy bridge status` shows each
+  device's version and when this bridge restarts. A device on a version this one can't talk to is still listed, with
+  its version.
 - **Names:** a device is called by its host name. `telepathy bridge name <name>` changes it.
 
 ## Subagents

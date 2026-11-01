@@ -74,18 +74,19 @@ function autoUpdateEntry(): string {
 }
 
 /**
- * Starts a detached check when one is due. Returns immediately. The session start hook and the MCP server
- * both call this; the lock and the 24h stamp keep them from updating twice.
+ * Starts a detached check when one is due. Returns immediately. The session start hook, the MCP server and the
+ * bridge call this; the lock and the 24h stamp keep them from updating twice. `force` skips the 24h stamp: the
+ * bridge uses it when another device has a newer version, and still respects auto-update off.
  */
-export function scheduleAutoUpdate(reason: string): void {
+export function scheduleAutoUpdate(reason: string, options: { force?: boolean } = {}): void {
   try {
     if (process.argv.includes('--telepathy-auto-update')) return;
     if (!autoUpdateEnabled()) return;
-    if (recentlyChecked()) return;
+    if (!options.force && recentlyChecked()) return;
     const child = spawn(process.execPath, [autoUpdateEntry(), '--telepathy-auto-update'], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, TELEPATHY_HOME: stateDir() },
+      env: { ...process.env, TELEPATHY_HOME: stateDir(), ...(options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: '1' } : {}) },
     });
     child.on('error', (err) => logAutoUpdate(`spawn failed (${reason}): ${err.message}`));
     child.unref();
@@ -122,10 +123,13 @@ function releaseLock(): void {
 }
 
 /**
- * One check: stamp first (a failure still counts toward the 24h), then update when GitHub is newer.
- * Quiet. The caller is already a detached process.
+ * One check: stamp first (a failure still counts toward the 24h), then update the plugins when GitHub is newer
+ * and the CLI when npm is. Quiet. The caller is already a detached process. `TELEPATHY_AUTO_UPDATE_FORCE=1`
+ * (from the bridge) skips the 24h stamp.
  */
 export async function runAutoUpdate(): Promise<void> {
+  const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === '1';
+  delete process.env.TELEPATHY_AUTO_UPDATE_FORCE;
   if (!autoUpdateEnabled()) {
     logAutoUpdate('skipped: auto-update disabled');
     return;
@@ -135,34 +139,38 @@ export async function runAutoUpdate(): Promise<void> {
     return;
   }
   try {
-    if (recentlyChecked()) {
+    if (!force && recentlyChecked()) {
       logAutoUpdate('skipped: checked within 24h');
       return;
     }
+    if (force) logAutoUpdate('checking now: another device has a newer version');
     writeJsonAtomic(stampFile(), { checkedAt: new Date().toISOString() } satisfies Stamp);
-    let latest: string;
+    let latest: string | undefined;
     try {
       latest = await latestGithubVersion();
       rememberGithubVersion(latest);
     } catch (err) {
+      // The CLI comes from npm, not GitHub, so it is still checked below.
       logAutoUpdate(`version check failed: ${(err as Error).message}`);
-      return;
     }
-    const installs = installsInScope();
-    const stale = installs.filter((install) => isNewer(latest, install.version));
-    if (!stale.length) logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
-    else {
-      logAutoUpdate(`updating ${stale.map((install) => `${install.agent} ${install.version}`).join(', ')} toward ${latest}`);
-      const lines: string[] = [];
-      const code = await updateAll({ log: (line) => lines.push(line), cli: false });
-      if (lines.length) logAutoUpdate(lines.join('\n'));
-      if (code !== 0) logAutoUpdate(`update exited ${code}`);
-    }
-    // Codex's own marketplace upgrade changes the plugin too. updateAll already did this when it updated Codex.
-    if (installs.some((install) => install.agent === 'codex') && !stale.some((install) => install.agent === 'codex')) {
-      const lines: string[] = [];
-      await retrustChangedCodexHooks((line) => lines.push(line));
-      if (lines.length) logAutoUpdate(lines.join('\n'));
+    if (latest) {
+      const newest = latest;
+      const installs = installsInScope();
+      const stale = installs.filter((install) => isNewer(newest, install.version));
+      if (!stale.length) logAutoUpdate(`current ${newest}; ${installs.length} install(s)`);
+      else {
+        logAutoUpdate(`updating ${stale.map((install) => `${install.agent} ${install.version}`).join(', ')} toward ${newest}`);
+        const lines: string[] = [];
+        const code = await updateAll({ log: (line) => lines.push(line), cli: false });
+        if (lines.length) logAutoUpdate(lines.join('\n'));
+        if (code !== 0) logAutoUpdate(`update exited ${code}`);
+      }
+      // Codex's own marketplace upgrade changes the plugin too. updateAll already did this when it updated Codex.
+      if (installs.some((install) => install.agent === 'codex') && !stale.some((install) => install.agent === 'codex')) {
+        const lines: string[] = [];
+        await retrustChangedCodexHooks((line) => lines.push(line));
+        if (lines.length) logAutoUpdate(lines.join('\n'));
+      }
     }
     const cli = await updateGlobalCli();
     if (cli) logAutoUpdate(cli.line);

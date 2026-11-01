@@ -1,6 +1,6 @@
 {
   "name": "telepathy-cli",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "CLI for telepathy. Install it into the coding agents on this machine, keep those copies current, and run or host a session that can message the others.",
   "type": "module",
   "bin": {

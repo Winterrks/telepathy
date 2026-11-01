@@ -758,7 +758,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.11.1" : "0.0.0-dev";
+    VERSION = true ? "0.11.2" : "0.0.0-dev";
   }
 });
 
@@ -1512,15 +1512,15 @@ function autoUpdateEntry() {
   }
   return fileURLToPath(import.meta.url);
 }
-function scheduleAutoUpdate(reason) {
+function scheduleAutoUpdate(reason, options = {}) {
   try {
     if (process.argv.includes("--telepathy-auto-update")) return;
     if (!autoUpdateEnabled()) return;
-    if (recentlyChecked()) return;
+    if (!options.force && recentlyChecked()) return;
     const child = spawn3(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, TELEPATHY_HOME: stateDir() }
+      env: { ...process.env, TELEPATHY_HOME: stateDir(), ...options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: "1" } : {} }
     });
     child.on("error", (err) => logAutoUpdate(`spawn failed (${reason}): ${err.message}`));
     child.unref();
@@ -1554,6 +1554,8 @@ function releaseLock() {
   if (info?.pid === process.pid) fs7.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
+  const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === "1";
+  delete process.env.TELEPATHY_AUTO_UPDATE_FORCE;
   if (!autoUpdateEnabled()) {
     logAutoUpdate("skipped: auto-update disabled");
     return;
@@ -1563,10 +1565,11 @@ async function runAutoUpdate() {
     return;
   }
   try {
-    if (recentlyChecked()) {
+    if (!force && recentlyChecked()) {
       logAutoUpdate("skipped: checked within 24h");
       return;
     }
+    if (force) logAutoUpdate("checking now: another device has a newer version");
     writeJsonAtomic(stampFile(), { checkedAt: (/* @__PURE__ */ new Date()).toISOString() });
     let latest;
     try {
@@ -1574,22 +1577,24 @@ async function runAutoUpdate() {
       rememberGithubVersion(latest);
     } catch (err) {
       logAutoUpdate(`version check failed: ${err.message}`);
-      return;
     }
-    const installs = installsInScope();
-    const stale2 = installs.filter((install) => isNewer(latest, install.version));
-    if (!stale2.length) logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
-    else {
-      logAutoUpdate(`updating ${stale2.map((install) => `${install.agent} ${install.version}`).join(", ")} toward ${latest}`);
-      const lines = [];
-      const code = await updateAll({ log: (line) => lines.push(line), cli: false });
-      if (lines.length) logAutoUpdate(lines.join("\n"));
-      if (code !== 0) logAutoUpdate(`update exited ${code}`);
-    }
-    if (installs.some((install) => install.agent === "codex") && !stale2.some((install) => install.agent === "codex")) {
-      const lines = [];
-      await retrustChangedCodexHooks((line) => lines.push(line));
-      if (lines.length) logAutoUpdate(lines.join("\n"));
+    if (latest) {
+      const newest = latest;
+      const installs = installsInScope();
+      const stale2 = installs.filter((install) => isNewer(newest, install.version));
+      if (!stale2.length) logAutoUpdate(`current ${newest}; ${installs.length} install(s)`);
+      else {
+        logAutoUpdate(`updating ${stale2.map((install) => `${install.agent} ${install.version}`).join(", ")} toward ${newest}`);
+        const lines = [];
+        const code = await updateAll({ log: (line) => lines.push(line), cli: false });
+        if (lines.length) logAutoUpdate(lines.join("\n"));
+        if (code !== 0) logAutoUpdate(`update exited ${code}`);
+      }
+      if (installs.some((install) => install.agent === "codex") && !stale2.some((install) => install.agent === "codex")) {
+        const lines = [];
+        await retrustChangedCodexHooks((line) => lines.push(line));
+        if (lines.length) logAutoUpdate(lines.join("\n"));
+      }
     }
     const cli = await updateGlobalCli();
     if (cli) logAutoUpdate(cli.line);
@@ -2508,13 +2513,13 @@ function holdsUnread(id, now2 = Date.now()) {
   }
 }
 function adoptHeldMessages(agent, selfId, sessionId) {
-  let names;
+  let names2;
   try {
-    names = fs12.readdirSync(peersDir());
+    names2 = fs12.readdirSync(peersDir());
   } catch {
     return;
   }
-  for (const name of names) {
+  for (const name of names2) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
     const old = readJson(path13.join(peerDir(name), "session.json"));
     if (old?.agent !== agent || old.sessionId !== sessionId || isPeerAlive(readPeer(name))) continue;
@@ -2573,13 +2578,13 @@ function registerStableName(agent, id, explicit) {
   adoptStableInbox(agent, id, name);
 }
 function adoptStableInbox(agent, selfId, stableName) {
-  let names;
+  let names2;
   try {
-    names = fs12.readdirSync(peersDir());
+    names2 = fs12.readdirSync(peersDir());
   } catch {
     return;
   }
-  for (const name of names) {
+  for (const name of names2) {
     if (name === selfId || !name.startsWith(`${agent}-`)) continue;
     const ident = readJson(path13.join(peerDir(name), "identity.json"));
     if (ident?.name !== stableName || isPeerAlive(readPeer(name))) continue;
@@ -2711,14 +2716,14 @@ function readPeer(id) {
 }
 function listPeers() {
   observeLaunchedCodex();
-  let names = [];
+  let names2 = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names2 = fs12.readdirSync(peersDir());
   } catch {
     return [];
   }
   const peers = [];
-  for (const name of names.sort()) {
+  for (const name of names2.sort()) {
     const m = PEER_DIR_RE.exec(name);
     if (!m) continue;
     const peer = readPeer(name);
@@ -2822,14 +2827,14 @@ function observeUnpromptedCodex(proc, cwd) {
   linkCodexWrappers(proc, id);
 }
 function keptPeers() {
-  let names = [];
+  let names2 = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names2 = fs12.readdirSync(peersDir());
   } catch {
     return [];
   }
   const kept = [];
-  for (const name of names) {
+  for (const name of names2) {
     const peer = readPeer(name);
     if (!peer || !isSessionKeyed(peer) || isPeerAlive(peer) || !keepsSession(peer)) continue;
     kept.push(peer);
@@ -2837,13 +2842,13 @@ function keptPeers() {
   return kept;
 }
 function codexThreadsOf(pid) {
-  let names = [];
+  let names2 = [];
   try {
-    names = fs12.readdirSync(peersDir());
+    names2 = fs12.readdirSync(peersDir());
   } catch {
     return [];
   }
-  return names.filter((name) => name.startsWith("codex-") && !/^codex-\d+$/.test(name)).map((name) => readSession(name)).filter((s) => s?.agent === "codex" && s.pid === pid && !!s.sessionId && isPeerAlive(readPeer(peerId("codex", s.sessionId)))).map((s) => s.sessionId);
+  return names2.filter((name) => name.startsWith("codex-") && !/^codex-\d+$/.test(name)).map((name) => readSession(name)).filter((s) => s?.agent === "codex" && s.pid === pid && !!s.sessionId && isPeerAlive(readPeer(peerId("codex", s.sessionId)))).map((s) => s.sessionId);
 }
 function selfPeer(agent, pid, id = peerId(agent, pid)) {
   const key = id.slice(agent.length + 1);
@@ -3507,8 +3512,8 @@ function webhookHeaders(target) {
   const headers = { "content-type": "application/json" };
   const key = target.key?.trim();
   if (key) {
-    const names = target.authHeaders?.length ? target.authHeaders : DEFAULT_AUTH_HEADERS;
-    for (const name of names) {
+    const names2 = target.authHeaders?.length ? target.authHeaders : DEFAULT_AUTH_HEADERS;
+    for (const name of names2) {
       headers[name] = name.toLowerCase() === "authorization" ? `Bearer ${key}` : key;
     }
   }
@@ -3982,13 +3987,13 @@ function antigravityTranscript(peer, marker) {
 }
 function treeHas(dir, marker, depth) {
   if (depth < 0) return false;
-  let names;
+  let names2;
   try {
-    names = fs17.readdirSync(dir);
+    names2 = fs17.readdirSync(dir);
   } catch {
     return false;
   }
-  for (const name of names) {
+  for (const name of names2) {
     if (name === "node_modules") continue;
     const file2 = path20.join(dir, name);
     let st;
@@ -4025,9 +4030,9 @@ function fileHas(file2, marker) {
 function copilotEventNames(record2) {
   if (!record2 || typeof record2 !== "object") return [];
   const body = record2;
-  const names = [];
+  const names2 = [];
   const push = (value) => {
-    if (typeof value === "string" && value) names.push(value);
+    if (typeof value === "string" && value) names2.push(value);
   };
   for (const key of ["type", "event", "name"]) push(body[key]);
   const data = body.data;
@@ -4035,7 +4040,7 @@ function copilotEventNames(record2) {
     const nested = data;
     for (const key of ["type", "event", "hook", "hookEventName", "hookType"]) push(nested[key]);
   }
-  return names;
+  return names2;
 }
 function copilotLogHasMarker(file2, marker) {
   const text = readTranscriptText(file2);
@@ -4935,13 +4940,13 @@ function writeHeadlessRecord(record2) {
   writeJsonAtomic(headlessRecordPath(record2.agent, record2.slug), record2);
 }
 function listHeadlessRecords() {
-  let names = [];
+  let names2 = [];
   try {
-    names = fs21.readdirSync(headlessDir());
+    names2 = fs21.readdirSync(headlessDir());
   } catch {
     return [];
   }
-  return names.filter((name) => name.endsWith(".json")).map((name) => readJson(path24.join(headlessDir(), name))).filter((record2) => !!record2 && typeof record2.pid === "number");
+  return names2.filter((name) => name.endsWith(".json")).map((name) => readJson(path24.join(headlessDir(), name))).filter((record2) => !!record2 && typeof record2.pid === "number");
 }
 function formatHeadlessPs() {
   const live = listHeadlessRecords().filter((record2) => isAlive(record2.pid));
@@ -5070,15 +5075,15 @@ function appendTranscript(peerId2, text) {
 }
 function pluginInboxPeerId(agent, name, sessionId) {
   const slug = name ? slugify(name) : void 0;
-  let names = [];
+  let names2 = [];
   try {
-    names = fs21.readdirSync(peersDir());
+    names2 = fs21.readdirSync(peersDir());
   } catch {
     return void 0;
   }
   let byName;
   let bySession;
-  for (const id of names) {
+  for (const id of names2) {
     if (!id.startsWith(`${agent}-`)) continue;
     const session = readSession(id);
     if (session?.agent !== agent) continue;
@@ -5216,12 +5221,12 @@ function managedSettingsDir() {
 function managedInbound() {
   const dir = managedSettingsDir();
   let found = readInbound(path27.join(dir, "managed-settings.json"));
-  let names = [];
+  let names2 = [];
   try {
-    names = fs23.readdirSync(path27.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+    names2 = fs23.readdirSync(path27.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
   } catch {
   }
-  for (const name of names) {
+  for (const name of names2) {
     const value = readInbound(path27.join(dir, "managed-settings.d", name));
     if (value) found = value;
   }
@@ -5746,9 +5751,10 @@ async function hello(addr, timeoutMs2 = 1500) {
     const res = await fetch(`${baseUrl(addr)}/v1/hello`, { signal: AbortSignal.timeout(timeoutMs2) });
     if (!res.ok) return void 0;
     const body = await res.json();
-    if (!body || body.protocol !== PROTOCOL || typeof body.id !== "string" || !DEVICE_ID.test(body.id)) return void 0;
+    const protocol = Number(body?.protocol);
+    if (!body || !Number.isInteger(protocol) || protocol < 1 || typeof body.id !== "string" || !DEVICE_ID.test(body.id)) return void 0;
     return {
-      protocol: PROTOCOL,
+      protocol,
       id: body.id,
       name: safeName(body.name),
       version: safeName(body.version, "?").slice(0, 20),
@@ -5853,6 +5859,10 @@ function formatRemoteListings(listings, now2 = Date.now()) {
       lines.push(`Device ${device.slug} (${via}) is offline, last seen ${formatAgo(now2 - Date.parse(device.lastSeen))}.`);
       continue;
     }
+    if (device.incompatible) {
+      lines.push(`Device ${device.slug} (${via}) runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Its sessions show once both run the same version.`);
+      continue;
+    }
     lines.push(`On device ${device.slug} (${via}), ${peers.length} session${peers.length === 1 ? "" : "s"}:`);
     for (const { peer, status, delivery } of peers) {
       const notes = [peer.cwd ? `cwd ${peer.cwd}` : "", status ?? "", delivery ?? ""].filter(Boolean);
@@ -5874,6 +5884,12 @@ async function sendRemote(self2, target, body) {
     return {
       ok: false,
       error: `Message failed: device ${device.slug} is offline (its telepathy bridge is not answering). Nothing was sent.`
+    };
+  }
+  if (device.incompatible) {
+    return {
+      ok: false,
+      error: `Message failed: device ${device.slug} runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Nothing was sent. The older one updates by itself when its auto-update is on; \`telepathy update\` there updates now.`
     };
   }
   const unqualified = device.peers.map((wire) => asPeer(wire, device, false));
@@ -5929,6 +5945,7 @@ var init_remote = __esm({
     init_messages();
     init_paths();
     init_peers();
+    init_version();
     init_client();
     init_state();
     qualify = (value, device) => `${value}@${device.slug}`;
@@ -7682,8 +7699,8 @@ var require_dns_packet = __commonJS({
       if (!buf) buf = Buffer2.alloc(rrrsig.encodingLength(sig));
       if (!offset) offset = 0;
       const oldOffset = offset;
-      const signature = sig.signature;
-      if (!Buffer2.isBuffer(signature)) {
+      const signature2 = sig.signature;
+      if (!Buffer2.isBuffer(signature2)) {
         throw new Error("Signature must be a Buffer");
       }
       offset += 2;
@@ -7703,8 +7720,8 @@ var require_dns_packet = __commonJS({
       offset += 2;
       name.encode(sig.signersName, buf, offset);
       offset += name.encode.bytes;
-      signature.copy(buf, offset, 0, signature.length);
-      offset += signature.length;
+      signature2.copy(buf, offset, 0, signature2.length);
+      offset += signature2.length;
       rrrsig.encode.bytes = offset - oldOffset;
       buf.writeUInt16BE(rrrsig.encode.bytes - 2, oldOffset);
       return buf;
@@ -8540,13 +8557,13 @@ var require_multicast_dns = __commonJS({
     };
     function defaultInterface() {
       var networks = os19.networkInterfaces();
-      var names = Object.keys(networks);
-      for (var i = 0; i < names.length; i++) {
-        var net2 = networks[names[i]];
+      var names2 = Object.keys(networks);
+      for (var i = 0; i < names2.length; i++) {
+        var net2 = networks[names2[i]];
         for (var j = 0; j < net2.length; j++) {
           var iface = net2[j];
           if (isIPv4(iface.family) && !iface.internal) {
-            if (os19.platform() === "darwin" && names[i] === "en0") return iface.address;
+            if (os19.platform() === "darwin" && names2[i] === "en0") return iface.address;
             return "0.0.0.0";
           }
         }
@@ -8555,10 +8572,10 @@ var require_multicast_dns = __commonJS({
     }
     function allInterfaces() {
       var networks = os19.networkInterfaces();
-      var names = Object.keys(networks);
+      var names2 = Object.keys(networks);
       var res = [];
-      for (var i = 0; i < names.length; i++) {
-        var net2 = networks[names[i]];
+      for (var i = 0; i < names2.length; i++) {
+        var net2 = networks[names2[i]];
         for (var j = 0; j < net2.length; j++) {
           var iface = net2[j];
           if (isIPv4(iface.family)) {
@@ -8758,7 +8775,7 @@ var init_setup = __esm({
 });
 
 // src/grokbot/config.ts
-import fs29 from "node:fs";
+import fs30 from "node:fs";
 import path32 from "node:path";
 function urlProblem(raw) {
   let url2;
@@ -8781,7 +8798,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file2 = configPath(slug);
   try {
-    if ((fs29.statSync(file2).mode & 63) !== 0) return void 0;
+    if ((fs30.statSync(file2).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -8798,30 +8815,30 @@ function writeConfig(name, url2, key) {
 }
 function removeConfig(slug) {
   const file2 = configPath(slug);
-  if (!fs29.existsSync(file2)) return false;
-  fs29.rmSync(file2, { force: true });
+  if (!fs30.existsSync(file2)) return false;
+  fs30.rmSync(file2, { force: true });
   return true;
 }
 function listConfigs() {
-  let names = [];
+  let names2 = [];
   try {
-    names = fs29.readdirSync(grokbotDir());
+    names2 = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
-  return names.filter((name) => name.endsWith(".json")).map((name) => readConfig(name.slice(0, -".json".length))).filter((config2) => !!config2);
+  return names2.filter((name) => name.endsWith(".json")).map((name) => readConfig(name.slice(0, -".json".length))).filter((config2) => !!config2);
 }
 function looseConfigs() {
-  let names = [];
+  let names2 = [];
   try {
-    names = fs29.readdirSync(grokbotDir());
+    names2 = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
-  return names.filter((name) => {
+  return names2.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs29.statSync(path32.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs30.statSync(path32.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -8839,7 +8856,7 @@ var init_config = __esm({
 });
 
 // src/grokbot/host.ts
-import fs30 from "node:fs";
+import fs31 from "node:fs";
 import os16 from "node:os";
 import path33 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
@@ -8877,7 +8894,7 @@ async function postContext(config2, context) {
 function grokbotArgv() {
   const here = path33.dirname(fileURLToPath3(import.meta.url));
   for (const file2 of [path33.join(here, "grokbot.mjs"), path33.join(here, "..", "grokbot-main.ts")]) {
-    if (fs30.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
+    if (fs31.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
@@ -8885,11 +8902,11 @@ function takeLock(slug) {
   const file2 = path33.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs30.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs31.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs30.readFileSync(file2, "utf8"));
-          if (held.pid === process.pid) fs30.rmSync(file2, { force: true });
+          const held = JSON.parse(fs31.readFileSync(file2, "utf8"));
+          if (held.pid === process.pid) fs31.rmSync(file2, { force: true });
         } catch {
         }
       };
@@ -8897,12 +8914,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs30.readFileSync(file2, "utf8"));
+        held = JSON.parse(fs31.readFileSync(file2, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs30.rmSync(file2, { force: true });
+      fs31.rmSync(file2, { force: true });
     }
   }
   return void 0;
@@ -8925,7 +8942,7 @@ function contextFor(config2, messages, cli = cliCommand()) {
 }
 function appendTranscript2(peerId2, text) {
   const file2 = path33.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs30.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  fs31.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -8945,7 +8962,7 @@ async function runGrokbotHost(slug) {
   ensureDir(path33.dirname(logFile2));
   const log = (line) => {
     try {
-      fs30.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs31.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -8980,7 +8997,7 @@ async function runGrokbotHost(slug) {
         return;
       }
       const pendingFile = (msg) => path33.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs30.existsSync(pendingFile(msg)));
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs31.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now2 = Date.now();
@@ -8993,7 +9010,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs30.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs31.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config2, live, cli);
       const result = await postContext(config2, context);
@@ -9006,9 +9023,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs30.existsSync(path33.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs31.existsSync(path33.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript2(hosted.peerId, formatAsUserTurn(msg));
-        if (fs30.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs31.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -9068,7 +9085,7 @@ __export(cli_exports, {
   grokbotCommand: () => grokbotCommand
 });
 import { spawn as spawn11 } from "node:child_process";
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import os17 from "node:os";
 import path34 from "node:path";
 function readStdin() {
@@ -9118,12 +9135,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile2 = headlessLogPath("grok", slug);
-  fs31.mkdirSync(path34.dirname(logFile2), { recursive: true, mode: 448 });
-  const out = fs31.openSync(logFile2, "a", 384);
+  fs32.mkdirSync(path34.dirname(logFile2), { recursive: true, mode: 448 });
+  const out = fs32.openSync(logFile2, "a", 384);
   const [cmd, ...args] = grokbotArgv();
   const home2 = os17.homedir();
   const child = spawn11(cmd, [...args, "host", slug], {
-    cwd: fs31.existsSync(home2) ? home2 : stateDir(),
+    cwd: fs32.existsSync(home2) ? home2 : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -9131,7 +9148,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs31.closeSync(out);
+  fs32.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record2 = readHeadlessRecord("grok", slug);
@@ -9452,7 +9469,7 @@ var init_configure = __esm({
 });
 
 // src/agent/spec.ts
-import fs32 from "node:fs";
+import fs33 from "node:fs";
 import path35 from "node:path";
 function writeSpec(dir, spec) {
   ensureDir(dir);
@@ -9466,13 +9483,13 @@ function hostAlive(state) {
   return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
 }
 function listAgents() {
-  let names;
+  let names2;
   try {
-    names = fs32.readdirSync(agentsDir());
+    names2 = fs33.readdirSync(agentsDir());
   } catch {
     return [];
   }
-  return names.flatMap((name) => {
+  return names2.flatMap((name) => {
     const dir = path35.join(agentsDir(), name);
     const spec = readSpec(dir);
     return spec ? [{ dir, spec, state: readState(dir) }] : [];
@@ -9504,7 +9521,7 @@ __export(host_exports, {
   runAgent: () => runAgent
 });
 import crypto7 from "node:crypto";
-import fs33 from "node:fs";
+import fs34 from "node:fs";
 import path36 from "node:path";
 async function runAgent(dir) {
   const spec = readSpec(dir);
@@ -9524,9 +9541,9 @@ async function runAgent(dir) {
   const bin = harness?.acp ? resolvedAcpBin(harness.acp) : void 0;
   if (!harness?.acp || !bin) return fail(`${spec.harness} has no ACP launcher on PATH`);
   const transcript = transcriptFile(dir);
-  const out = fs33.createWriteStream(transcript, { flags: "a" });
+  const out = fs34.createWriteStream(transcript, { flags: "a" });
   const write = (text) => out.write(text);
-  const log = fs33.createWriteStream(path36.join(dir, "host.log"), { flags: "a" });
+  const log = fs34.createWriteStream(path36.join(dir, "host.log"), { flags: "a" });
   const label = agentLabel(spec.harness);
   const notes = [];
   let segment = "";
@@ -26008,12 +26025,12 @@ function rewriteKeyNames(ctx) {
   const rewrites = /* @__PURE__ */ new Map();
   for (const record2 of pendingRecords.get(ctx) ?? []) {
     const seen = ctx.seen.get(record2);
-    const names = (seen?.def ?? seen?.schema)?.propertyNames;
-    if (!names || names === true || rewrites.has(names))
+    const names2 = (seen?.def ?? seen?.schema)?.propertyNames;
+    if (!names2 || names2 === true || rewrites.has(names2))
       continue;
-    const rewritten = stringifyKeyNames(bySchema, names, /* @__PURE__ */ new Set());
-    if (rewritten !== names)
-      rewrites.set(names, rewritten);
+    const rewritten = stringifyKeyNames(bySchema, names2, /* @__PURE__ */ new Set());
+    if (rewritten !== names2)
+      rewrites.set(names2, rewritten);
   }
   if (!rewrites.size)
     return;
@@ -33646,7 +33663,7 @@ function buildInputRequired(spec) {
 function inputRequiredRoundsExceededMessage(method, maxRounds) {
   return `Multi-round-trip request '${method}' still required input after ${maxRounds} rounds (inputRequired.maxRounds)`;
 }
-function sleep2(ms, signal) {
+function sleep3(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason instanceof SdkError ? signal.reason : new SdkError(SdkErrorCode.RequestTimeout, String(signal.reason)));
@@ -36874,7 +36891,7 @@ var init_mcp_Dw2OlZ1f = __esm({
             } finally {
               roundAbort.dispose();
             }
-          } else await sleep2(REQUEST_STATE_ONLY_LEG_PACING_MS, outerSignal);
+          } else await sleep3(REQUEST_STATE_ONLY_LEG_PACING_MS, outerSignal);
           let ctxNext = {
             ...ctx,
             mcpReq: {
@@ -38223,7 +38240,7 @@ var init_zod = __esm({
 });
 
 // src/core/setup.ts
-import fs34 from "node:fs";
+import fs35 from "node:fs";
 import path37 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 function codexBridgeTimeoutSec(config2) {
@@ -38272,7 +38289,7 @@ function setupNotes(self2) {
     let timeout;
     let config2 = "";
     try {
-      config2 = fs34.readFileSync(path37.join(codexHome, "config.toml"), "utf8");
+      config2 = fs35.readFileSync(path37.join(codexHome, "config.toml"), "utf8");
       timeout = codexBridgeTimeoutSec(config2);
     } catch {
       config2 = "";
@@ -38372,13 +38389,13 @@ var init_guide = __esm({
 });
 
 // src/core/inbox-wait.ts
-import fs35 from "node:fs";
+import fs36 from "node:fs";
 import path38 from "node:path";
 function recordAccepted(peerId2, messages) {
   if (!messages.length) return;
   const file2 = path38.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
   const chunk = messages.map((msg) => JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text: formatForReading(msg) })).join("\n") + "\n";
-  fs35.appendFileSync(file2, chunk);
+  fs36.appendFileSync(file2, chunk);
 }
 function waitForInbox(peerId2, timeoutMs2, signal) {
   const ready = claimInbox(peerId2);
@@ -38416,7 +38433,7 @@ function waitForInbox(peerId2, timeoutMs2, signal) {
     };
     try {
       ensureDir(inboxDir(peerId2));
-      watcher = fs35.watch(inboxDir(peerId2), check2);
+      watcher = fs36.watch(inboxDir(peerId2), check2);
       watcher.on("error", () => {
         try {
           watcher?.close();
@@ -38446,7 +38463,7 @@ var init_inbox_wait = __esm({
 });
 
 // src/core/copilot-resume.ts
-import fs36 from "node:fs";
+import fs37 from "node:fs";
 import os18 from "node:os";
 import path39 from "node:path";
 function shellTokens(command) {
@@ -38521,7 +38538,7 @@ function pathKeys(p) {
   };
   add(path39.resolve(trimmed));
   try {
-    add(fs36.realpathSync(trimmed));
+    add(fs37.realpathSync(trimmed));
   } catch {
   }
   return [...keys];
@@ -38550,12 +38567,12 @@ function yamlScalars(text) {
 function readTail2(file2, max = 256 * 1024) {
   let fd;
   try {
-    fd = fs36.openSync(file2, "r");
-    const size = fs36.fstatSync(fd).size;
+    fd = fs37.openSync(file2, "r");
+    const size = fs37.fstatSync(fd).size;
     if (size <= 0) return "";
     const start2 = Math.max(0, size - max);
     const buf = Buffer.alloc(size - start2);
-    fs36.readSync(fd, buf, 0, buf.length, start2);
+    fs37.readSync(fd, buf, 0, buf.length, start2);
     const text = buf.toString("utf8");
     if (start2 === 0) return text;
     const cut = text.indexOf("\n");
@@ -38563,7 +38580,7 @@ function readTail2(file2, max = 256 * 1024) {
   } catch {
     return "";
   } finally {
-    if (fd !== void 0) fs36.closeSync(fd);
+    if (fd !== void 0) fs37.closeSync(fd);
   }
 }
 function latestResume(file2) {
@@ -38593,19 +38610,19 @@ function latestResume(file2) {
 }
 function loadSessions(copilotHome2) {
   const root = path39.join(copilotHome2, "session-state");
-  let names = [];
+  let names2 = [];
   try {
-    names = fs36.readdirSync(root);
+    names2 = fs37.readdirSync(root);
   } catch {
     return [];
   }
   const sessions = [];
-  for (const name of names) {
+  for (const name of names2) {
     if (!sessionToken(name)) continue;
     const dir = path39.join(root, name);
     let st;
     try {
-      st = fs36.statSync(dir);
+      st = fs37.statSync(dir);
     } catch {
       continue;
     }
@@ -38613,9 +38630,9 @@ function loadSessions(copilotHome2) {
     const snap = { id: name };
     const workspace = path39.join(dir, "workspace.yaml");
     try {
-      const wst = fs36.statSync(workspace);
+      const wst = fs37.statSync(workspace);
       snap.workspaceMtime = wst.mtimeMs;
-      const fields = yamlScalars(fs36.readFileSync(workspace, "utf8"));
+      const fields = yamlScalars(fs37.readFileSync(workspace, "utf8"));
       if (fields.id && fields.id !== name) continue;
       if (fields.cwd) snap.cwd = fields.cwd;
       if (fields.name) snap.name = fields.name;
@@ -38732,20 +38749,20 @@ var init_copilot_resume = __esm({
 
 // src/agent/tools.ts
 import { execFileSync as execFileSync8, spawn as spawn12 } from "node:child_process";
-import fs37 from "node:fs";
+import fs38 from "node:fs";
 import path40 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 function hostCommand(dir) {
   const here = path40.dirname(fileURLToPath5(import.meta.url));
   for (const file2 of [path40.join(here, "agent.mjs"), path40.join(here, "..", "agent-main.ts")]) {
-    if (fs37.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
+    if (fs38.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
   }
   return { cmd: process.execPath, args: [...process.execArgv, process.argv[1] ?? "", "agent-host", dir] };
 }
 function freeSlug(harness, wanted, busy = () => false) {
   const taken = new Set(listPeers().filter((p) => p.agent === harness).map((p) => p.address.slice(harness.length + 1)));
   for (const entry of listAgents()) if (entry.spec.harness === harness && hostAlive(entry.state)) taken.add(entry.spec.slug);
-  const free = (slug) => !taken.has(slug) && !fs37.existsSync(path40.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
+  const free = (slug) => !taken.has(slug) && !fs38.existsSync(path40.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
   if (free(wanted)) return wanted;
   for (let n = 2; ; n++) if (free(`${wanted}-${n}`)) return `${wanted}-${n}`;
 }
@@ -38763,9 +38780,9 @@ function makeWorktree(cwd, harness, slug) {
   const base2 = git("rev-parse", "HEAD");
   const tree = path40.join(stateDir(), "worktrees", `${harness}-${slug}`);
   const branch = `telepathy/${slug}`;
-  fs37.mkdirSync(path40.dirname(tree), { recursive: true });
+  fs38.mkdirSync(path40.dirname(tree), { recursive: true });
   git("worktree", "add", "-b", branch, tree, base2);
-  const inside = path40.relative(fs37.realpathSync(repo), fs37.realpathSync(cwd));
+  const inside = path40.relative(fs38.realpathSync(repo), fs38.realpathSync(cwd));
   return { repo, path: tree, branch, base: base2, cwd: inside && !inside.startsWith("..") ? path40.join(tree, inside) : tree };
 }
 async function startAgentTool(self2, args) {
@@ -38787,7 +38804,7 @@ async function startAgentTool(self2, args) {
   let cwd = path40.resolve(args.cwd ?? self2.cwd ?? process.cwd());
   let isDir = false;
   try {
-    isDir = fs37.statSync(cwd).isDirectory();
+    isDir = fs38.statSync(cwd).isDirectory();
   } catch {
     return failed(`Not started: ${cwd} does not exist.`);
   }
@@ -38809,7 +38826,7 @@ async function startAgentTool(self2, args) {
     }
   }
   const dir = agentDir(harness, slug);
-  fs37.rmSync(dir, { recursive: true, force: true });
+  fs38.rmSync(dir, { recursive: true, force: true });
   const spec = {
     harness,
     slug,
@@ -38825,12 +38842,12 @@ async function startAgentTool(self2, args) {
   };
   writeSpec(dir, spec);
   const { cmd, args: argv } = hostCommand(dir);
-  const log = fs37.openSync(path40.join(dir, "host.log"), "a");
+  const log = fs38.openSync(path40.join(dir, "host.log"), "a");
   const child = spawn12(cmd, argv, { cwd, detached: true, stdio: ["ignore", log, log], env: process.env });
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs37.closeSync(log);
+  fs38.closeSync(log);
   const deadline = Date.now() + startWaitMs();
   while (Date.now() < deadline) {
     const state = readState(dir);
@@ -38892,11 +38909,11 @@ function answerPermissionTool(self2, args) {
   if (!PERMISSION_ID.test(args.request)) return failed(`"${args.request}" is not a permission request id.`);
   const found = findChild(self2, args.agent);
   if ("error" in found) return failed(found.error);
-  if (!fs37.existsSync(permissionRequestFile(found.dir, args.request))) {
+  if (!fs38.existsSync(permissionRequestFile(found.dir, args.request))) {
     return failed(`${args.agent} has no permission request "${args.request}".`);
   }
   const answer = permissionAnswerFile(found.dir, args.request);
-  if (fs37.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
+  if (fs38.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
   if (!hostAlive(found.state)) return failed(`${args.agent} is no longer running.`);
   writeJsonAtomic(answer, { allow: args.allow, at: (/* @__PURE__ */ new Date()).toISOString() });
   return { text: `${args.allow ? "Allowed" : "Denied"} request ${args.request} for ${found.state?.address ?? args.agent}.` };
@@ -39030,7 +39047,7 @@ var init_tools2 = __esm({
 });
 
 // src/grok-delivery.ts
-import fs38 from "node:fs";
+import fs39 from "node:fs";
 function attachGrokDelivery(server, currentId) {
   server.registerResource(
     "inbox",
@@ -39120,7 +39137,7 @@ function attachGrokDelivery(server, currentId) {
     if (watched !== selfId) announced.clear();
     watched = selfId;
     try {
-      watcher = fs38.watch(inboxDir(selfId), () => void announce());
+      watcher = fs39.watch(inboxDir(selfId), () => void announce());
       watcher.on("error", () => {
         try {
           watcher?.close();
@@ -40216,22 +40233,26 @@ function execPassthrough(bin, args, cwd, env) {
 init_entry();
 init_confirm();
 init_deliver();
+init_installs();
 init_listing();
 init_paths();
 init_peers();
 init_status();
+init_version();
 init_client();
 init_crypto();
 import { spawn as spawn10 } from "node:child_process";
-import fs28 from "node:fs";
+import fs29 from "node:fs";
 import path31 from "node:path";
 import readline3 from "node:readline/promises";
 
 // src/bridge/daemon.ts
+await init_auto_update();
 init_entry();
 init_listing();
 init_paths();
 init_agents();
+init_installs();
 init_peers();
 init_proc();
 init_status();
@@ -40240,7 +40261,7 @@ init_client();
 init_crypto();
 import { spawn as spawn9 } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import fs27 from "node:fs";
+import fs28 from "node:fs";
 import http from "node:http";
 import os15 from "node:os";
 import path30 from "node:path";
@@ -40289,7 +40310,7 @@ function startMdns(self2, port, lanAddresses2, onFound) {
         }
       }
       const id = fields.get("id");
-      if (!id || id === self2.id || fields.get("v") !== String(PROTOCOL)) continue;
+      if (!id || id === self2.id || !/^\d{1,4}$/.test(fields.get("v") ?? "")) continue;
       for (const a of records) {
         if (a.type === "A" && a.name === srv.data.target) onFound({ id, name: fields.get("name") ?? id, addr: `${a.data}:${srv.data.port}` });
       }
@@ -40369,6 +40390,64 @@ function isTailscaleIp(ip) {
   return ip.toLowerCase().startsWith("fd7a:115c:a1e0:");
 }
 
+// src/bridge/update.ts
+init_paths();
+import { execFile as execFile3 } from "node:child_process";
+import fs27 from "node:fs";
+var VERSION_TEXT = /^\d{1,6}\.\d{1,6}\.\d{1,6}(?:[-+][0-9A-Za-z.-]{1,40})?$/;
+var isVersion = (value) => typeof value === "string" && VERSION_TEXT.test(value);
+var restartWaitMs = () => envDurationMs("TELEPATHY_BRIDGE_RESTART_WAIT_MS", 10 * 6e4);
+var MAX_RESTART_IN_MS = 10 * 6e4;
+function parseBridgeInfo(raw) {
+  if (!raw || typeof raw !== "object") return void 0;
+  const input2 = raw;
+  if (!isVersion(input2.version)) return void 0;
+  const restartInMs = Number(input2.restartInMs);
+  return {
+    version: input2.version,
+    installed: isVersion(input2.installed) && input2.installed !== input2.version ? input2.installed : void 0,
+    autoUpdate: input2.autoUpdate !== false,
+    restartInMs: input2.restartInMs !== void 0 && Number.isFinite(restartInMs) && restartInMs >= 0 && restartInMs <= MAX_RESTART_IN_MS ? restartInMs : void 0
+  };
+}
+var signature = (file2) => {
+  try {
+    const stat = fs27.statSync(file2);
+    return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "";
+  }
+};
+function watchInstall(entry, onVersion) {
+  let seen = signature(entry);
+  let probed = seen;
+  let probing = false;
+  const tick = () => {
+    const now2 = signature(entry);
+    if (!now2 || probing) return;
+    if (now2 !== seen) {
+      seen = now2;
+      return;
+    }
+    if (now2 === probed) return;
+    probing = true;
+    execFile3(
+      process.execPath,
+      [...process.execArgv, entry, "--version"],
+      { timeout: 2e4, env: { ...process.env, TELEPATHY_AUTO_UPDATE: "0" } },
+      (err, stdout) => {
+        probing = false;
+        const version2 = String(stdout ?? "").trim().split("\n").at(-1)?.trim();
+        if (err || !isVersion(version2)) return;
+        probed = now2;
+        onVersion(version2);
+      }
+    );
+  };
+  const timer2 = setInterval(tick, envDurationMs("TELEPATHY_BRIDGE_INSTALL_CHECK_MS", 1e4));
+  return () => clearInterval(timer2);
+}
+
 // src/bridge/daemon.ts
 var settingsFile = () => path30.join(bridgeDir(), "settings.json");
 function readSettings() {
@@ -40401,6 +40480,8 @@ var MAX_BODY = 2 * 1024 * 1024;
 var holdMs = () => Math.min(envDurationMs("TELEPATHY_BRIDGE_HOLD_MS", 1e4), Math.max(500, onlineWindowMs() / 2));
 var PICKUP_MS = 1e3;
 var MAX_REVERSE_BATCH = 16;
+var RESTART_GRACE_MS = 13e4;
+var sleep2 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 var v4 = (addr) => (addr ?? "").replace(/^::ffff:/, "");
 var hostOf2 = (addr) => addr.replace(/:\d+$/, "");
 var clean = (value, max) => String(value ?? "").replace(/[\u0000-\u001f\u007f]+/g, " ").trim().slice(0, max);
@@ -40463,6 +40544,22 @@ async function runDaemon() {
     return 1;
   }
   const startedMs = Date.now();
+  const entry = resolveArgvPath(process.argv[1] ?? "");
+  const versioned = VERSION !== "0.0.0-dev";
+  let installed = VERSION;
+  let failedInto;
+  let pendingSince = 0;
+  let restartAt = 0;
+  let restartTimer;
+  let waitingFor = [];
+  let busy = 0;
+  let paused = false;
+  const bridgeInfo = () => ({
+    version: VERSION,
+    installed: installed !== VERSION ? installed : void 0,
+    autoUpdate: autoUpdateEnabled(),
+    restartInMs: restartAt ? Math.max(0, restartAt - Date.now()) : void 0
+  });
   const seenNonces = /* @__PURE__ */ new Map();
   const pairs = /* @__PURE__ */ new Map();
   let net2;
@@ -40509,7 +40606,6 @@ async function runDaemon() {
     return uniqueSlug(name, id, new Set(devices.map((d) => d.slug)));
   };
   const deliver2 = (payload, budgetMs) => new Promise((resolve) => {
-    const entry = resolveArgvPath(process.argv[1] ?? "");
     const child = spawn9(process.execPath, [...process.execArgv, entry, "bridge", "deliver"], {
       stdio: ["pipe", "pipe", "pipe"],
       env: process.env
@@ -40541,7 +40637,7 @@ async function runDaemon() {
       const wire = raw;
       const auth = await authenticate(conn, wire, "/v1/peers");
       if ("error" in auth) return { error: auth.error };
-      return reply(auth, wire, "/v1/peers", { peers: localPeersWire() });
+      return reply(auth, wire, "/v1/peers", { peers: localPeersWire(), bridge: bridgeInfo() });
     },
     "/v1/send": async (conn, raw) => {
       const wire = raw;
@@ -40561,7 +40657,13 @@ async function runDaemon() {
         address: `${from.address}@${slug}`
       };
       const budgetMs = Math.max(1e3, Math.min(11e4, Number(input2.budgetMs) || 0));
-      const result = await deliver2({ from: qualified, to: input2.to, body: input2.body, budgetMs }, budgetMs);
+      busy++;
+      let result;
+      try {
+        result = await deliver2({ from: qualified, to: input2.to, body: input2.body, budgetMs }, budgetMs);
+      } finally {
+        busy--;
+      }
       const recipient = result.recipient?.address ?? input2.to;
       logEvent({
         dir: "in",
@@ -40637,14 +40739,14 @@ async function runDaemon() {
       let decision;
       while (Date.now() < deadline) {
         try {
-          decision = fs27.readFileSync(decisionFile, "utf8").trim();
+          decision = fs28.readFileSync(decisionFile, "utf8").trim();
           break;
         } catch {
           await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }
       pairs.delete(session.id);
-      fs27.rmSync(decisionFile, { force: true });
+      fs28.rmSync(decisionFile, { force: true });
       if (decision !== "yes") {
         writeJsonAtomic(stateFile2, { ...readJson(stateFile2), state: "declined" });
         return { error: `${self2.name} did not confirm the code` };
@@ -40672,6 +40774,7 @@ async function runDaemon() {
         trust: "tailscale",
         addr: "",
         version: "?",
+        infoAt: 0,
         peers: [],
         seenAt: 0,
         queue: [],
@@ -40681,6 +40784,8 @@ async function runDaemon() {
       link.trust = auth.key ? "paired" : "tailscale";
       link.addr = conn.remote;
       link.version = safeName(input2.version, "?").slice(0, 20);
+      link.info = parseBridgeInfo(input2.bridge);
+      link.infoAt = Date.now();
       link.peers = Array.isArray(input2.peers) ? input2.peers.slice(0, 500).flatMap(cleanPeer) : [];
       link.seenAt = Date.now();
       links.set(wire.device, link);
@@ -40710,10 +40815,10 @@ async function runDaemon() {
       const auth = await authenticate(conn, wire, "/v1/reverse/done");
       if ("error" in auth) return { error: auth.error };
       const input2 = auth.body ?? {};
-      const finish = typeof input2.id === "string" ? links.get(wire.device)?.waiting.get(input2.id) : void 0;
+      const finish2 = typeof input2.id === "string" ? links.get(wire.device)?.waiting.get(input2.id) : void 0;
       const valid = !!input2.response && typeof input2.response === "object";
-      if (finish && valid) finish(input2.response);
-      return reply(auth, wire, "/v1/reverse/done", { ok: !!finish && valid });
+      if (finish2 && valid) finish2(input2.response);
+      return reply(auth, wire, "/v1/reverse/done", { ok: !!finish2 && valid });
     },
     // This machine's own processes, handing a request for a device reached in reverse. Loopback only: anything
     // that arrives on another address is not this machine's.
@@ -40727,8 +40832,13 @@ async function runDaemon() {
       if (!link || !linkFresh(link)) return { error: "it is not connected to this device right now", unreachable: true };
       const outgoing = { id: randomUUID(), route: input2.route, wire: input2.wire };
       const timeoutMs2 = Math.max(1e3, Math.min(13e4, Number(input2.timeoutMs) || 0));
+      busy++;
       return await new Promise((resolve) => {
-        const finish = (response) => {
+        let settled = false;
+        const finish2 = (response) => {
+          if (settled) return;
+          settled = true;
+          busy--;
           clearTimeout(pickup);
           clearTimeout(timer2);
           link.waiting.delete(outgoing.id);
@@ -40738,10 +40848,10 @@ async function runDaemon() {
           const at = link.queue.indexOf(outgoing);
           if (at < 0) return;
           link.queue.splice(at, 1);
-          finish({ error: "it did not pick the request up, so nothing reached it", unreachable: true });
+          finish2({ error: "it did not pick the request up, so nothing reached it", unreachable: true });
         }, PICKUP_MS);
-        const timer2 = setTimeout(() => finish({ error: "it did not answer in time" }), timeoutMs2);
-        link.waiting.set(outgoing.id, finish);
+        const timer2 = setTimeout(() => finish2({ error: "it did not answer in time" }), timeoutMs2);
+        link.waiting.set(outgoing.id, finish2);
         link.queue.push(outgoing);
         link.release?.();
       });
@@ -40793,6 +40903,26 @@ async function runDaemon() {
     });
   };
   const servers = /* @__PURE__ */ new Map();
+  const startedAt = new Date(startedMs).toISOString();
+  const ownProcStart = procStart(process.pid);
+  let lastRecord = "";
+  const writeRecord = () => {
+    if (paused) return;
+    const record2 = {
+      pid: process.pid,
+      procStart: ownProcStart,
+      port,
+      startedAt,
+      listening: [...servers.keys()].map((addr) => `${addr}:${port}`),
+      version: VERSION,
+      restart: installed !== VERSION && installed !== failedInto ? { into: installed, at: restartAt || void 0, waitingFor, until: pendingSince + restartWaitMs() } : void 0,
+      failedInto
+    };
+    const text = JSON.stringify(record2);
+    if (text === lastRecord && fs28.existsSync(daemonFile())) return;
+    lastRecord = text;
+    writeJsonAtomic(daemonFile(), record2);
+  };
   const syncListeners = async () => {
     const want = new Set(listenAddresses(settings));
     for (const [addr, server] of servers) {
@@ -40808,63 +40938,61 @@ async function runDaemon() {
       await new Promise((resolve) => {
         server.once("error", () => resolve());
         server.listen(port, addr, () => {
-          servers.set(addr, server);
+          if (paused) server.close();
+          else servers.set(addr, server);
           resolve();
         });
       });
     }
-    writeJsonAtomic(daemonFile(), {
-      pid: process.pid,
-      procStart: procStart(process.pid),
-      port,
-      startedAt,
-      listening: [...servers.keys()].map((addr) => `${addr}:${port}`)
-    });
+    writeRecord();
   };
-  const startedAt = new Date(startedMs).toISOString();
-  ensureDir(bridgeDir());
-  await syncListeners();
-  if (!servers.has("127.0.0.1")) {
-    console.error(`telepathy bridge: port ${port} is in use. Set TELEPATHY_BRIDGE_PORT to another port on every device.`);
-    for (const server of servers.values()) server.close();
-    fs27.rmSync(daemonFile(), { force: true });
-    return 1;
-  }
   const lanFound = /* @__PURE__ */ new Map();
-  const stopMdns = settings.mdns && settings.lan ? startMdns(self2, port, () => lanAddresses(settings), (found) => {
+  const startLan = () => settings.mdns && settings.lan ? startMdns(self2, port, () => lanAddresses(settings), (found) => {
     if (!lanFound.has(found.addr) && lanFound.size >= MAX_LAN_FOUND) return;
     lanFound.set(found.addr, { id: found.id, at: Date.now() });
   }) : () => {
   };
-  const stopping = new AbortController();
+  let stopping = new AbortController();
   const reverseLoops = /* @__PURE__ */ new Map();
   const reachesUs = /* @__PURE__ */ new Map();
   const serveReverse = async (target, request) => {
     if (typeof request.id !== "string" || typeof request.route !== "string" || !REVERSE_ROUTES.includes(request.route)) return;
     const wire = request.wire;
     let response;
-    if (!wire || typeof wire !== "object" || wire.device !== target.id) {
-      response = { error: "malformed request" };
-    } else {
-      const remote = hostOf2(target.addr);
-      const tn = isTailscaleIp(remote) ? await currentTailnet() : void 0;
-      const local = tn?.selfIps.find((ip) => ip.includes(".")) ?? "";
-      try {
-        response = await handlers[request.route]({ remote, local }, wire);
-      } catch (err) {
-        response = { error: err.message };
+    busy++;
+    try {
+      if (!wire || typeof wire !== "object" || wire.device !== target.id) {
+        response = { error: "malformed request" };
+      } else {
+        const remote = hostOf2(target.addr);
+        const tn = isTailscaleIp(remote) ? await currentTailnet() : void 0;
+        const local = tn?.selfIps.find((ip) => ip.includes(".")) ?? "";
+        try {
+          response = await handlers[request.route]({ remote, local }, wire);
+        } catch (err) {
+          response = { error: err.message };
+        }
       }
+      await call(target, "/v1/reverse/done", { id: request.id, response }, 1e4, stopping.signal).catch(() => {
+      });
+    } finally {
+      busy--;
     }
-    await call(target, "/v1/reverse/done", { id: request.id, response }, 1e4, stopping.signal).catch(() => {
-    });
   };
   const runReverse = async (target, state) => {
     state.running = true;
+    const { signal } = stopping;
     try {
-      while (!stopping.signal.aborted) {
+      while (!signal.aborted) {
         let answer;
         try {
-          answer = await call(target, "/v1/reverse", { peers: localPeersWire(), version: VERSION }, Math.max(holdMs(), 1e4) + 5e3, stopping.signal);
+          answer = await call(
+            target,
+            "/v1/reverse",
+            { peers: localPeersWire(), version: VERSION, bridge: bridgeInfo() },
+            Math.max(holdMs(), 1e4) + 5e3,
+            signal
+          );
         } catch (err) {
           state.retryAt = Date.now() + (/not found/.test(err.message) ? 3e5 : pollMs());
           return;
@@ -40883,6 +41011,71 @@ async function runDaemon() {
     reverseLoops.set(target.id, state);
     if (state.running || Date.now() < state.retryAt || stopping.signal.aborted) return;
     void runReverse(target, state);
+  };
+  const participantOf = (info, name, heardAt) => ({
+    name,
+    has: info.installed ?? info.version,
+    autoUpdate: info.autoUpdate,
+    restartAt: info.restartInMs !== void 0 ? heardAt + info.restartInMs : void 0
+  });
+  const checkedFor = /* @__PURE__ */ new Map();
+  let lastCheck = 0;
+  const checkForUpdates = (version2, from) => {
+    const now2 = Date.now();
+    if (now2 - (checkedFor.get(version2) ?? 0) < 36e5 || now2 - lastCheck < 6e4) return;
+    checkedFor.set(version2, now2);
+    lastCheck = now2;
+    if (!autoUpdateEnabled()) {
+      console.log(`telepathy bridge: ${from} has telepathy ${version2}. Auto-update is off here, so this device stays on ${installed}.`);
+      return;
+    }
+    console.log(`telepathy bridge: ${from} has telepathy ${version2}; checking for updates here.`);
+    scheduleAutoUpdate("bridge", { force: true });
+  };
+  const leadMs = () => holdMs() + 3 * pollMs();
+  const setRestartAt = (at) => {
+    if (at === restartAt) return;
+    const first = !restartAt;
+    restartAt = at;
+    clearTimeout(restartTimer);
+    restartTimer = void 0;
+    if (!at) return;
+    if (first) {
+      const behind = waitingFor.length ? ` ${waitingFor.join(", ")} ${waitingFor.length === 1 ? "does" : "do"} not have it yet.` : "";
+      console.log(`telepathy bridge: restarting into ${installed} in ${Math.round((at - Date.now()) / 1e3)}s.${behind}`);
+    }
+    restartTimer = setTimeout(() => void restartWhenIdle(at), Math.max(0, at - Date.now()));
+  };
+  const planRestart = (participants) => {
+    if (!versioned || paused) return;
+    for (const p of participants) if (isNewer(p.has, installed)) checkForUpdates(p.has, p.name);
+    if (installed === VERSION || installed === failedInto) {
+      pendingSince = 0;
+      waitingFor = [];
+      setRestartAt(0);
+      writeRecord();
+      return;
+    }
+    const now2 = Date.now();
+    pendingSince ||= now2;
+    const behind = participants.filter((p) => p.has !== installed && (p.autoUpdate || isNewer(p.has, installed)));
+    waitingFor = behind.map((p) => p.name);
+    if (behind.length && now2 - pendingSince < restartWaitMs()) {
+      setRestartAt(0);
+      writeRecord();
+      return;
+    }
+    let at = restartAt || now2 + leadMs();
+    for (const p of participants) {
+      if (p.restartAt && p.has === installed && p.restartAt > now2 && p.restartAt < at) at = p.restartAt;
+    }
+    setRestartAt(at);
+    writeRecord();
+  };
+  const restartWhenIdle = async (at) => {
+    while ((busy > 0 || pairs.size > 0) && Date.now() < at + RESTART_GRACE_MS && restartAt === at && !paused) await sleep2(250);
+    if (restartAt !== at || paused) return;
+    await restart();
   };
   let discovering = false;
   const discover = async () => {
@@ -40918,11 +41111,13 @@ async function runDaemon() {
       }
       const now2 = (/* @__PURE__ */ new Date()).toISOString();
       const updated = new Map(previous);
+      const participants = [];
       await Promise.all(
         [...byId].map(async ([id, seen]) => {
           const paired = Object.hasOwn(trusted, id);
           const trust = paired ? "paired" : seen.route === "tailscale" ? "tailscale" : void 0;
           const before = previous.get(id);
+          const name = before?.slug || seen.hello.name;
           const base2 = {
             id,
             name: seen.hello.name,
@@ -40935,6 +41130,11 @@ async function runDaemon() {
             version: seen.hello.version,
             peers: before?.peers ?? []
           };
+          if (seen.hello.protocol !== PROTOCOL) {
+            updated.set(id, { ...base2, lastSeen: now2, peers: [], incompatible: true });
+            if (trust && isVersion(seen.hello.version)) participants.push({ name, has: seen.hello.version, autoUpdate: false });
+            return;
+          }
           if (!trust) {
             updated.set(id, { ...base2, lastSeen: now2, peers: [] });
             return;
@@ -40942,7 +41142,17 @@ async function runDaemon() {
           try {
             const target = { id, addr: seen.addr, trust };
             const listed = await call(target, "/v1/peers", {}, 2500);
-            updated.set(id, { ...base2, lastSeen: now2, peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [], reach: "direct" });
+            const info = parseBridgeInfo(listed.bridge);
+            if (info) participants.push(participantOf(info, name, Date.now()));
+            updated.set(id, {
+              ...base2,
+              lastSeen: now2,
+              version: info?.version ?? base2.version,
+              installed: info?.installed,
+              autoUpdate: info?.autoUpdate,
+              peers: Array.isArray(listed.peers) ? listed.peers.flatMap(cleanPeer) : [],
+              reach: "direct"
+            });
             directAt.set(id, Date.now());
             links.get(id)?.release?.();
             ensureReverse(target);
@@ -40965,10 +41175,13 @@ async function runDaemon() {
           trusted: true,
           trust: link.trust,
           lastSeen: new Date(link.release ? Date.now() : link.seenAt).toISOString(),
-          version: link.version,
+          version: link.info?.version ?? link.version,
+          installed: link.info?.installed,
+          autoUpdate: link.info?.autoUpdate,
           peers: link.peers,
           reach: "reverse"
         });
+        if (link.info) participants.push(participantOf(link.info, before?.slug || link.name, link.infoAt));
       }
       for (const device of updated.values()) {
         const said = reachesUs.get(device.id);
@@ -40983,6 +41196,7 @@ async function runDaemon() {
         taken.add(keep);
       }
       writeRemoteState({ at: now2, devices });
+      planRestart(participants);
       for (const [nonce, at] of seenNonces) if (Date.now() - at > 2 * SKEW_MS) seenNonces.delete(nonce);
       for (const [id, session] of pairs) if (Date.now() - session.created > 18e4) pairs.delete(id);
     } finally {
@@ -40990,27 +41204,120 @@ async function runDaemon() {
     }
   };
   const discoverSafely = () => discover().catch((err) => console.error(`telepathy bridge: discovery failed: ${err.message}`));
-  await discoverSafely();
-  const poll = setInterval(() => void discoverSafely(), pollMs());
-  const rebind = setInterval(() => void syncListeners(), 15e3);
+  let poll;
+  let rebind;
+  let dailyCheck;
+  let stopLan = () => {
+  };
+  let stopWatch = () => {
+  };
+  const startLoops = async () => {
+    paused = false;
+    stopping = new AbortController();
+    await syncListeners();
+    if (!servers.has("127.0.0.1")) return false;
+    stopLan = startLan();
+    await discoverSafely();
+    poll = setInterval(() => void discoverSafely(), pollMs());
+    rebind = setInterval(() => void syncListeners(), 15e3);
+    if (versioned) {
+      stopWatch = watchInstall(entry, (version2) => {
+        if (version2 === installed && version2 !== failedInto) return;
+        failedInto = void 0;
+        installed = version2;
+        pendingSince = version2 !== VERSION ? Date.now() : 0;
+        console.log(
+          version2 === VERSION ? `telepathy bridge: ${version2} is installed again; no restart needed.` : `telepathy bridge: telepathy ${version2} is installed. Restarting into it with the devices this one reaches.`
+        );
+        writeRecord();
+      });
+      scheduleAutoUpdate("bridge");
+      dailyCheck = setInterval(() => scheduleAutoUpdate("bridge"), 36e5);
+    }
+    return true;
+  };
+  const stopLoops = () => {
+    if (paused) return;
+    paused = true;
+    clearInterval(poll);
+    clearInterval(rebind);
+    clearInterval(dailyCheck);
+    clearTimeout(restartTimer);
+    restartTimer = void 0;
+    restartAt = 0;
+    stopWatch();
+    stopWatch = () => {
+    };
+    stopping.abort();
+    for (const link of links.values()) link.release?.();
+    stopLan();
+    stopLan = () => {
+    };
+    for (const server of servers.values()) server.close();
+    servers.clear();
+    const record2 = readJson(daemonFile());
+    if (record2?.pid === process.pid) fs28.rmSync(daemonFile(), { force: true });
+  };
+  let finish = () => {
+  };
+  const finished = new Promise((resolve) => finish = resolve);
+  let stopped = false;
+  const restart = async () => {
+    const into = installed;
+    console.log(`telepathy bridge: restarting into ${into}.`);
+    stopLoops();
+    let child;
+    let exited = false;
+    try {
+      const log = fs28.openSync(path30.join(bridgeDir(), "daemon.log"), "a", 384);
+      child = spawn9(process.execPath, [...process.execArgv, entry, "bridge", "run"], {
+        detached: true,
+        stdio: ["ignore", log, log],
+        env: process.env
+      });
+      fs28.closeSync(log);
+      child.on("exit", () => exited = true);
+      child.on("error", () => exited = true);
+      child.unref();
+      const deadline = Date.now() + 15e3;
+      while (Date.now() < deadline && !exited) {
+        if (readDaemon()?.pid === child.pid) {
+          finish(0);
+          setTimeout(() => process.exit(0), 1e3).unref();
+          return;
+        }
+        await sleep2(100);
+      }
+    } catch (err) {
+      console.error(`telepathy bridge: could not start the bridge for ${into}: ${err.message}`);
+    }
+    if (child && !exited) child.kill("SIGKILL");
+    if (stopped) return;
+    failedInto = into;
+    console.error(`telepathy bridge: the bridge for ${into} did not start, so this one (${VERSION}) keeps running. See daemon.log.`);
+    if (!await startLoops()) {
+      console.error(`telepathy bridge: port ${port} is taken; stopping.`);
+      stopLoops();
+      finish(1);
+    }
+  };
+  ensureDir(bridgeDir());
+  if (!await startLoops()) {
+    console.error(`telepathy bridge: port ${port} is in use. Set TELEPATHY_BRIDGE_PORT to another port on every device.`);
+    stopLoops();
+    return 1;
+  }
   console.log(
     `telepathy bridge: ${self2.name} (${self2.id}) listening on ${[...servers.keys()].map((a) => `${a}:${port}`).join(", ")}`
   );
-  return await new Promise((resolve) => {
-    const stop2 = () => {
-      clearInterval(poll);
-      clearInterval(rebind);
-      stopping.abort();
-      for (const link of links.values()) link.release?.();
-      stopMdns();
-      for (const server of servers.values()) server.close();
-      const record2 = readJson(daemonFile());
-      if (record2?.pid === process.pid) fs27.rmSync(daemonFile(), { force: true });
-      resolve(0);
-    };
-    process.once("SIGTERM", stop2);
-    process.once("SIGINT", stop2);
-  });
+  const stop2 = () => {
+    stopped = true;
+    stopLoops();
+    finish(0);
+  };
+  process.once("SIGTERM", stop2);
+  process.once("SIGINT", stop2);
+  return await finished;
 }
 
 // src/bridge/cli.ts
@@ -41085,11 +41392,11 @@ async function start(flags) {
     return 0;
   }
   ensureDir(bridgeDir());
-  const log = fs28.openSync(path31.join(bridgeDir(), "daemon.log"), "a", 384);
+  const log = fs29.openSync(path31.join(bridgeDir(), "daemon.log"), "a", 384);
   const { cmd, args } = selfCommand("bridge", "run");
   const child = spawn10(cmd, args, { detached: true, stdio: ["ignore", log, log], env: process.env });
   child.unref();
-  fs28.closeSync(log);
+  fs29.closeSync(log);
   const deadline = Date.now() + 8e3;
   while (Date.now() < deadline) {
     if (readDaemon()) {
@@ -41148,7 +41455,7 @@ async function acceptPairing() {
   const deadline = Date.now() + 12e4;
   try {
     while (Date.now() < deadline) {
-      for (const file2 of fs28.readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "open.json")) {
+      for (const file2 of fs29.readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "open.json")) {
         const id = file2.slice(0, -5);
         const state = readJson(path31.join(dir, file2));
         if (!state) continue;
@@ -41160,11 +41467,11 @@ async function acceptPairing() {
   Code: ${state.code}
 It calls itself "${state.name}". Does that device show exactly this code? [y/N] `
           );
-          fs28.writeFileSync(path31.join(dir, `${id}.decision`), /^y(es)?$/i.test(answer.trim()) ? "yes" : "no");
+          fs29.writeFileSync(path31.join(dir, `${id}.decision`), /^y(es)?$/i.test(answer.trim()) ? "yes" : "no");
           continue;
         }
         if (asked.has(id) && (state.state === "paired" || state.state === "declined")) {
-          fs28.rmSync(path31.join(dir, file2), { force: true });
+          fs29.rmSync(path31.join(dir, file2), { force: true });
           if (state.state === "paired") {
             console.log(`Paired with ${state.name}. Its sessions appear in list_peers within a few seconds.`);
             return 0;
@@ -41180,7 +41487,7 @@ It calls itself "${state.name}". Does that device show exactly this code? [y/N] 
     return 1;
   } finally {
     rl.close();
-    fs28.rmSync(openFile, { force: true });
+    fs29.rmSync(openFile, { force: true });
   }
 }
 async function pairWith(target) {
@@ -41190,6 +41497,10 @@ async function pairWith(target) {
   const there = await hello(addr, 3e3);
   if (!there) {
     console.error(`No telepathy bridge answered at ${addr}. Start it there with: telepathy bridge start`);
+    return 1;
+  }
+  if (there.protocol !== PROTOCOL) {
+    console.error(`${there.name} runs telepathy ${there.version}, which this one (${VERSION}) can't talk to. Update both to the same version, then pair.`);
     return 1;
   }
   if (Object.hasOwn(trustedDevices(), there.id)) {
@@ -41291,7 +41602,7 @@ function firewallHint(port) {
   if (process.platform !== "darwin") return [...lines, `To let devices connect directly, allow incoming TCP port ${port} in this device's firewall.`];
   let node2 = process.execPath;
   try {
-    node2 = fs28.realpathSync(node2);
+    node2 = fs29.realpathSync(node2);
   } catch {
   }
   const fw = "/usr/libexec/ApplicationFirewall/socketfilterfw";
@@ -41303,13 +41614,51 @@ function firewallHint(port) {
     "A new node version (brew upgrade node) needs this again."
   ];
 }
+var names = (list2) => list2.length < 3 ? list2.join(" and ") : `${list2.slice(0, -1).join(", ")} and ${list2.at(-1)}`;
+function versionLines(daemon, now2) {
+  if (!daemon.version) {
+    return ["This bridge started before telepathy 0.11.2 and does not restart into updates. Restart it once: telepathy bridge stop && telepathy bridge start"];
+  }
+  const restart = daemon.restart;
+  if (restart?.at) {
+    const behind = restart.waitingFor.length ? ` ${names(restart.waitingFor)} ${restart.waitingFor.length === 1 ? "does" : "do"} not have it yet.` : "";
+    return [`telepathy ${restart.into} is installed. This bridge restarts into it in ${Math.max(0, Math.round((restart.at - now2) / 1e3))}s.${behind}`];
+  }
+  if (restart) {
+    const minutes = Math.max(1, Math.ceil((restart.until - now2) / 6e4));
+    const waiting = restart.waitingFor.length ? `once ${names(restart.waitingFor)} ${restart.waitingFor.length === 1 ? "has" : "have"} it too, or ` : "";
+    return [`telepathy ${restart.into} is installed. This bridge restarts into it ${waiting}within ${minutes} min, together with the devices it reaches.`];
+  }
+  if (daemon.failedInto) {
+    return [`This bridge could not restart into telepathy ${daemon.failedInto}, so it still runs ${daemon.version}. See ${path31.join(bridgeDir(), "daemon.log")}.`];
+  }
+  if (VERSION !== "0.0.0-dev" && daemon.version !== VERSION) {
+    return [`This bridge runs telepathy ${daemon.version} and this command is ${VERSION}. The bridge restarts into the installed version by itself.`];
+  }
+  return [];
+}
+function versionNote(device, ours) {
+  const notes = [];
+  if (device.version && device.version !== ours) notes.push(`telepathy ${device.version}`);
+  if (device.installed) notes.push(`${device.installed} installed`);
+  if (notes.length && device.autoUpdate === false) notes.push("auto-update off");
+  return notes.length ? ` \xB7 ${notes.join(", ")}` : "";
+}
+function incompatibleLine(device, ours) {
+  const where = device.trusted ? device.trust === "tailscale" ? "your tailnet" : "paired" : `${device.route} ${device.addr}`;
+  const theirs = device.version ?? "?";
+  const fix = !device.trusted ? "Pairing needs versions that match." : theirs !== "?" && isNewer(theirs, ours) ? "This device checks for updates and restarts into it." : "It updates when it sees this one, if its auto-update is on; `telepathy update` there updates now.";
+  return `  ${device.slug} \xB7 ${where} \xB7 runs telepathy ${theirs}, which this one (${ours}) can't talk to. ${fix}`;
+}
 function render(withMessages, now2 = Date.now()) {
   const self2 = deviceIdentity();
   const daemon = readDaemon();
   const lines = [];
   lines.push(
-    daemon ? `telepathy bridge \xB7 ${self2.name} \xB7 listening on ${daemon.listening.join(", ")}` : `telepathy bridge \xB7 ${self2.name} \xB7 not running (telepathy bridge start)`
+    daemon ? `telepathy bridge${daemon.version ? ` ${daemon.version}` : ""} \xB7 ${self2.name} \xB7 listening on ${daemon.listening.join(", ")}` : `telepathy bridge \xB7 ${self2.name} \xB7 not running (telepathy bridge start)`
   );
+  if (daemon) lines.push(...versionLines(daemon, now2));
+  const ours = daemon?.version ?? VERSION;
   const local = listPeers();
   lines.push("", `This device, ${local.length} session${local.length === 1 ? "" : "s"}:`);
   for (const peer of local) {
@@ -41321,6 +41670,10 @@ function render(withMessages, now2 = Date.now()) {
   lines.push("", devices.length ? "Devices:" : "Devices: none found yet.");
   for (const device of devices) {
     const online = daemon && isOnline(device, now2);
+    if (online && device.incompatible) {
+      lines.push(incompatibleLine(device, ours));
+      continue;
+    }
     if (!device.trusted) {
       lines.push(`  ${device.slug} \xB7 ${device.route} ${device.addr} \xB7 not paired (telepathy bridge pair ${device.slug})`);
       continue;
@@ -41331,7 +41684,9 @@ function render(withMessages, now2 = Date.now()) {
       continue;
     }
     const over = device.reach === "reverse" ? ` \xB7 over its own connection (${device.slug} does not accept connections)` : "";
-    lines.push(`  ${device.slug} \xB7 ${trust} \xB7 ${device.addr} \xB7 ${device.peers.length} session${device.peers.length === 1 ? "" : "s"}${over}`);
+    lines.push(
+      `  ${device.slug} \xB7 ${trust} \xB7 ${device.addr} \xB7 ${device.peers.length} session${device.peers.length === 1 ? "" : "s"}${over}${versionNote(device, ours)}`
+    );
     if (device.reachesUs === "reverse") {
       blocked = true;
       lines.push(`    ${device.slug} can't connect to this device, so it reaches it over this device's connection.`);

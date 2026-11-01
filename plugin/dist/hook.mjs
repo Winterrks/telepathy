@@ -580,7 +580,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.11.1" : "0.0.0-dev";
+    VERSION = true ? "0.11.2" : "0.0.0-dev";
   }
 });
 
@@ -1386,15 +1386,15 @@ function autoUpdateEntry() {
   }
   return fileURLToPath(import.meta.url);
 }
-function scheduleAutoUpdate(reason) {
+function scheduleAutoUpdate(reason, options = {}) {
   try {
     if (process.argv.includes("--telepathy-auto-update")) return;
     if (!autoUpdateEnabled()) return;
-    if (recentlyChecked()) return;
+    if (!options.force && recentlyChecked()) return;
     const child = spawn5(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, TELEPATHY_HOME: stateDir() }
+      env: { ...process.env, TELEPATHY_HOME: stateDir(), ...options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: "1" } : {} }
     });
     child.on("error", (err) => logAutoUpdate(`spawn failed (${reason}): ${err.message}`));
     child.unref();
@@ -1428,6 +1428,8 @@ function releaseLock() {
   if (info?.pid === process.pid) fs19.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
+  const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === "1";
+  delete process.env.TELEPATHY_AUTO_UPDATE_FORCE;
   if (!autoUpdateEnabled()) {
     logAutoUpdate("skipped: auto-update disabled");
     return;
@@ -1437,10 +1439,11 @@ async function runAutoUpdate() {
     return;
   }
   try {
-    if (recentlyChecked()) {
+    if (!force && recentlyChecked()) {
       logAutoUpdate("skipped: checked within 24h");
       return;
     }
+    if (force) logAutoUpdate("checking now: another device has a newer version");
     writeJsonAtomic(stampFile(), { checkedAt: (/* @__PURE__ */ new Date()).toISOString() });
     let latest;
     try {
@@ -1448,22 +1451,24 @@ async function runAutoUpdate() {
       rememberGithubVersion(latest);
     } catch (err) {
       logAutoUpdate(`version check failed: ${err.message}`);
-      return;
     }
-    const installs = installsInScope();
-    const stale2 = installs.filter((install) => isNewer(latest, install.version));
-    if (!stale2.length) logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
-    else {
-      logAutoUpdate(`updating ${stale2.map((install) => `${install.agent} ${install.version}`).join(", ")} toward ${latest}`);
-      const lines = [];
-      const code = await updateAll({ log: (line) => lines.push(line), cli: false });
-      if (lines.length) logAutoUpdate(lines.join("\n"));
-      if (code !== 0) logAutoUpdate(`update exited ${code}`);
-    }
-    if (installs.some((install) => install.agent === "codex") && !stale2.some((install) => install.agent === "codex")) {
-      const lines = [];
-      await retrustChangedCodexHooks((line) => lines.push(line));
-      if (lines.length) logAutoUpdate(lines.join("\n"));
+    if (latest) {
+      const newest = latest;
+      const installs = installsInScope();
+      const stale2 = installs.filter((install) => isNewer(newest, install.version));
+      if (!stale2.length) logAutoUpdate(`current ${newest}; ${installs.length} install(s)`);
+      else {
+        logAutoUpdate(`updating ${stale2.map((install) => `${install.agent} ${install.version}`).join(", ")} toward ${newest}`);
+        const lines = [];
+        const code = await updateAll({ log: (line) => lines.push(line), cli: false });
+        if (lines.length) logAutoUpdate(lines.join("\n"));
+        if (code !== 0) logAutoUpdate(`update exited ${code}`);
+      }
+      if (installs.some((install) => install.agent === "codex") && !stale2.some((install) => install.agent === "codex")) {
+        const lines = [];
+        await retrustChangedCodexHooks((line) => lines.push(line));
+        if (lines.length) logAutoUpdate(lines.join("\n"));
+      }
     }
     const cli = await updateGlobalCli();
     if (cli) logAutoUpdate(cli.line);
@@ -3906,6 +3911,7 @@ function wakeStatus(recipient, base, wake) {
 
 // src/bridge/remote.ts
 init_paths();
+init_version();
 
 // src/bridge/crypto.ts
 import crypto4 from "node:crypto";
@@ -4086,6 +4092,12 @@ async function sendRemote(self, target, body) {
     return {
       ok: false,
       error: `Message failed: device ${device.slug} is offline (its telepathy bridge is not answering). Nothing was sent.`
+    };
+  }
+  if (device.incompatible) {
+    return {
+      ok: false,
+      error: `Message failed: device ${device.slug} runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Nothing was sent. The older one updates by itself when its auto-update is on; \`telepathy update\` there updates now.`
     };
   }
   const unqualified = device.peers.map((wire) => asPeer(wire, device, false));

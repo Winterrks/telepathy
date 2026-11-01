@@ -1,7 +1,7 @@
 {
   "name": "telepathy",
   "displayName": "Telepathy",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Telepathy for your coding agents: Cursor, Claude Code, Codex, Antigravity, OpenCode and other sessions on this machine message each other.",
   "author": {
     "name": "Winterrks"

@@ -51,7 +51,8 @@ export function startMdns(self: DeviceIdentity, port: number, lanAddresses: () =
         }
       }
       const id = fields.get('id');
-      if (!id || id === self.id || fields.get('v') !== String(PROTOCOL)) continue;
+      // Any protocol: the hello that follows says whether this version can talk to it.
+      if (!id || id === self.id || !/^\d{1,4}$/.test(fields.get('v') ?? '')) continue;
       for (const a of records) {
         if (a.type === 'A' && a.name === srv.data.target) onFound({ id, name: fields.get('name') ?? id, addr: `${a.data}:${srv.data.port}` });
       }

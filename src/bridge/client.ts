@@ -1,8 +1,12 @@
 import { open, seal, type Sealed } from './crypto.ts';
 import { DEVICE_ID, deviceIdentity, localBridgePort, PROTOCOL, safeName, trustedDevices } from './state.ts';
 
-/** What `GET /v1/hello` says. It needs no trust, so it carries no session data. */
+/**
+ * What `GET /v1/hello` says. It needs no trust, so it carries no session data. Its shape stays the same in every
+ * protocol, so a bridge can see a device that runs a version it can't talk to and update toward it.
+ */
 export interface Hello {
+  /** The wire protocol. A device with another one is listed, and nothing else is sent to it. */
   protocol: number;
   id: string;
   name: string;
@@ -40,9 +44,10 @@ export async function hello(addr: string, timeoutMs = 1500): Promise<Hello | und
     const res = await fetch(`${baseUrl(addr)}/v1/hello`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return undefined;
     const body = (await res.json()) as Partial<Hello>;
-    if (!body || body.protocol !== PROTOCOL || typeof body.id !== 'string' || !DEVICE_ID.test(body.id)) return undefined;
+    const protocol = Number(body?.protocol);
+    if (!body || !Number.isInteger(protocol) || protocol < 1 || typeof body.id !== 'string' || !DEVICE_ID.test(body.id)) return undefined;
     return {
-      protocol: PROTOCOL,
+      protocol,
       id: body.id,
       name: safeName(body.name),
       version: safeName(body.version, '?').slice(0, 20),

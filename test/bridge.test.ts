@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { type ChildProcess, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, test } from 'node:test';
+import { pathToFileURL } from 'node:url';
 import { commitment, confirmMac, newKeyPair, open, pairKey, randomNonce, seal, shortCode, type PairTranscript } from '../src/bridge/crypto.ts';
 import { remoteTarget } from '../src/bridge/remote.ts';
 import { safeName } from '../src/bridge/state.ts';
@@ -417,6 +419,165 @@ describe('a device that does not accept connections', () => {
       assert.ok(Date.now() - started < 4000, 'well inside the confirm window');
     } finally {
       await client.close();
+    }
+  });
+});
+
+// A telepathy install whose version the test controls: what `npm install -g telepathy-cli` replaces in place.
+const CLI_URL = pathToFileURL(CLI).href;
+const install = (version: string, opts: { broken?: boolean } = {}) =>
+  `globalThis.__TELEPATHY_VERSION__ = ${JSON.stringify(version)};\n` +
+  (opts.broken ? `if (process.argv.includes('run')) process.exit(3);\n` : '') +
+  `await import(${JSON.stringify(CLI_URL)});\n`;
+
+// Stands in for auto-update: records each check, and installs the release the test published, if any.
+const UPDATER = `import fs from 'node:fs';
+const env = process.env;
+fs.appendFileSync(env.FAKE_UPDATES, JSON.stringify({ force: env.TELEPATHY_AUTO_UPDATE_FORCE === '1' }) + '\\n');
+let release;
+try {
+  release = JSON.parse(fs.readFileSync(env.FAKE_RELEASE, 'utf8'));
+} catch {}
+if (release && !fs.readFileSync(env.FAKE_WRAPPER, 'utf8').includes(JSON.stringify(release.version))) {
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  fs.writeFileSync(env.FAKE_WRAPPER, ${JSON.stringify(install('@@VERSION@@'))}.replace('"@@VERSION@@"', JSON.stringify(release.version)));
+}
+`;
+
+describe('bridges that update together', () => {
+  let alpha: Device;
+  let gamma: Device;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-bridge-update-'));
+  const release = path.join(dir, 'release.json');
+  const updater = path.join(dir, 'updater.mjs');
+  const entryOf = (d: Device) => path.join(dir, d.name, 'telepathy.mjs');
+  const updatesOf = (d: Device) => path.join(dir, d.name, 'updates.jsonl');
+  const record = (d: Device) => {
+    try {
+      return JSON.parse(fs.readFileSync(path.join(d.sb.home, 'bridge', 'daemon.json'), 'utf8')) as {
+        pid: number;
+        startedAt: string;
+        version?: string;
+        restart?: { into: string; at?: number; waitingFor: string[] };
+        failedInto?: string;
+      };
+    } catch {
+      return undefined;
+    }
+  };
+  const seen = (from: Device, slug: string) =>
+    (JSON.parse(fs.readFileSync(path.join(from.sb.home, 'bridge', 'remote.json'), 'utf8')) as {
+      devices: { slug: string; trusted: boolean; lastSeen: string; version?: string; installed?: string }[];
+    }).devices.find((d) => d.slug === slug && d.trusted && Date.now() - Date.parse(d.lastSeen) < 4000);
+
+  before(async () => {
+    fs.writeFileSync(updater, UPDATER);
+    const env = (name: string) => ({
+      TELEPATHY_AUTO_UPDATE: '1',
+      TELEPATHY_AUTO_UPDATE_ENTRY: updater,
+      TELEPATHY_BRIDGE_INSTALL_CHECK_MS: '200',
+      TELEPATHY_BRIDGE_RESTART_WAIT_MS: '60000',
+      FAKE_RELEASE: release,
+      FAKE_WRAPPER: path.join(dir, name, 'telepathy.mjs'),
+      FAKE_UPDATES: path.join(dir, name, 'updates.jsonl'),
+    });
+    alpha = await device('alpha', env('alpha'));
+    gamma = await device('gamma', env('gamma'));
+    for (const d of [alpha, gamma]) {
+      fs.mkdirSync(path.dirname(entryOf(d)), { recursive: true });
+      fs.writeFileSync(entryOf(d), install('0.0.1'));
+      const child = spawn(process.execPath, [entryOf(d), 'bridge', 'run'], { env: d.env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      child.stdout.on('data', (chunk) => (out += chunk));
+      child.stderr.on('data', (chunk) => (out += chunk));
+      d.daemon = child;
+      await waitFor(() => (out.includes('listening on') ? true : undefined), 15_000);
+    }
+    await pair(gamma, alpha);
+    await waitFor(() => (seen(alpha, 'gamma')?.version === '0.0.1' && seen(gamma, 'alpha')?.version === '0.0.1' ? true : undefined), 15_000);
+  });
+
+  after(async () => {
+    // Restarted bridges are detached; daemon.json names them.
+    for (const d of [alpha, gamma]) {
+      if (!d) continue;
+      cli(d.env, 'bridge', 'stop');
+      const pid = record(d)?.pid;
+      if (pid) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+      if (d.daemon) await killAndWait(d.daemon);
+      d.sb.cleanup();
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('a newer version on one device makes the other check for updates, and both restart into it at one moment', async (t) => {
+    const first = { alpha: record(alpha)?.pid, gamma: record(gamma)?.pid };
+    fs.writeFileSync(release, JSON.stringify({ version: '0.0.2' }));
+    // Alpha's own update lands first.
+    fs.writeFileSync(entryOf(alpha), install('0.0.2'));
+    // Alpha waits for gamma, which checks for updates because alpha has a newer version.
+    await waitFor(() => (record(alpha)?.restart?.waitingFor.includes('gamma') ? true : undefined), 15_000, 20);
+    const [a, g] = await waitFor(() => {
+      const [ra, rg] = [record(alpha), record(gamma)];
+      return ra?.version === '0.0.2' && rg?.version === '0.0.2' && ra.pid !== first.alpha && rg.pid !== first.gamma ? [ra, rg] : undefined;
+    }, 30_000);
+    const apart = Math.abs(Date.parse(a.startedAt) - Date.parse(g.startedAt));
+    t.diagnostic(`the two bridges restarted ${apart}ms apart`);
+    assert.ok(apart < 1500, `restarted together: ${a.startedAt} and ${g.startedAt}`);
+    const checks = fs.readFileSync(updatesOf(gamma), 'utf8').trim().split('\n').map((line) => JSON.parse(line) as { force: boolean });
+    assert.ok(checks.some((check) => check.force), 'gamma checked for updates at once, not at its next daily check');
+    // The new bridges find each other again, each on the new version.
+    await waitFor(() => (seen(alpha, 'gamma')?.version === '0.0.2' && seen(gamma, 'alpha')?.version === '0.0.2' ? true : undefined), 15_000);
+    assert.match(cli(alpha.env, 'bridge', 'status').stdout, /^telepathy bridge 0\.0\.2 · alpha · listening on/);
+  });
+
+  test('a new version whose bridge does not start leaves the running one up', async () => {
+    const before = record(alpha);
+    fs.writeFileSync(release, JSON.stringify({ version: '0.0.3' }));
+    fs.writeFileSync(entryOf(alpha), install('0.0.3', { broken: true }));
+    await waitFor(() => (record(alpha)?.failedInto === '0.0.3' ? true : undefined), 30_000);
+    const now = record(alpha);
+    assert.equal(now?.pid, before?.pid, 'the same bridge took its port back');
+    assert.equal(now?.version, '0.0.2');
+    assert.match(cli(alpha.env, 'bridge', 'status').stdout, /could not restart into telepathy 0\.0\.3, so it still runs 0\.0\.2/);
+    // Gamma restarted into 0.0.3 and still reaches alpha, which says what it has.
+    await waitFor(() => (record(gamma)?.version === '0.0.3' && seen(gamma, 'alpha')?.installed === '0.0.3' ? true : undefined), 30_000);
+    assert.match(cli(gamma.env, 'bridge', 'status').stdout, /alpha · paired · 127\.0\.0\.1:\d+ · \d+ sessions? · telepathy 0\.0\.2, 0\.0\.3 installed/);
+  });
+
+  test('a device on a protocol this one can\'t speak is listed with its version, and pairing with it is refused', async () => {
+    const future = http.createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ protocol: 2, id: 'fedcba9876543210', name: 'future', version: '9.0.0', pairing: true }));
+    });
+    await new Promise<void>((resolve) => future.listen(0, '127.0.0.1', resolve));
+    const addr = `127.0.0.1:${(future.address() as net.AddressInfo).port}`;
+    const checks = () => fs.readFileSync(updatesOf(alpha), 'utf8').split('\n').filter((line) => line.includes('"force":true')).length;
+    const forced = checks();
+    try {
+      assert.equal(cli(alpha.env, 'bridge', 'add', addr).status, 0);
+      await waitFor(() =>
+        /future · manual 127\.0\.0\.1:\d+ · runs telepathy 9\.0\.0, which this one \(0\.0\.2\) can't talk to\. Pairing needs versions that match/.test(
+          cli(alpha.env, 'bridge', 'status').stdout,
+        )
+          ? true
+          : undefined,
+      );
+      // Not spawnSync: the device answering is a server in this process.
+      const paired = spawnCli(alpha.env, 'bridge', 'pair', addr);
+      assert.equal(await paired.done, 1);
+      assert.match(paired.out(), /future runs telepathy 9\.0\.0, which this one \(0\.0\.0-dev\) can't talk to/);
+      // A device it does not trust can claim any version; that is no reason to check.
+      assert.equal(checks(), forced);
+    } finally {
+      cli(alpha.env, 'bridge', 'remove', addr);
+      future.close();
     }
   });
 });

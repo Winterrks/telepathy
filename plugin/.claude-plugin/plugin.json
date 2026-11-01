@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.11.1",
+  "version": "0.11.2",
   "description": "Telepathy for your coding agents: this Claude Code session can message Codex, OpenCode, Antigravity, Copilot CLI and other agent sessions on this machine, and their messages wake it. Adds three tools (list_peers, send_message, read_messages), a SessionStart hook that registers the session, hooks on ListAgents and SendMessage that add other agents' sessions to them, a hook on the file, search and Bash tools that records which files this session edits (paths only) and notes when it reads or edits files another session edited in the last hour, no plugin monitor of its own (a session without an inbox socket starts an idle-wake hook; a session with a socket does not), and UserPromptSubmit/Stop hooks for sessions where that monitor isn't running: in the Claude app they have Claude start a one-shot background waiter that wakes the session when a message arrives, and they hand over waiting messages at the next turn. Everything stays on this machine in ~/.telepathy. It reads the name and status fields of Claude Code's session files, Codex's session index, the last turn marker and last timestamp of Codex session logs (for busy/idle/waiting status), and which telepathy hooks Codex has approved (the hook table names in its config.toml). No network calls, no telemetry.",
   "author": {
     "name": "Winterrks"

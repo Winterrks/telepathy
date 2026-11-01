@@ -4,6 +4,7 @@ import { formatAgo } from '../core/listing.ts';
 import { type Message, newMessageId, type Party, partyOf } from '../core/messages.ts';
 import { envDurationMs } from '../core/paths.ts';
 import { type Peer, peerRef, resolvePeer } from '../core/peers.ts';
+import { VERSION } from '../core/version.ts';
 import { call, UNREACHABLE } from './client.ts';
 import { isOnline, knownDevices, logEvent, preview, type RemoteDevice, type RemotePeerWire } from './state.ts';
 
@@ -92,6 +93,10 @@ export function formatRemoteListings(listings: RemoteListing[], now = Date.now()
       lines.push(`Device ${device.slug} (${via}) is offline, last seen ${formatAgo(now - Date.parse(device.lastSeen))}.`);
       continue;
     }
+    if (device.incompatible) {
+      lines.push(`Device ${device.slug} (${via}) runs telepathy ${device.version ?? '?'}, which can't talk to this one (${VERSION}). Its sessions show once both run the same version.`);
+      continue;
+    }
     lines.push(`On device ${device.slug} (${via}), ${peers.length} session${peers.length === 1 ? '' : 's'}:`);
     for (const { peer, status, delivery } of peers) {
       const notes = [peer.cwd ? `cwd ${peer.cwd}` : '', status ?? '', delivery ?? ''].filter(Boolean);
@@ -129,6 +134,14 @@ export async function sendRemote(self: Peer, target: RemoteTarget, body: string)
     return {
       ok: false,
       error: `Message failed: device ${device.slug} is offline (its telepathy bridge is not answering). Nothing was sent.`,
+    };
+  }
+  if (device.incompatible) {
+    return {
+      ok: false,
+      error:
+        `Message failed: device ${device.slug} runs telepathy ${device.version ?? '?'}, which can't talk to this one (${VERSION}). ` +
+        'Nothing was sent. The older one updates by itself when its auto-update is on; `telepathy update` there updates now.',
     };
   }
 
