@@ -27,7 +27,7 @@ const BIN_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'telepathy-bins-'));
 const REAL_STATE = '/home/ubuntu/.telepathy';
 const realStateBefore = fs.existsSync(REAL_STATE);
 
-for (const name of ['claude', 'codex', 'opencode', 'kilo', 'agy', 'copilot', 'qwen', 'grok', 'devin', 'claude-agent-acp', 'claude-code-acp', 'codex-acp', 'antigravity-acp']) {
+for (const name of ['claude', 'codex', 'opencode', 'kilo', 'agy', 'copilot', 'qwen', 'grok', 'devin', 'cursor-agent', 'kimi', 'claude-agent-acp', 'claude-code-acp', 'codex-acp', 'antigravity-acp']) {
   const file = path.join(BIN_DIR, name);
   fs.writeFileSync(file, `#!/usr/bin/env node\nprocess.env.FAKE_ARGV0 = ${JSON.stringify(name)};\nimport(process.env.FAKE_HARNESS_FILE);\n`);
   fs.chmodSync(file, 0o755);
@@ -234,7 +234,9 @@ test('help, version, list, and an unknown agent', () => {
     assert.equal(version.stdout.trim(), '0.0.0-dev');
     const list = run(['run', '--list'], w.env);
     assert.equal(list.status, 0);
-    assert.match(list.stdout, /antigravity\s+passthrough/);
+    assert.match(list.stdout, /antigravity\s+acp\s+antigravity-acp/);
+    assert.match(list.stdout, /grok\s+acp\s+grok agent stdio/);
+    assert.match(list.stdout, /hermes\s+passthrough/);
     assert.match(list.stdout, /headless: antigravity/);
     assert.match(list.stdout, /agy is an alias/);
     assert.doesNotMatch(list.stdout, /gemini/);
@@ -249,21 +251,21 @@ test('help, version, list, and an unknown agent', () => {
   }
 });
 
-test('passthrough execs the vendor CLI with its arguments, cwd, exit code, and a delivery note', () => {
+test('--tui execs the vendor CLI with its arguments, cwd, exit code, and a delivery note', () => {
   const w = world();
   plantClaude(w.sb);
   try {
     const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-cwd-'));
-    const result = run(['run', '--cwd', cwd, 'claude', '--', '--resume', 'sess'], { ...w.env, FAKE_EXIT_CODE: '4' });
+    const result = run(['run', '--tui', '--cwd', cwd, 'claude', '--', '--resume', 'sess'], { ...w.env, FAKE_EXIT_CODE: '4' });
     assert.equal(result.status, 4);
     const start = w.readLog().find((entry) => entry.event === 'start' && entry.args?.includes('--resume'));
     assert.ok(start);
     assert.equal(fs.realpathSync(start.cwd ?? ''), fs.realpathSync(cwd));
     assert.deepEqual(start?.args, ['--resume', 'sess']);
-    const grok = run(['run', 'grok'], w.env);
+    const grok = run(['run', '--tui', 'grok'], w.env);
     assert.equal(grok.status, 0);
     assert.match(grok.stderr, /Grok wakes an idle session only after/);
-    const qwen = run(['run', 'qwen'], w.env);
+    const qwen = run(['run', '--tui', 'qwen'], w.env);
     assert.match(qwen.stderr, /Qwen Code cannot wake/);
   } finally {
     w.restore();
@@ -273,7 +275,7 @@ test('passthrough execs the vendor CLI with its arguments, cwd, exit code, and a
 test('SIGTERM is forwarded to the vendor process', async () => {
   const w = world();
   plantClaude(w.sb);
-  const launched = spawnCli(['run', 'claude', '--', '--sleep'], w.env);
+  const launched = spawnCli(['run', '--tui', 'claude', '--', '--sleep'], w.env);
   try {
     await waitFor(() => w.readLog().some((entry) => entry.args?.includes('--sleep')));
     process.kill(launched.child.pid as number, 'SIGTERM');
@@ -708,15 +710,67 @@ test('interactive ACP takes a stdin prompt and exits when stdin closes', async (
   }
 });
 
+test('run starts every harness with an ACP mode under the ACP host', async () => {
+  const w = world();
+  try {
+    for (const [agent, cmd, args] of [
+      ['opencode', 'opencode', ['acp']],
+      ['kilo', 'kilo', ['acp']],
+      ['grok', 'grok', ['agent', 'stdio']],
+      ['devin', 'devin', ['acp']],
+      ['cursor', 'cursor-agent', ['acp']],
+      ['kimi', 'kimi', ['acp']],
+      ['qwen', 'qwen', ['--acp']],
+      ['claude', 'claude-agent-acp', []],
+    ] as const) {
+      const launched = spawnCli(['run', agent], w.env);
+      try {
+        await waitFor(() =>
+          w.readLog().some((entry) => entry.cmd === cmd && entry.method === 'session/new') ? true : undefined,
+        );
+        const start = w.readLog().find((entry) => entry.event === 'start' && entry.cmd === cmd);
+        assert.deepEqual(start?.args, [...args], agent);
+        launched.child.stdin.end();
+        assert.equal((await launched.done).code, 0, agent);
+      } finally {
+        if (launched.child.exitCode === null) launched.child.kill('SIGKILL');
+      }
+    }
+  } finally {
+    w.restore();
+  }
+});
+
+test('a missing ACP adapter says how to install it and that --tui is the vendor CLI', () => {
+  const w = world();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-noadapter-'));
+  fs.symlinkSync(path.join(BIN_DIR, 'codex'), path.join(dir, 'codex'));
+  const env = { ...w.env, PATH: `${dir}${path.delimiter}${path.dirname(process.execPath)}${path.delimiter}/usr/bin:/bin` };
+  try {
+    const result = run(['run', 'codex'], env);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /`codex-acp` is not on PATH/);
+    assert.match(result.stderr, /npm install -g @zed-industries\/codex-acp/);
+    assert.match(result.stderr, /`telepathy run --tui codex` starts the Codex CLI instead/);
+    assert.equal(w.readLog().length, 0);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    w.restore();
+  }
+});
+
 test('agents without a headless plane are refused', () => {
   const w = world();
   try {
-    const result = run(['run', '--headless', 'grok'], w.env);
+    const result = run(['run', '--headless', 'hermes'], w.env);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /no headless control plane/);
-    const acp = run(['run', '--acp', 'kimi'], w.env);
+    const acp = run(['run', '--acp', 'pi'], w.env);
     assert.equal(acp.status, 1);
     assert.match(acp.stderr, /no ACP launcher/);
+    const both = run(['run', '--tui', '--headless', 'claude'], w.env);
+    assert.equal(both.status, 1);
+    assert.match(both.stderr, /cannot be combined with --headless/);
   } finally {
     w.restore();
   }
@@ -1256,7 +1310,7 @@ test('an unexpanded placeholder is not a home, a name, or a transcript dir', () 
 
 test('run does not install or edit the Gemini config', async () => {
   const w = world();
-  const launched = spawnCli(['run', 'agy'], w.env);
+  const launched = spawnCli(['run', '--tui', 'agy'], w.env);
   try {
     await waitFor(() => (w.readLog().some((entry) => entry.event === 'start' && entry.cmd === 'agy') ? true : undefined));
     assert.equal(

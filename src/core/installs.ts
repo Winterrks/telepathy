@@ -386,6 +386,36 @@ function antigravity(): Install[] {
   return newest ? [newest] : [];
 }
 
+/** Kimi Code's home: `KIMI_CODE_HOME`, else `~/.kimi-code`. */
+export const kimiHome = () => process.env.KIMI_CODE_HOME || path.join(home(), '.kimi-code');
+
+/** One entry of Kimi Code's `plugins/installed.json`, as its own installer writes it. */
+export interface KimiPluginEntry {
+  id: string;
+  root: string;
+  source?: 'github' | 'zip-url' | 'local-path' | string;
+  enabled?: boolean;
+  installedAt?: string;
+  updatedAt?: string;
+  originalSource?: string;
+  capabilities?: unknown;
+  github?: { owner: string; repo: string; ref: { kind: string; value: string }; installedSha?: string };
+}
+
+export function readKimiInstalled(): { version: number; plugins: KimiPluginEntry[] } | undefined {
+  const file = readJson<{ version?: number; plugins?: unknown }>(path.join(kimiHome(), 'plugins', 'installed.json'));
+  if (!file || !Array.isArray(file.plugins)) return undefined;
+  return { version: file.version ?? 1, plugins: file.plugins as KimiPluginEntry[] };
+}
+
+/** Kimi Code loads only what `installed.json` lists, from that entry's root. A folder alone is not an install. */
+function kimi(): Install[] {
+  const entry = readKimiInstalled()?.plugins.find((plugin) => plugin?.id === 'telepathy');
+  if (!entry || typeof entry.root !== 'string') return [];
+  const version = readVersion(path.join(entry.root, '.kimi-plugin', 'plugin.json'));
+  return version ? [{ agent: 'kimi', version, dir: entry.root }] : [];
+}
+
 /**
  * OpenCode 2 installs a package plugin into `npm/<target folder>/<install time>/node_modules/<name>`, with a target
  * folder such as `git-telepathy-1869ef84f4ac` for a GitHub install.
@@ -432,7 +462,7 @@ function packageCache(agent: 'opencode' | 'kilo'): Install[] {
 
 /**
  * Every agent's installed copy of telepathy that can be found on this machine, from local files only. Grok and
- * Cursor load Claude Code's copy, so they have none of their own here.
+ * Cursor load Claude Code's copy, so they have none of their own here. Kimi Code's is in its `installed.json`.
  */
 export function findInstalls(): Install[] {
   return [
@@ -444,6 +474,7 @@ export function findInstalls(): Install[] {
     ...antigravity(),
     ...packageCache('opencode'),
     ...packageCache('kilo'),
+    ...kimi(),
   ];
 }
 

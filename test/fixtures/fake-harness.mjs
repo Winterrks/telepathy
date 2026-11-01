@@ -29,10 +29,20 @@ process.on('SIGINT', stop);
 
 const send = (obj) => process.stdout.write(JSON.stringify(obj) + '\n');
 
+function readHookState() {
+  try {
+    return JSON.parse(fs.readFileSync(process.env.FAKE_CODEX_HOOK_STATE, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
 function isAcp() {
   return (
     args.includes('--acp') ||
     args[0] === 'acp' ||
+    (args[0] === 'agent' && args[1] === 'stdio') ||
+    name === 'claude-agent-acp' ||
     name === 'claude-code-acp' ||
     name === 'codex-acp' ||
     name === 'antigravity-acp' ||
@@ -58,7 +68,25 @@ if (args.includes('--sleep')) {
     } else if (msg.method === 'thread/resume') {
       send({ jsonrpc: '2.0', id: msg.id, result: { thread: { id: msg.params?.threadId } } });
     } else if (msg.method === 'turn/start') send({ jsonrpc: '2.0', id: msg.id, result: { turn: { id: 'turn-1' } } });
-    else if (msg.id !== undefined && msg.method) send({ jsonrpc: '2.0', id: msg.id, result: {} });
+    else if (msg.method === 'hooks/list' && process.env.FAKE_CODEX_HOOKS) {
+      // FAKE_CODEX_HOOKS: [{ key, eventName, trustStatus, currentHash }]; approvals persist in FAKE_CODEX_HOOK_STATE.
+      const approved = readHookState();
+      const hooks = JSON.parse(process.env.FAKE_CODEX_HOOKS).map((hook) => ({
+        pluginId: 'telepathy@telepathy',
+        source: 'plugin',
+        ...hook,
+        trustStatus: approved[hook.key] === hook.currentHash ? 'trusted' : hook.trustStatus,
+      }));
+      send({ jsonrpc: '2.0', id: msg.id, result: { data: [{ cwd: msg.params?.cwds?.[0] ?? '', hooks, warnings: [], errors: [] }] } });
+    } else if (msg.method === 'config/batchWrite' && process.env.FAKE_CODEX_HOOK_STATE) {
+      const approved = readHookState();
+      for (const edit of msg.params?.edits ?? []) {
+        if (edit.keyPath !== 'hooks.state') continue;
+        for (const [key, value] of Object.entries(edit.value ?? {})) approved[key] = value.trusted_hash;
+      }
+      fs.writeFileSync(process.env.FAKE_CODEX_HOOK_STATE, JSON.stringify(approved));
+      send({ jsonrpc: '2.0', id: msg.id, result: { status: 'ok', version: 'v1', filePath: 'config.toml' } });
+    } else if (msg.id !== undefined && msg.method) send({ jsonrpc: '2.0', id: msg.id, result: {} });
   });
 } else if ((name === 'opencode' || name === 'kilo') && args[0] === 'serve') {
   const known = process.env.FAKE_OC_SESSION || 'ses_fake';
@@ -103,6 +131,7 @@ if (args.includes('--sleep')) {
   let permId = 0;
   let pending = null;
   const rl = readline.createInterface({ input: process.stdin });
+  let turns;
   const finishPrompt = async (msg) => {
     const delay = Number(process.env.FAKE_ACP_DELAY_MS || 0);
     if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
@@ -118,6 +147,23 @@ if (args.includes('--sleep')) {
         method: 'session/update',
         params: { sessionId, update: { sessionUpdate: kind, messageId, content: { type: 'text', text: piece } } },
       });
+    if (process.env.FAKE_ACP_AGENT === '1') {
+      // A turn the way an agent does one: a remark, a tool call, then the final message.
+      chunk('Looking into it.', 'agent_message_chunk', 'a1');
+      const tool = (status) =>
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: { sessionId, update: { sessionUpdate: status ? 'tool_call_update' : 'tool_call', toolCallId: 'run-1', title: 'npm test', kind: 'execute', status: status ?? 'pending' } },
+        });
+      tool();
+      tool('completed');
+      const turn = (turns = (turns ?? 0) + 1);
+      chunk(`Final report ${turn}: `, 'agent_message_chunk', 'a2');
+      chunk('all 12 auth tests pass.', 'agent_message_chunk', 'a2');
+      send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+      return;
+    }
     if (process.env.FAKE_ACP_TWO === '1') {
       chunk(text, 'agent_message_chunk', 'm0');
       chunk('one', 'agent_message_chunk', 'm1');
@@ -227,6 +273,26 @@ if (args.includes('--sleep')) {
         } else {
           send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: msg.params?.sessionId || 'sess-acp' } });
         }
+      } else if (process.env.FAKE_ACP_AGENT === '1') {
+        // Config options the way current agents report them. FAKE_ACP_NO_AUTO leaves out an auto mode.
+        const modes = process.env.FAKE_ACP_NO_AUTO === '1' ? ['build', 'plan'] : ['default', 'plan', 'auto', 'yolo'];
+        send({
+          jsonrpc: '2.0',
+          id: msg.id,
+          result: {
+            sessionId: process.env.FAKE_ACP_SESSION_ID || `sess-${process.pid}`,
+            configOptions: [
+              { id: 'mode', category: 'mode', currentValue: modes[0], options: modes.map((value) => ({ value, name: value })) },
+              {
+                id: 'model',
+                category: 'model',
+                currentValue: 'openai/gpt-5.4',
+                options: ['openai/gpt-5.4', 'openai/gpt-5.5', 'anthropic/claude-opus-5-5'].map((value) => ({ value, name: value })),
+              },
+              { id: 'effort', category: 'thought_level', currentValue: 'default', options: ['low', 'high', 'max'].map((value) => ({ value })) },
+            ],
+          },
+        });
       } else {
         send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: process.env.FAKE_ACP_SESSION_ID || 'sess-acp' } });
       }
@@ -285,6 +351,15 @@ if (args.includes('--sleep')) {
     send({ type: 'assistant', session_id: session, message: { content: [{ type: 'text', text: 'ack' }] } });
   });
 } else if (args[0] === 'plugin' || args[0] === 'extensions' || args[0] === 'plugins' || args.includes('marketplace')) {
+  // What a real update leaves on disk, so `telepathy update` sees the new version.
+  if (name === 'codex' && args.includes('upgrade') && process.env.FAKE_CODEX_UPGRADE_TO) {
+    fs.mkdirSync(path.join(process.env.CODEX_HOME, 'plugins', 'cache', 'telepathy', 'telepathy', process.env.FAKE_CODEX_UPGRADE_TO), { recursive: true });
+  }
+  if (name === 'opencode' && args[1] === 'add' && process.env.FAKE_OPENCODE_REINSTALL) {
+    const dir = path.join(process.env.XDG_CACHE_HOME, 'opencode', 'npm', 'git-telepathy-fake', String(Date.now()), 'node_modules', 'telepathy');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: 'telepathy', version: process.env.FAKE_OPENCODE_REINSTALL }));
+  }
   process.exit(0);
 } else {
   const code = process.env.FAKE_EXIT_CODE;

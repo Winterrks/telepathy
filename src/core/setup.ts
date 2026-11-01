@@ -6,6 +6,7 @@ import { findInstalls, isNewer } from './installs.ts';
 import { peerDir, readJson, writeJsonAtomic } from './paths.ts';
 import { defaultCodexHome, listPeers, type Peer, sameStableName } from './peers.ts';
 import { commandLine } from './proc.ts';
+import { noteTag } from './tags.ts';
 import { VERSION } from './version.ts';
 
 /**
@@ -54,15 +55,15 @@ export function codexBridgeTimeoutFromCommandLine(args: string): number | undefi
 const updateAllCommand = () => `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'update-all.mjs')}"`;
 
 /**
- * Things only the user can fix that keep messages from reaching this session on time, as `[telepathy setup]`
- * lines for the agent to pass on.
+ * Things only the user can fix that keep messages from reaching this session on time, as
+ * `<telepathy-note kind="setup">` lines for the agent to pass on.
  */
 export function setupNotes(self: Peer): string[] {
   const notes: string[] = [];
   const dupes = listPeers().filter((p) => sameStableName(self, p));
   if (self.stableName && dupes.length) {
     notes.push(
-      `[telepathy setup] ${dupes.length + 1} live sessions share the name ${self.agent}:${self.stableName} ` +
+      `${dupes.length + 1} live sessions share the name ${self.agent}:${self.stableName} ` +
         `(${[self.id, ...dupes.map((p) => p.id)].join(', ')}). A message to that name can reach either one; use the [ref] to pick.`,
     );
   }
@@ -71,7 +72,7 @@ export function setupNotes(self: Peer): string[] {
     // absent from the file this process reads. Warn only when no telepathy hook has ever fired here.
     if (!self.hookRan && !self.toolHookRan) {
       notes.push(
-        `[telepathy setup] No telepathy hook has fired for this session, so other sessions may not reach it until one does. ` +
+        `No telepathy hook has fired for this session, so other sessions may not reach it until one does. ` +
           'If /hooks shows telepathy\'s hooks untrusted, trust them (press t).',
       );
     }
@@ -88,12 +89,12 @@ export function setupNotes(self: Peer): string[] {
     const effective = fromArgs ?? timeout;
     if (effective !== undefined && effective < CODEX_BRIDGE_TIMEOUT_MIN) {
       notes.push(
-        `[telepathy setup] ${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 110s send_message waits ` +
+        `${CODEX_BRIDGE_TIMEOUT_KEY} is ${effective}s, which is below the 110s send_message waits ` +
           'for a transcript. Set that key to at least 110.',
       );
     } else if (config && effective === undefined) {
       notes.push(
-        `[telepathy setup] Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override ` +
+        `Could not verify ${CODEX_BRIDGE_TIMEOUT_KEY}. It is not in config.toml, and no -c override ` +
           'was visible on this Codex process. If it is below 110, send_message can be cut off. Set that key to at least 110 if it is not already.',
       );
     }
@@ -105,26 +106,26 @@ export function setupNotes(self: Peer): string[] {
   const ownInstalled = newestOf(installs.filter((i) => i.agent === self.agent).map((i) => i.version));
   if (ownInstalled && isNewer(ownInstalled, VERSION)) {
     notes.push(
-      `[telepathy setup] This session runs telepathy ${VERSION}, but ${ownInstalled} is installed, so messages may ` +
+      `This session runs telepathy ${VERSION}, but ${ownInstalled} is installed, so messages may ` +
         'not reach this session as they should. Tell your user to restart this session to load the update.',
     );
   } else if (!ownInstalled && newest && isNewer(newest, VERSION)) {
     // Grok and Cursor load the copy installed in Claude Code.
     const where = self.agent === 'grok' || self.agent === 'cursor' ? "Claude Code's copy of telepathy" : 'telepathy in this agent';
     notes.push(
-      `[telepathy setup] This session runs telepathy ${VERSION}, but another session runs ${newest}, so messages may ` +
+      `This session runs telepathy ${VERSION}, but another session runs ${newest}, so messages may ` +
         `not reach this session as they should. Tell your user to update ${where} and restart this session.`,
     );
   }
   const stale = installs.filter((i) => newest && isNewer(newest, i.version));
   if (newest && stale.length) {
     notes.push(
-      `[telepathy setup] Some agents have an older telepathy installed than ${newest}: ` +
+      `Some agents have an older telepathy installed than ${newest}: ` +
         `${stale.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}. Tell your user; with their OK, you can ` +
         `update them all with: ${updateAllCommand()}`,
     );
   }
-  return notes;
+  return notes.map((note) => noteTag('setup', note));
 }
 
 const shownFile = (id: string) => path.join(peerDir(id), 'setup-shown.json');

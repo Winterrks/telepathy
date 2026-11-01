@@ -42,6 +42,7 @@ import {
   type ToolResult,
 } from './core/tools.ts';
 import { attachGrokDelivery } from './grok-delivery.ts';
+import { answerPermissionTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
 import { VERSION } from './core/version.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 
@@ -141,6 +142,8 @@ debugLog('server', `started for ${selfId}`);
 startWakeFlusher();
 // A version check, at most once a day, in a detached process. It must not delay this server's handshake.
 scheduleAutoUpdate('server');
+// A connected Grok Bot's host does not survive a reboot. Any session's server brings it back.
+void import('./grokbot/cli.ts').then((m) => m.ensureGrokbotHosts()).catch(() => {});
 
 const presenceFor = new Set<string>();
 
@@ -195,7 +198,7 @@ const text = ({ text, isError, structured }: ToolResult) => ({
 });
 
 /**
- * Adds `[telepathy setup]` notes the first time this session would show each one. A later tool call, including
+ * Adds `<telepathy-note kind="setup">` notes the first time this session would show each one. A later tool call, including
  * from a new server process, does not repeat a note it has already shown.
  */
 function withSetupNotes(selfId: string, result: ToolResult): ToolResult {
@@ -252,6 +255,42 @@ server.registerTool(
     }
     return text(withSetupNotes(selfId, readMessagesTool(selfId, { id, limit })));
   },
+);
+
+server.registerTool(
+  'start_agent',
+  {
+    title: TOOLS.start_agent.title,
+    description: TOOLS.start_agent.description,
+    inputSchema: z.object(TOOLS.start_agent.args),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async (args, ctx) => {
+    const selfId = selfIdFor(ctx.mcpReq._meta);
+    return text(await startAgentTool(selfPeer(agent, agentPid, selfId), args));
+  },
+);
+
+server.registerTool(
+  'stop_agent',
+  {
+    title: TOOLS.stop_agent.title,
+    description: TOOLS.stop_agent.description,
+    inputSchema: z.object(TOOLS.stop_agent.args),
+    annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
+  },
+  async ({ name }, ctx) => text(await stopAgentTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), name)),
+);
+
+server.registerTool(
+  'answer_permission',
+  {
+    title: TOOLS.answer_permission.title,
+    description: TOOLS.answer_permission.description,
+    inputSchema: z.object(TOOLS.answer_permission.args),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async (args, ctx) => text(answerPermissionTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), args)),
 );
 
 if (agent === 'grok') {

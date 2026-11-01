@@ -11,6 +11,7 @@ import { copilotLogHasMarker } from '../core/confirm.ts';
 import { copilotEventsFile, readSession, sessionPeerId } from '../core/peers.ts';
 import { VERSION } from '../core/version.ts';
 import { resolveArgvPath } from '../cli/entry.ts';
+import { sandboxSpawnBlock } from '../core/sandbox-launch.ts';
 import { LineRpc } from './rpc.ts';
 
 export interface AcpLaunch {
@@ -34,6 +35,12 @@ export interface AcpLaunch {
    * `agentStop` did not run.
    */
   onTurnSettled?: () => void;
+  /** Every `session/update`, raw, before it is rendered. */
+  onSessionUpdate?: (params: unknown) => void;
+  /** A turn this host submitted is over: `session/prompt` returned its stop reason, or failed. */
+  onTurnEnd?: (result: { stopReason?: string; error?: string }) => void;
+  /** Answers each permission request in place of the terminal or the headless default. */
+  askPermission?: (params: unknown, label: string) => Promise<boolean>;
 }
 
 export interface AcpSession {
@@ -55,6 +62,10 @@ export interface AcpSession {
    * including a Copilot session that was stopped before it ever had a turn.
    */
   resumed: boolean;
+  /** What `session/new` (or `session/load`) returned: modes, models and config options when the agent has them. */
+  created: unknown;
+  /** One request on this session's connection, such as `session/set_config_option`. */
+  request(method: string, params: unknown): Promise<unknown>;
   close(): void;
   exited: Promise<number>;
 }
@@ -86,6 +97,20 @@ export function telepathyMcpServers(agent: Agent, env: NodeJS.ProcessEnv = proce
       env: Object.entries(mcpChildEnv(env)).map(([name, value]) => ({ name, value })),
     },
   ];
+}
+
+/**
+ * The one auth method the agent runs itself, when there is exactly one: no `type`, or `agent`, and no
+ * `terminal-auth` command for the user to run.
+ */
+export function agentAuthMethod(initialized: unknown): string | undefined {
+  const methods = ((initialized ?? {}) as { authMethods?: unknown }).authMethods;
+  if (!Array.isArray(methods)) return undefined;
+  const own = methods.filter((raw) => {
+    const m = (raw ?? {}) as { id?: unknown; type?: unknown; _meta?: Record<string, unknown> };
+    return typeof m.id === 'string' && (m.type === undefined || m.type === 'agent') && !m._meta?.['terminal-auth'];
+  }) as { id: string }[];
+  return own.length === 1 ? own[0].id : undefined;
 }
 
 /** True when initialize's `mcpCapabilities` lists stdio (or Copilot's synonym `local`). */
@@ -241,9 +266,17 @@ export function describePermission(params: unknown): string {
   return input ? `${name} (${input})` : name;
 }
 
+/**
+ * The option that allows this one call. Adapters may list "Always Allow" first, and a one-off yes must not become a
+ * standing permission, so `allow_once` wins and a name that says "always" is the last resort.
+ */
 function allowOption(params: unknown): string {
   const options = ((params ?? {}) as { options?: { optionId?: string; kind?: string; name?: string }[] }).options ?? [];
-  const match = options.find((option) => option.kind === 'allow_once' || /allow/i.test(option.name ?? '') || /allow/i.test(option.optionId ?? ''));
+  const says = (option: { optionId?: string; name?: string }, re: RegExp) => re.test(option.name ?? '') || re.test(option.optionId ?? '');
+  const match =
+    options.find((option) => option.kind === 'allow_once') ??
+    options.find((option) => !option.kind?.startsWith('reject') && says(option, /allow/i) && !says(option, /always/i)) ??
+    options.find((option) => option.kind === 'allow_always');
   return match?.optionId ?? options[0]?.optionId ?? 'allow';
 }
 
@@ -268,6 +301,9 @@ const AUTH_FAILURE = /not logged in|login required|authentication (?:failed|requ
  * injected; that copy is no longer pending, and cancelling it drops the turn.
  */
 export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
+  // A test must never start the machine's real agent: an adapter like codex-acp would start a real sign-in.
+  const blocked = sandboxSpawnBlock(options.bin, options.env ?? process.env);
+  if (blocked) throw new Error(blocked);
   const mcpEnv = options.env ?? process.env;
   const cliMcp = copilotCliMcp(options.agent, mcpEnv);
   // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
@@ -328,6 +364,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
 
   const permission = async (params: unknown): Promise<boolean> => {
     const label = describePermission(params);
+    if (options.askPermission) return options.askPermission(params, label);
     if (process.env.TELEPATHY_HEADLESS_APPROVE === '1' && (options.headless || !process.stdin.isTTY)) {
       options.emit(`allowed ${label}: TELEPATHY_HEADLESS_APPROVE=1 allows every permission.`);
       return true;
@@ -405,7 +442,10 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       rpc.respond(id, { outcome: { outcome: 'selected', optionId: allowOption(params) } });
     },
     (method, params) => {
-      if (method === 'session/update') onUpdate(params);
+      if (method === 'session/update') {
+        options.onSessionUpdate?.(params);
+        onUpdate(params);
+      }
     },
   );
 
@@ -421,7 +461,8 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     setImmediate(() => {
       if (process.stdin.destroyed) return;
       process.stdin.pause();
-      process.stdin.unref();
+      // A detached host's stdin can be /dev/null, a stream with no unref.
+      if (typeof (process.stdin as { unref?: unknown }).unref === 'function') process.stdin.unref();
     });
   };
   child.on('exit', () => {
@@ -500,10 +541,12 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     }
     let sessionId = options.resumeSessionId;
     let resumed = false;
+    let created: unknown;
     if (sessionId) {
       const wanted = sessionId;
       try {
         const loaded = await rpc.request('session/load', { sessionId, cwd: options.cwd, mcpServers });
+        created = loaded;
         sessionId = sessionIdOf(loaded) ?? wanted;
         resumed = sessionId === wanted;
       } catch {
@@ -512,7 +555,24 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       }
     }
     if (!sessionId) {
-      const created = await rpc.request('session/new', { cwd: options.cwd, mcpServers });
+      try {
+        created = await rpc.request('session/new', { cwd: options.cwd, mcpServers });
+      } catch (err) {
+        // Grok asks the client to authenticate before a session. Its one method reuses the CLI's own login.
+        // A terminal method (run `copilot login`, `kimi login`) is the user's to run, so it is never called here.
+        const method = agentAuthMethod(initialized);
+        if (!method || !/auth/i.test((err as Error).message)) throw err;
+        await Promise.race([
+          rpc.request('authenticate', { methodId: method }),
+          new Promise((_, reject) =>
+            setTimeout(
+              () => reject(new Error(`is not signed in: its sign-in (${method}) did not finish within 30s. Sign in with its own CLI first (for Grok, \`grok login\`)`)),
+              30_000,
+            ).unref(),
+          ),
+        ]);
+        created = await rpc.request('session/new', { cwd: options.cwd, mcpServers });
+      }
       sessionId = sessionIdOf(created);
     }
     if (!sessionId) {
@@ -527,6 +587,8 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       sessionId,
       child,
       resumed,
+      created,
+      request: (method, params) => rpc.request(method, params),
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
@@ -554,6 +616,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
           const previous = onUpdate;
           let sent = false;
           let cancelSent = false;
+          let turnResult: { stopReason?: string; error?: string } | undefined;
           const cancel = () => {
             if (cancelSent || !sent || settled) return;
             cancelSent = true;
@@ -587,7 +650,8 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
               finish(false);
               return;
             }
-            await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] });
+            const outcome = (await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] })) as { stopReason?: unknown } | undefined;
+            turnResult = { stopReason: typeof outcome?.stopReason === 'string' ? outcome.stopReason : undefined };
             if (recalled()) {
               cancel();
               finish(false);
@@ -612,6 +676,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             const closed = message === 'agent exited' || message === 'agent stdin is closed';
+            if (sent) turnResult = { error: message };
             if (!closed) {
               const auth = AUTH_FAILURE.test(message) || AUTH_FAILURE.test(stderrTail);
               options.emit(auth ? authMessage(options.bin, stderrTail || message) : message);
@@ -629,6 +694,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             if (activeTurns === 0) options.onTurnSettled?.();
             clearAsk();
             endText();
+            if (sent && turnResult) options.onTurnEnd?.(turnResult);
           }
         });
         tail = job.then(

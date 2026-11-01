@@ -11,8 +11,9 @@ import {
   removeLeftoverGeminiExtension,
 } from '../core/antigravity.ts';
 import { findInstalls, outsideIsolatedHome } from '../core/installs.ts';
+import { installKimiPlugin } from '../core/kimi-plugin.ts';
 import { runHarnessCommand } from '../update-all.ts';
-import { detectedHarnesses, harnessByAgent, harnesses, OPENCODE_SPEC, type CommandStep, type Harness } from './harnesses.ts';
+import { detectedHarnesses, harnessByAgent, harnesses, OPENCODE_SPEC, REPO, type CommandStep, type Harness } from './harnesses.ts';
 
 export function parseOnly(value: string | undefined): Agent[] | undefined {
   if (!value) return undefined;
@@ -47,7 +48,8 @@ export function installKiloConfig(): void {
   fs.writeFileSync(file, JSON.stringify(json, null, 2) + '\n');
 }
 
-function alreadyInstalled(agent: Agent): boolean {
+/** Whether this harness already loads telepathy: its own copy, or Claude Code's for Grok and Cursor. */
+export function alreadyInstalled(agent: Agent): boolean {
   return findInstalls().some((install) => install.agent === agent);
 }
 
@@ -67,14 +69,58 @@ async function runSteps(steps: CommandStep[]): Promise<{ ok: boolean; output: st
   return { ok: true, output };
 }
 
-function describe(harness: Harness): string {
+const lastLine = (text: string) =>
+  text
+    .split('\n')
+    .map((line) => line.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').trim())
+    .filter(Boolean)
+    .at(-1);
+
+/** How this harness installs telepathy, for `--dry-run` and for the ones a person has to finish. */
+export function describeInstall(harness: Harness): string {
   const plan = harness.install;
   if (plan.kind === 'commands') {
     const cmds = plan.steps.map((step) => `\`${[step.cmd, ...step.args].join(' ')}\``).join(', then ');
     return plan.note ? `${cmds}. ${plan.note}` : cmds;
   }
   if (plan.kind === 'kilo-config') return `add "git:github.com/Winterrks/telepathy" to plugin in ${kiloConfigPath()}`;
+  if (plan.kind === 'kimi') {
+    return `download the latest release into ~/.kimi-code/plugins/managed/telepathy and list it in installed.json, as \`/plugins install ${REPO}\` does in a Kimi Code session`;
+  }
   return plan.instructions;
+}
+
+export interface InstallOutcome {
+  ok: boolean;
+  /** What happened, for a person. */
+  text: string;
+  /** Something only a person can do next, such as Cursor's Marketplace step. */
+  todo?: string;
+}
+
+/**
+ * Installs telepathy into one harness with that harness's own mechanism. The caller has already checked that it
+ * is missing. `manual` and `none` plans are not failures: they are what a person has to do.
+ */
+export async function installHarness(harness: Harness, log: (line: string) => void): Promise<InstallOutcome> {
+  const plan = harness.install;
+  if (plan.kind === 'none' || plan.kind === 'manual') return { ok: true, text: 'not installed', todo: plan.instructions };
+  if (plan.kind === 'kilo-config') {
+    try {
+      installKiloConfig();
+      return { ok: true, text: `updated ${kiloConfigPath()}` };
+    } catch (err) {
+      return { ok: false, text: `failed: ${(err as Error).message}` };
+    }
+  }
+  if (plan.kind === 'kimi') {
+    const result = await installKimiPlugin();
+    return { ok: result.ok, text: result.ok ? result.output : `failed: ${result.output}` };
+  }
+  const result = await runSteps(plan.steps);
+  if (!result.ok) return { ok: false, text: `failed: ${lastLine(result.output) ?? 'failed'}` };
+  if (harness.agent === 'antigravity') enableSidecarIfInScope(log);
+  return { ok: true, text: 'installed', todo: plan.note && harness.agent === 'cursor' ? plan.note : undefined };
 }
 
 /**
@@ -98,7 +144,7 @@ export async function installAll(
   let failed = false;
   for (const harness of present) {
     const label = agentLabel(harness.agent);
-    const how = describe(harness);
+    const how = describeInstall(harness);
     if (harness.install.kind === 'none') {
       log(`- ${label}: ${how}`);
       continue;
@@ -112,37 +158,17 @@ export async function installAll(
       log(`- ${label}: ${how}`);
       continue;
     }
-    if (harness.install.kind === 'manual') {
-      log(`- ${label}: ${harness.install.instructions}`);
-      continue;
-    }
-    if (harness.install.kind === 'kilo-config') {
-      try {
-        installKiloConfig();
-        log(`- ${label}: updated ${kiloConfigPath()}`);
-      } catch (err) {
-        log(`- ${label}: failed: ${(err as Error).message}`);
-        failed = true;
-      }
-      continue;
-    }
-    const result = await runSteps(harness.install.steps);
-    if (result.ok) {
-      if (harness.agent === 'antigravity') enableSidecarIfInScope(log);
-      log(`- ${label}: installed. ${harness.install.note ?? ''}`.trim());
-    }
-    else {
-      const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'failed';
-      log(`- ${label}: failed: ${tail}`);
-      failed = true;
-    }
+    const outcome = await installHarness(harness, log);
+    if (!outcome.ok) failed = true;
+    const note = harness.install.kind === 'commands' ? harness.install.note : undefined;
+    log(`- ${label}: ${outcome.todo && outcome.text === 'not installed' ? outcome.todo : `${outcome.text}${outcome.ok && note ? `. ${note}` : ''}`}`);
   }
   removeLegacyGemini(options, log);
   return failed ? 1 : 0;
 }
 
 /** Enables the App sidecar only when its config file is inside the active home. */
-function enableSidecarIfInScope(log: (line: string) => void): void {
+export function enableSidecarIfInScope(log: (line: string) => void): void {
   const file = geminiConfigFile();
   if (outsideIsolatedHome(path.dirname(file))) {
     log(`- Antigravity sidecar: left unchanged. ${file} is outside this TELEPATHY_HOME.`);
@@ -178,18 +204,10 @@ export async function ensureInstalled(agent: Agent): Promise<{ ok: boolean; note
   if (harness.install.kind === 'manual' || harness.install.kind === 'none') {
     return { ok: true, note: harness.install.instructions };
   }
-  if (harness.install.kind === 'kilo-config') {
-    installKiloConfig();
-    return { ok: true };
-  }
   process.stderr.write(`telepathy: ${agentLabel(agent)} does not have telepathy installed. Installing…\n`);
-  const result = await runSteps(harness.install.steps);
-  if (!result.ok) {
-    const tail = result.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'install failed';
-    return { ok: false, note: tail };
-  }
-  if (agent === 'antigravity') enableSidecarIfInScope((line) => process.stderr.write(`telepathy: ${line}\n`));
-  if (harness.install.note) process.stderr.write(`telepathy: ${harness.install.note}\n`);
+  const outcome = await installHarness(harness, (line) => process.stderr.write(`telepathy: ${line}\n`));
+  if (!outcome.ok) return { ok: false, note: outcome.text.replace(/^failed: /, '') };
+  if (harness.install.kind === 'commands' && harness.install.note) process.stderr.write(`telepathy: ${harness.install.note}\n`);
   if (!alreadyInstalled(agent) && harness.install.kind === 'commands') {
     process.stderr.write('telepathy: the install command finished, but no copy is visible on disk yet. Starting anyway.\n');
   }

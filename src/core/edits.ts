@@ -5,6 +5,7 @@ import type { Agent } from './agents.ts';
 import { formatAgo } from './listing.ts';
 import { peerDir, peersDir, readJson, stateDir, writeJsonAtomic } from './paths.ts';
 import { isPeerAlive, peerRef, readPeer } from './peers.ts';
+import { noteTag } from './tags.ts';
 
 /**
  * Which files each session edits, so a session that reads or edits files another live session is changing learns
@@ -196,8 +197,11 @@ export function overlapNote(self: { id: string; agent: Agent }, files: string[],
       if (!peer) continue;
       const shown = cwd && r.edit.file.startsWith(cwd + path.sep) ? path.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
-        `[telepathy note] Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. ` +
-          `If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? 'send_message'}.`,
+        noteTag(
+          'overlap',
+          `Another session, ${peerRef(peer)}, edited ${shown} ${formatAgo(now - r.at)}, so it may be working in this area. ` +
+            `If you need changes there, consider reaching out to it with ${SEND_HINT[self.agent] ?? 'send_message'}.`,
+        ),
       );
       writeJsonAtomic(marker, { peer: id, dir, at: new Date(now).toISOString() });
     }

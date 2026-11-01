@@ -4,6 +4,7 @@ import path from 'node:path';
 import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir, writeJsonAtomic } from './paths.ts';
 import { agentLabel, type Peer, peerRef } from './peers.ts';
 import type { Agent } from './proc.ts';
+import { escapeTelepathyTags, noteTag, PEER_MESSAGE_TAG, tagAttr } from './tags.ts';
 
 export interface Party {
   id: string;
@@ -26,6 +27,10 @@ export interface Message {
    * The sender's confirm deadline. A later retry, including one that already claimed the inbox, stops.
    */
   deliverBy?: number;
+  /** `agent-result`: a turn of an agent this session started ended. `permission`: that agent asks for permission. */
+  kind?: 'agent-result' | 'permission';
+  /** That agent's transcript, for `agent-result` and `permission`. */
+  transcript?: string;
 }
 
 export const MAX_MESSAGE_CHARS = 100_000;
@@ -203,24 +208,46 @@ function pruneArchive(peerId: string): void {
   }
 }
 
-const describeSender = (from: Party) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
+/** Escaped like the body: a sender relayed from another device must not be able to close the tag in a header line. */
+const describeSender = (from: Party) => escapeTelepathyTags(`${agentLabel(from.agent)} session ${peerRef(from)}`);
 
-/**
- * Text handed to an agent as a user turn (Codex's queue, an in-process plugin's injected prompt). It shows
- * up where the user's own prompts do, so the header says plainly that another agent wrote it, mirroring how
- * Claude Code labels cross-session messages.
- */
 /** A token copied into every delivered rendering so a transcript search can prove this message arrived. */
 export const messageMarker = (id: string) => `telepathy-id:${id}`;
 
-export function formatAsUserTurn(msg: Message): string {
+/** The opening `<telepathy-peer-message …>`: who sent it, where a reply goes, and the id. */
+function openTag(msg: Message, extra: Record<string, string> = {}): string {
+  const attrs: Record<string, string> = {
+    id: msg.id,
+    from: peerRef(msg.from),
+    agent: agentLabel(msg.from.agent),
+    'reply-to': msg.from.address,
+    ...(msg.kind ? { kind: msg.kind } : {}),
+    ...(msg.transcript ? { transcript: msg.transcript } : {}),
+    ...extra,
+  };
+  const text = Object.entries(attrs)
+    .map(([key, value]) => `${key}="${tagAttr(value)}"`)
+    .join(' ');
+  return `<${PEER_MESSAGE_TAG} ${text}>`;
+}
+
+const closeTag = `</${PEER_MESSAGE_TAG}>`;
+
+/**
+ * Text handed to an agent as a user turn (Codex's queue, an in-process plugin's injected prompt). It shows
+ * up where the user's own prompts do, so the tag and the first line say plainly that another agent wrote it,
+ * mirroring how Claude Code labels cross-session messages.
+ */
+export function formatAsUserTurn(msg: Message, reply?: string): string {
   return [
-    `[telepathy] Message from ${describeSender(msg.from)}.`,
+    openTag(msg),
+    `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
     `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` +
-      `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`,
+      (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     '',
-    msg.body,
+    escapeTelepathyTags(msg.body),
+    closeTag,
   ].join('\n');
 }
 
@@ -246,9 +273,11 @@ export function formatForClaudeSocket(msg: Message): string {
  */
 export function formatForContext(messages: Message[], { lead: withLead = true, inlineLimit = 4000 } = {}): string {
   // Delivered next to the user's prompt or a tool result, a message is easy to overlook; say what to do with it.
-  const lead =
-    `[telepathy] ${messages.length === 1 ? 'A new message' : `${messages.length} new messages`} from another AI agent ` +
-    "session (not your user). Deal with it alongside your current work: reply with send_message if it asks for something.";
+  const lead = noteTag(
+    'inbox',
+    `${messages.length === 1 ? 'A new message' : `${messages.length} new messages`} from another AI agent ` +
+      "session (not your user). Deal with it alongside your current work: reply with send_message if it asks for something.",
+  );
   const bodies = messages
     .map((msg) => {
       if (msg.body.length <= inlineLimit) return formatAsUserTurn(msg);
@@ -267,25 +296,26 @@ export function formatForContext(messages: Message[], { lead: withLead = true, i
 /** One stdout line for the Claude Code monitor; each line becomes one notification for Claude. */
 export function formatMonitorLine(msg: Message, inlineLimit = 4000): string {
   const header =
-    `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
-    `To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
-  const flat = (s: string) => s.replace(/\r\n|\r|\n/g, '\\n');
+    `${openTag(msg)}New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). ` +
+    `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`;
+  const flat = (s: string) => escapeTelepathyTags(s).replace(/\r\n|\r|\n/g, '\\n');
   if (msg.body.length <= inlineLimit) {
-    return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}`;
+    return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}${closeTag}`;
   }
   const preview = flat(msg.body.slice(0, 1500));
   return (
     `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" ` +
-    `for the full text): ${preview}…`
+    `for the full text): ${preview}…${closeTag}`
   );
 }
 
 /** Full rendering for the read_messages tool. */
 export function formatForReading(msg: Message): string {
   return [
-    `--- ${msg.id} · from ${describeSender(msg.from)} · ${msg.sentAt}`,
+    openTag(msg, { 'sent-at': msg.sentAt }),
     messageMarker(msg.id),
-    `(reply with send_message to: "${msg.from.address}")`,
-    msg.body,
+    `(from ${describeSender(msg.from)}; reply with send_message to: "${escapeTelepathyTags(msg.from.address)}")`,
+    escapeTelepathyTags(msg.body),
+    closeTag,
   ].join('\n');
 }

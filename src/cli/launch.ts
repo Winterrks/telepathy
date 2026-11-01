@@ -11,6 +11,8 @@ import { slugify } from '../core/peers.ts';
  */
 export function pluginInstalled(agent: Agent): boolean {
   const installs = agent === 'copilot' ? findInstalls() : installsInScope();
+  // Grok and Cursor load Claude Code's copy. Kimi Code's is the one its installed.json lists.
+  if (agent === 'grok' || agent === 'cursor') return installs.some((install) => install.agent === 'claude');
   return installs.some((install) => install.agent === agent);
 }
 

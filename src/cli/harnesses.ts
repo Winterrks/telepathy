@@ -13,6 +13,8 @@ export interface CommandStep {
 export type InstallPlan =
   | { kind: 'commands'; steps: CommandStep[]; note?: string }
   | { kind: 'kilo-config' }
+  /** Kimi Code has no plugin subcommand. Telepathy does what its `/plugins install` does (src/core/kimi-plugin.ts). */
+  | { kind: 'kimi' }
   | { kind: 'manual'; instructions: string }
   | { kind: 'none'; instructions: string };
 
@@ -26,6 +28,8 @@ export interface AcpLaunch {
   fallbacks?: string[];
   args: string[];
   adapter: boolean;
+  /** How to get a missing adapter. */
+  installHint?: string;
 }
 
 export interface Harness {
@@ -34,8 +38,9 @@ export interface Harness {
   bins: string[];
   /** Native TUI. Unset when the product is only a headless/ACP adapter. */
   passthroughBin?: string;
+  /** `acp` wherever the harness has an ACP mode; `--tui` still execs the vendor CLI. */
   defaultMode: RunMode;
-  /** Set when passthrough does not wake an idle session, so `telepathy run` says so. */
+  /** Set when the vendor TUI does not wake an idle session, so `telepathy run --tui` says so. */
   deliveryNote?: string;
   /** Long-lived `telepathy run --headless` plane. Unset when this repo has no control plane for it. */
   headless?: HeadlessPlane;
@@ -49,9 +54,15 @@ const HARNESSES: Harness[] = [
     agent: 'claude',
     bins: ['claude'],
     passthroughBin: 'claude',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'claude',
-    acp: { bin: 'claude-agent-acp', fallbacks: ['claude-code-acp'], args: [], adapter: true },
+    acp: {
+      bin: 'claude-agent-acp',
+      fallbacks: ['claude-code-acp'],
+      args: [],
+      adapter: true,
+      installHint: 'npm install -g @zed-industries/claude-agent-acp',
+    },
     install: {
       kind: 'commands',
       steps: [
@@ -64,9 +75,9 @@ const HARNESSES: Harness[] = [
     agent: 'codex',
     bins: ['codex'],
     passthroughBin: 'codex',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'codex',
-    acp: { bin: 'codex-acp', args: [], adapter: true },
+    acp: { bin: 'codex-acp', args: [], adapter: true, installHint: 'npm install -g @zed-industries/codex-acp' },
     install: {
       kind: 'commands',
       steps: [
@@ -79,7 +90,7 @@ const HARNESSES: Harness[] = [
     agent: 'opencode',
     bins: ['opencode'],
     passthroughBin: 'opencode',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'opencode',
     acp: { bin: 'opencode', args: ['acp'], adapter: false },
     install: { kind: 'commands', steps: [{ cmd: 'opencode', args: ['plugin', 'add', OPENCODE_SPEC] }] },
@@ -88,8 +99,9 @@ const HARNESSES: Harness[] = [
     agent: 'kilo',
     bins: ['kilo', 'kilocode'],
     passthroughBin: 'kilo',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'opencode',
+    acp: { bin: 'kilo', fallbacks: ['kilocode'], args: ['acp'], adapter: false },
     install: { kind: 'kilo-config' },
   },
   {
@@ -111,7 +123,7 @@ const HARNESSES: Harness[] = [
     agent: 'qwen',
     bins: ['qwen'],
     passthroughBin: 'qwen',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'acp',
     deliveryNote: 'Qwen Code cannot wake an idle session; a message arrives on the next turn.',
     acp: { bin: 'qwen', args: ['--acp'], adapter: false },
@@ -124,7 +136,8 @@ const HARNESSES: Harness[] = [
     agent: 'grok',
     bins: ['grok'],
     passthroughBin: 'grok',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
+    acp: { bin: 'grok', args: ['agent', 'stdio'], adapter: false },
     deliveryNote: 'Grok wakes an idle session only after it starts the telepathy monitor, on its first prompt.',
     install: {
       kind: 'commands',
@@ -135,7 +148,8 @@ const HARNESSES: Harness[] = [
     agent: 'devin',
     bins: ['devin'],
     passthroughBin: 'devin',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
+    acp: { bin: 'devin', args: ['acp'], adapter: false },
     deliveryNote: 'Devin cannot wake an idle session; a message arrives on the next turn.',
     install: { kind: 'commands', steps: [{ cmd: 'devin', args: ['plugins', 'install', 'Winterrks/telepathy#plugin'] }] },
   },
@@ -143,7 +157,7 @@ const HARNESSES: Harness[] = [
     agent: 'antigravity',
     bins: ['agy', 'antigravity'],
     passthroughBin: 'agy',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
     headless: 'antigravity',
     deliveryNote:
       'Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.',
@@ -158,7 +172,8 @@ const HARNESSES: Harness[] = [
     agent: 'cursor',
     bins: ['cursor-agent'],
     passthroughBin: 'cursor-agent',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
+    acp: { bin: 'cursor-agent', args: ['acp'], adapter: false },
     deliveryNote: 'Cursor hands a message over after the next tool call; it does not wake an idle session.',
     install: {
       kind: 'commands',
@@ -170,12 +185,10 @@ const HARNESSES: Harness[] = [
     agent: 'kimi',
     bins: ['kimi', 'kimi-code'],
     passthroughBin: 'kimi',
-    defaultMode: 'passthrough',
+    defaultMode: 'acp',
+    acp: { bin: 'kimi', fallbacks: ['kimi-code'], args: ['acp'], adapter: false },
     deliveryNote: 'Kimi Code cannot wake an idle session; a message arrives on the next turn.',
-    install: {
-      kind: 'manual',
-      instructions: `In a Kimi Code session: /plugins install ${REPO}`,
-    },
+    install: { kind: 'kimi' },
   },
   {
     agent: 'hermes',
@@ -241,17 +254,25 @@ export function detectedHarnesses(env: NodeJS.ProcessEnv = process.env): Harness
   return HARNESSES.filter((harness) => resolvedBin(harness, env));
 }
 
-/** Default `telepathy run` mode: ACP where the native TUI cannot wake, otherwise the vendor CLI. */
+/** Default `telepathy run` mode: the ACP host wherever the harness has an ACP mode, otherwise the vendor CLI. */
 export function defaultRunMode(harness: Harness): RunMode {
-  return harness.defaultMode;
+  return harness.acp ? harness.defaultMode : 'passthrough';
+}
+
+/** The plane `--headless` uses: the harness's own control plane, or its ACP mode when it has no other. */
+export function headlessPlane(harness: Harness, forceAcp: boolean): HeadlessPlane | undefined {
+  if (forceAcp) return harness.acp ? 'acp' : undefined;
+  return harness.headless ?? (harness.acp ? 'acp' : undefined);
 }
 
 export function describeRun(harness: Harness): string {
-  const mode = harness.defaultMode === 'acp' && harness.acp ? acpCommand(harness.acp) : (harness.passthroughBin ?? harness.bins[0]);
-  const headless = harness.headless ? `headless: ${harness.headless}` : 'no headless plane';
-  const note = harness.deliveryNote ? ` — ${harness.deliveryNote}` : harness.defaultMode === 'acp' ? ' — ACP host (no idle wake in the native TUI)' : ' — native TUI, idle wake';
-  const forced = harness.acp && harness.defaultMode !== 'acp' ? ` --acp: ${acpCommand(harness.acp)}` : '';
-  return `${harness.agent.padEnd(12)} ${harness.defaultMode.padEnd(12)} ${mode.padEnd(28)} ${headless}${note}${forced}`;
+  const mode = defaultRunMode(harness);
+  const command = mode === 'acp' && harness.acp ? acpCommand(harness.acp) : (harness.passthroughBin ?? harness.bins[0]);
+  const plane = headlessPlane(harness, false);
+  const headless = plane ? `headless: ${plane}` : 'no headless plane';
+  const note = mode === 'acp' ? ' — ACP host, a message starts a turn' : harness.deliveryNote ? ` — ${harness.deliveryNote}` : ' — native TUI, idle wake';
+  const tui = mode === 'acp' && harness.passthroughBin ? ` --tui: ${harness.passthroughBin}` : '';
+  return `${harness.agent.padEnd(12)} ${mode.padEnd(12)} ${command.padEnd(28)} ${headless}${note}${tui}`;
 }
 
 export function listRuns(): string {
@@ -259,9 +280,9 @@ export function listRuns(): string {
     'agent        default      command                      notes',
     ...HARNESSES.map((harness) => describeRun(harness)),
     '',
-    'passthrough execs the vendor CLI with your arguments and a full TTY.',
-    'acp is the default only where the native TUI cannot wake an idle session (Copilot CLI).',
-    'agy is an alias for antigravity. --acp forces an ACP host where one exists. --headless keeps a peer up until `telepathy stop`.',
+    'acp starts the harness in its ACP mode under telepathy, so a message starts a turn while it is idle.',
+    'passthrough (and --tui) execs the vendor CLI with your arguments and a full TTY. A session started that way is reachable through its plugin.',
+    'agy is an alias for antigravity. --headless keeps a peer up until `telepathy stop`.',
     `Labels: ${HARNESSES.map((harness) => agentLabel(harness.agent)).join(', ')}.`,
   ];
   return lines.join('\n');

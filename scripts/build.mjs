@@ -21,6 +21,10 @@ await build({
     'update-all': path.join(root, 'src', 'update-all.ts'),
     delivery: path.join(root, 'src', 'delivery.ts'),
     sidecar: path.join(root, 'src', 'sidecar.ts'),
+    // The detached host start_agent spawns, next to the server so plugin installs need no CLI.
+    agent: path.join(root, 'src', 'agent-main.ts'),
+    // The Grok Bot host and its send/peers commands, for the same reason.
+    grokbot: path.join(root, 'src', 'grokbot-main.ts'),
   },
   outdir: path.join(pluginDir, 'dist'),
   outExtension: { '.js': '.mjs' },

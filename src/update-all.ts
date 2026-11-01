@@ -2,8 +2,11 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { updateGlobalCli } from './cli-self-update.ts';
 import { agentLabel } from './core/agents.ts';
+import { trustTelepathyCodexHooks } from './core/codex-hooks.ts';
 import { installsInScope, isNewer, type Install, isOpencodeNpmInstall, outsideIsolatedHome } from './core/installs.ts';
+import { installKimiPlugin } from './core/kimi-plugin.ts';
 import { configuredEnv } from './core/paths.ts';
 import { inTestSandbox, sandboxSpawnBlock } from './core/sandbox-launch.ts';
 import { cachedGithubVersion, latestGithubVersion } from './version-check.ts';
@@ -23,10 +26,16 @@ interface Step {
 }
 
 const REPO = 'https://github.com/Winterrks/telepathy';
+const OPENCODE_SPEC = `telepathy@git+${REPO}.git`;
 const STEP_TIMEOUT_MS = 180_000;
 
-/** The commands that update one agent's copy, or `cache` for agents that reinstall from a cleared package cache. */
-function stepsFor(install: Install): Step[] | 'cache' {
+type Plan = Step[] | 'cache' | 'opencode-npm' | 'kimi';
+
+/**
+ * The commands that update one agent's copy; `cache` for agents that reinstall from a cleared package cache;
+ * `opencode-npm` for OpenCode 2's package folder; `kimi` for Kimi Code's managed copy.
+ */
+function stepsFor(install: Install): Plan {
   const marketplace = install.marketplace ?? 'telepathy';
   switch (install.agent) {
     case 'claude':
@@ -45,8 +54,10 @@ function stepsFor(install: Install): Step[] | 'cache' {
     case 'antigravity':
       return [{ cmd: 'agy', args: ['plugin', 'install', `${REPO}/tree/main/antigravity`] }];
     case 'opencode':
-      // OpenCode 2 updates package plugins itself; 1.x reinstalls from a cleared cache.
-      return isOpencodeNpmInstall(install) ? [{ cmd: 'opencode', args: ['plugin', 'update', `telepathy@git+${REPO}.git`] }] : 'cache';
+      // `opencode plugin update` (2.2) does not see a git spec ("Plugin is not configured"); 1.x has no command.
+      return isOpencodeNpmInstall(install) ? 'opencode-npm' : 'cache';
+    case 'kimi':
+      return 'kimi';
     default:
       return 'cache';
   }
@@ -103,6 +114,63 @@ async function refreshPackageCache(install: Install): Promise<{ ok: boolean; out
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 
+/**
+ * OpenCode 2 keeps a git plugin in `npm/<target folder>/<install time>/`. With that folder gone, `opencode plugin add`
+ * fetches main again even though the config already lists the spec.
+ */
+async function refreshOpencodeNpm(install: Install): Promise<{ ok: boolean; output: string }> {
+  const opencodeCache = path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), '.cache'), 'opencode');
+  const npm = path.join(opencodeCache, 'npm');
+  const entry = path.join(npm, path.relative(npm, install.dir).split(path.sep)[0] ?? '');
+  const aside = path.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs.renameSync(entry, aside);
+  const result = await runHarnessCommand({ cmd: 'opencode', args: ['plugin', 'add', OPENCODE_SPEC] });
+  const reinstalled = installsInScope().find((i) => i.agent === 'opencode' && isOpencodeNpmInstall(i));
+  if (reinstalled) {
+    fs.rmSync(aside, { recursive: true, force: true });
+    return { ok: true, output: result.output };
+  }
+  fs.rmSync(entry, { recursive: true, force: true });
+  fs.renameSync(aside, entry);
+  return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
+}
+
+/** Updates one agent's copy with that agent's own mechanism. */
+export async function updateInstall(install: Install): Promise<{ ok: boolean; output: string }> {
+  const steps = stepsFor(install);
+  if (steps === 'cache') return refreshPackageCache(install);
+  if (steps === 'opencode-npm') return refreshOpencodeNpm(install);
+  if (steps === 'kimi') return installKimiPlugin();
+  let result = { ok: true, output: '' };
+  for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
+  return result;
+}
+
+/** How `updateInstall` would update this copy, for `--dry-run`. */
+export function describeUpdate(install: Install): string {
+  const steps = stepsFor(install);
+  if (steps === 'cache') return `clear its package cache and run \`${install.agent} debug config\` to reinstall`;
+  if (steps === 'opencode-npm') return `move its package folder aside and run \`opencode plugin add ${OPENCODE_SPEC}\` to reinstall`;
+  if (steps === 'kimi') return 'download the latest release into ~/.kimi-code/plugins/managed/telepathy, as `/plugins install` does';
+  return steps.map((s) => `\`${[s.cmd, ...s.args].join(' ')}\``).join(', then ');
+}
+
+/**
+ * After telepathy updates Codex's copy, its hooks show as changed and stop running until someone approves them
+ * in `/hooks` again. The user approved an earlier version, so those (and only those) are approved again.
+ */
+export async function retrustChangedCodexHooks(say: (line: string) => void): Promise<boolean> {
+  const result = await trustTelepathyCodexHooks(['modified']);
+  if (result.trusted.length) say(`Codex: approved telepathy's ${result.trusted.length} updated hooks again.`);
+  const untrusted = result.left.filter((hook) => hook.trustStatus === 'untrusted').length;
+  if (untrusted) say(`Codex: ${untrusted} telepathy hooks were never approved. Open /hooks in Codex, or run \`telepathy setup\`.`);
+  if (result.error) {
+    say(`Codex: could not check telepathy's hooks (${result.error}). If /hooks shows them changed, approve them there.`);
+    return false;
+  }
+  return true;
+}
+
 const lastLine = (text: string) =>
   text
     .split('\n')
@@ -117,10 +185,12 @@ export interface UpdateAllOptions {
    * Unset, the script prints exactly as `node update-all.mjs` always has.
    */
   log?: (line: string) => void;
+  /** Also update a global npm install of the CLI. Default true. Auto-update does that step itself. */
+  cli?: boolean;
 }
 
 /** GitHub's version when we can see it. A forced `TELEPATHY_LATEST_VERSION` is not cached. */
-async function latestKnown(): Promise<string | undefined> {
+export async function latestKnown(): Promise<string | undefined> {
   if (process.env.TELEPATHY_LATEST_VERSION?.trim()) return process.env.TELEPATHY_LATEST_VERSION.trim();
   try {
     return await latestGithubVersion();
@@ -137,9 +207,15 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   const log = options.log;
   const say = (line: string) => (log ? log(line) : console.log(line));
   const before = installsInScope();
+  const cliStep = async (): Promise<boolean> => {
+    if (options.cli === false) return true;
+    const cli = await updateGlobalCli({ dryRun });
+    if (cli) say(cli.line);
+    return cli?.ok ?? true;
+  };
   if (!before.length) {
     say('No agent on this machine has telepathy installed.');
-    return 0;
+    return (await cliStep()) ? 0 : 1;
   }
   const latest = await latestKnown();
   say(`telepathy is installed in: ${before.map((i) => `${agentLabel(i.agent)} ${i.version}`).join(', ')}.`);
@@ -149,14 +225,9 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
         say(`- ${agentLabel(install.agent)}: already current`);
         continue;
       }
-      const steps = stepsFor(install);
-      const how =
-        steps === 'cache'
-          ? `clear its package cache and run \`${install.agent} debug config\` to reinstall`
-          : steps.map((s) => `\`${[s.cmd, ...s.args].join(' ')}\``).join(', then ');
-      say(`- ${agentLabel(install.agent)}: ${how}`);
+      say(`- ${agentLabel(install.agent)}: ${describeUpdate(install)}`);
     }
-    return 0;
+    return (await cliStep()) ? 0 : 1;
   }
 
   const failures: string[] = [];
@@ -167,10 +238,7 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
     }
     if (log) log(`Updating ${agentLabel(install.agent)}…`);
     else process.stdout.write(`Updating ${agentLabel(install.agent)}… `);
-    const steps = stepsFor(install);
-    let result = { ok: true, output: '' };
-    if (steps === 'cache') result = await refreshPackageCache(install);
-    else for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
+    const result = await updateInstall(install);
     if (result.ok) say('done');
     else {
       say(`failed: ${lastLine(result.output)}`);
@@ -193,11 +261,15 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
         'the folder their hooks run from.',
     );
   }
+  const codexBefore = before.find((i) => i.agent === 'codex');
+  const codexAfter = after.find((i) => i.agent === 'codex');
+  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  const cliOk = await cliStep();
   if (failures.length) {
     say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
     return 1;
   }
-  return 0;
+  return cliOk ? 0 : 1;
 }
 
 /** True when this file is the process entry (`node update-all.mjs`), not a bundled import. */

@@ -4,6 +4,7 @@ import { sendMessage } from './deliver.ts';
 import { formatPeerList } from './listing.ts';
 import { claimInbox, formatForReading, type Message, readArchived, recentArchived } from './messages.ts';
 import { listPeers, type Peer } from './peers.ts';
+import { startableHarnesses } from '../agent/tools.ts';
 
 /**
  * Telepathy tools, shared by the MCP server and by in-process plugins (OpenCode, Kilo Code) that register
@@ -44,15 +45,15 @@ export const TOOLS = {
   list_peers: {
     title: 'List reachable agent sessions',
     description:
-      'List the coding-agent sessions on this machine (Claude Code, Codex, Antigravity…) that you can message with send_message, with their address, [ref] and working directory.',
+      'List the coding-agent sessions on this machine (Claude Code, Codex, Antigravity…) that you can message with send_message, with their address, [ref] and working directory. With the telepathy bridge running, sessions on your other devices are listed too, with addresses ending in @<device>.',
     args: {},
   },
   send_message: {
     title: 'Message another agent session',
     description:
-      "Message another coding-agent session on this machine (see list_peers). It waits until the recipient's transcript shows the message, and it succeeds only then. It doesn't share your context, so make the message self-contained. For a session that is not Claude Code, use this tool rather than SendMessage.",
+      "Message another coding-agent session on this machine or on another device (see list_peers). It waits until the recipient's transcript shows the message, and it succeeds only then. It doesn't share your context, so make the message self-contained. For a session that is not Claude Code, use this tool rather than SendMessage.",
     args: {
-      to: z.string().describe('Recipient address like "codex:fix-auth", or its [ref] like "codex-4242", from list_peers'),
+      to: z.string().describe('Recipient address like "codex:fix-auth" ("codex:fix-auth@laptop" on another device), or its [ref] like "codex-4242", from list_peers'),
       message: z.string().describe('The message text'),
     },
   },
@@ -64,6 +65,42 @@ export const TOOLS = {
     args: {
       id: z.string().optional().describe('A message id such as "m-0mfx3k2a1-4f2a9c"'),
       limit: z.number().int().min(1).max(50).optional().describe('How many recent messages to show when none are new (default 3)'),
+    },
+  },
+  start_agent: {
+    title: 'Start an agent session',
+    description:
+      "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot…) on this machine as your subagent, in its harness's ACP mode. " +
+      "It works in the background with telepathy's tools and returns at once with its address and transcript path. " +
+      'Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. ' +
+      'Continue it with send_message to its address; stop it with stop_agent when you no longer need it. ' +
+      "It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission.",
+    args: {
+      harness: z.enum(startableHarnesses() as [string, ...string[]]).describe('Which coding agent to start'),
+      description: z.string().describe('A short (3-5 word) description of what it is for; also its name unless name is set'),
+      prompt: z.string().describe('The task. It has none of your context, so make it self-contained.'),
+      name: z.string().optional().describe('Its address name, as in "codex:<name>". Defaults to the description'),
+      model: z.string().optional().describe('A model the harness offers, by id or a unique part of it (e.g. "opus", "gpt-5.5")'),
+      effort: z.string().optional().describe('Reasoning effort, as the harness names it (low, medium, high, xhigh, max)'),
+      cwd: z.string().optional().describe('Folder to work in. Defaults to yours'),
+      isolation: z.enum(['worktree']).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops'),
+    },
+  },
+  stop_agent: {
+    title: 'Stop an agent session',
+    description: 'Stop an agent this session started with start_agent. Its transcript stays.',
+    args: {
+      name: z.string().describe('Its address (e.g. "codex:fix-auth"), [ref], or name'),
+    },
+  },
+  answer_permission: {
+    title: 'Answer an agent permission request',
+    description:
+      "Answer a permission request from an agent this session started. Ask your user first: it is their decision, not yours.",
+    args: {
+      agent: z.string().describe('The agent\'s address, as in the request'),
+      request: z.string().describe('The request id, as in the request'),
+      allow: z.boolean().describe('true to allow, false to deny'),
     },
   },
   wait_for_messages: {

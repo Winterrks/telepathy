@@ -4,12 +4,14 @@ import path from 'node:path';
 import { agentSpec } from './agents.ts';
 import { claudeSocketArmed, crossSessionInbound, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
+import { remoteTarget, sendRemote } from '../bridge/remote.ts';
 import {
   archiveMessage,
   formatAsUserTurn,
   MAX_MESSAGE_CHARS,
   type Message,
   newMessageId,
+  type Party,
   partyOf,
   writeToInbox,
 } from './messages.ts';
@@ -61,7 +63,7 @@ interface SentEntry {
 
 const sentLogFile = (selfId: string) => path.join(peerDir(selfId), 'sent-log.json');
 
-function checkRate(selfId: string, toId: string, body: string): string | undefined {
+export function checkRate(selfId: string, toId: string, body: string): string | undefined {
   const now = Date.now();
   const log = (readJson<SentEntry[]>(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   const hash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 16);
@@ -75,7 +77,7 @@ function checkRate(selfId: string, toId: string, body: string): string | undefin
   return undefined;
 }
 
-function recordSent(selfId: string, toId: string, body: string): void {
+export function recordSent(selfId: string, toId: string, body: string): void {
   const now = Date.now();
   const log = (readJson<SentEntry[]>(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
   log.push({ to: toId, hash: crypto.createHash('sha256').update(body).digest('hex').slice(0, 16), at: now });
@@ -84,43 +86,70 @@ function recordSent(selfId: string, toId: string, body: string): void {
 
 const stillPending = (peerId: string, messageId: string) => fs.existsSync(path.join(inboxDir(peerId), `${messageId}.json`));
 
-/** Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook. */
+/** Why `body` cannot be sent at all, before any recipient is looked up. */
+export function bodyProblem(body: string): string | undefined {
+  if (!body.trim()) return 'Message is empty.';
+  if (body.length > MAX_MESSAGE_CHARS) {
+    return `Message is ${body.length} characters; the limit is ${MAX_MESSAGE_CHARS}. Write the content to a file and send its path instead.`;
+  }
+  return undefined;
+}
+
+/**
+ * Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook.
+ * An address on another device (`codex:api@laptop`) goes through the bridge; the rest is delivered here.
+ */
 export async function sendMessage(self: Peer, to: string, body: string): Promise<SendResult> {
   const ownsClock = beginToolCall();
   try {
-  if (!body.trim()) return { ok: false, error: 'Message is empty.' };
-  if (body.length > MAX_MESSAGE_CHARS) {
-    return {
-      ok: false,
-      error: `Message is ${body.length} characters; the limit is ${MAX_MESSAGE_CHARS}. Write the content to a file and send its path instead.`,
-    };
+    const problem = bodyProblem(body);
+    if (problem) return { ok: false, error: problem };
+    const remote = remoteTarget(to);
+    if (remote) return await sendRemote(self, remote, body);
+    return await deliverLocal(partyOf(self), to, body, self);
+  } finally {
+    if (ownsClock) endToolCall();
   }
+}
 
-  const peers = listPeers().filter((p) => p.id !== self.id);
+/**
+ * One message to a session on this machine, under the confirm rules. `self` is the local sender, which is
+ * left out of the recipients and rate-limited. A message a paired device relayed has no local sender: its
+ * device already applied the loop guard.
+ */
+export async function deliverLocal(
+  from: Party,
+  to: string,
+  body: string,
+  self?: Peer,
+  extra: Pick<Message, 'kind' | 'transcript'> = {},
+): Promise<SendResult> {
+  const peers = listPeers().filter((p) => p.id !== self?.id);
   let resolved = resolvePeer(to, peers);
   if ('error' in resolved) {
-    const selfMatch = resolvePeer(to, [self]);
-    if ('peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
+    const selfMatch = self ? resolvePeer(to, [self]) : undefined;
+    if (selfMatch && 'peer' in selfMatch) return { ok: false, error: `"${to}" is this session itself.` };
     // Two live peers already answered. An exited session in the keep window must not replace that
     // with "offline" for a different process that used to have the same name.
     if (/ (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) return { ok: false, error: resolved.error };
     // A session that exited in the keep window is not listed. Naming it is what makes the offline failure
     // specific. The inbox is not written.
-    const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self.id));
+    const offline = resolvePeer(to, keptPeers().filter((p) => p.id !== self?.id));
     if ('peer' in offline) resolved = offline;
     else return { ok: false, error: resolved.error };
   }
   const recipient = resolved.peer;
 
-  const limited = checkRate(self.id, recipient.id, body);
+  const limited = self ? checkRate(self.id, recipient.id, body) : undefined;
   if (limited) return { ok: false, error: limited };
 
   const plan = confirmWindow();
   const message: Message = {
     id: newMessageId(),
-    from: partyOf(self),
+    from,
     to: partyOf(recipient),
     body,
+    ...extra,
     sentAt: new Date().toISOString(),
     deliverBy: plan.deadline ?? Date.now() + plan.abort + plan.grace,
   };
@@ -154,12 +183,12 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
 
   const delivery = await routeDelivery(recipient, message);
   if (!confirmWaitEnabled()) {
-    recordSent(self.id, recipient.id, body);
+    if (self) recordSent(self.id, recipient.id, body);
     return { ok: true, message, recipient, status: delivery.status, delivery: delivery.report };
   }
   const proof = await confirmDelivery(recipient, message, delivery.status);
   if (!proof.confirmed) return { ok: false, error: proof.status };
-  recordSent(self.id, recipient.id, body);
+  if (self) recordSent(self.id, recipient.id, body);
   return {
     ok: true,
     message,
@@ -167,9 +196,6 @@ export async function sendMessage(self: Peer, to: string, body: string): Promise
     status: proof.status,
     delivery: { ...delivery.report, confirmed: true },
   };
-  } finally {
-    if (ownsClock) endToolCall();
-  }
 }
 
 interface Route {

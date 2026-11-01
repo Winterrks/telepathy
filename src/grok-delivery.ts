@@ -4,6 +4,7 @@ import { debugLog } from './core/debug.ts';
 import { pendingMessages } from './core/messages.ts';
 import { ensureDir, inboxDir } from './core/paths.ts';
 import { readPeer } from './core/peers.ts';
+import { noteTag } from './core/tags.ts';
 
 /** Peek-only inbox. Subscribers are told when it changes; reading it does not claim. */
 export const INBOX_URI = 'telepathy://inbox';
@@ -67,7 +68,10 @@ export function attachGrokDelivery(server: McpServer, currentId: () => string): 
     const fresh = pending.filter((m) => !announced.has(m.id));
     if (!fresh.length) return;
     for (const m of fresh) announced.add(m.id);
-    const note = `[telepathy] ${fresh.length} new message(s) waiting (${fresh.map((m) => m.id).join(', ')}). Call wait_for_messages to claim them.`;
+    const note = noteTag(
+      'inbox',
+      `${fresh.length} new message(s) waiting (${fresh.map((m) => m.id).join(', ')}). Call wait_for_messages to claim them.`,
+    );
     debugLog('server', `grok inbox notify ${fresh.map((m) => m.id).join(',')}`);
     if (subscribed.has(INBOX_URI)) {
       try {

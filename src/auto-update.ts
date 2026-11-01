@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { isNewer, installsInScope } from './core/installs.ts';
 import { configuredEnv, ensureDir, readJson, stateDir, writeJsonAtomic } from './core/paths.ts';
 import { isAlive } from './core/proc.ts';
-import { updateAll } from './update-all.ts';
+import { updateGlobalCli } from './cli-self-update.ts';
+import { retrustChangedCodexHooks, updateAll } from './update-all.ts';
 import { latestGithubVersion, rememberGithubVersion } from './version-check.ts';
 
 /**
@@ -149,15 +150,22 @@ export async function runAutoUpdate(): Promise<void> {
     }
     const installs = installsInScope();
     const stale = installs.filter((install) => isNewer(latest, install.version));
-    if (!stale.length) {
-      logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
-      return;
+    if (!stale.length) logAutoUpdate(`current ${latest}; ${installs.length} install(s)`);
+    else {
+      logAutoUpdate(`updating ${stale.map((install) => `${install.agent} ${install.version}`).join(', ')} toward ${latest}`);
+      const lines: string[] = [];
+      const code = await updateAll({ log: (line) => lines.push(line), cli: false });
+      if (lines.length) logAutoUpdate(lines.join('\n'));
+      if (code !== 0) logAutoUpdate(`update exited ${code}`);
     }
-    logAutoUpdate(`updating ${stale.map((install) => `${install.agent} ${install.version}`).join(', ')} toward ${latest}`);
-    const lines: string[] = [];
-    const code = await updateAll({ log: (line) => lines.push(line) });
-    if (lines.length) logAutoUpdate(lines.join('\n'));
-    if (code !== 0) logAutoUpdate(`update exited ${code}`);
+    // Codex's own marketplace upgrade changes the plugin too. updateAll already did this when it updated Codex.
+    if (installs.some((install) => install.agent === 'codex') && !stale.some((install) => install.agent === 'codex')) {
+      const lines: string[] = [];
+      await retrustChangedCodexHooks((line) => lines.push(line));
+      if (lines.length) logAutoUpdate(lines.join('\n'));
+    }
+    const cli = await updateGlobalCli();
+    if (cli) logAutoUpdate(cli.line);
   } catch (err) {
     logAutoUpdate(`failed: ${(err as Error).message}`);
   } finally {

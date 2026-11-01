@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Telepathy for your coding agents: Claude Code, Codex, OpenCode, Copilot CLI, Cursor, Grok, Devin, Antigravity, Kimi Code, Qwen Code and Kilo Code sessions on one machine message each other.",
   "private": true,
   "type": "module",
@@ -47,8 +47,10 @@
   "devDependencies": {
     "@modelcontextprotocol/client": "^2.1.0",
     "@modelcontextprotocol/server": "^2.1.0",
+    "@types/multicast-dns": "^7.2.4",
     "@types/node": "^26.6.2",
     "esbuild": "^0.28.2",
+    "multicast-dns": "^7.2.5",
     "typescript": "^7.0.2",
     "zod": "^4.2.0"
   }

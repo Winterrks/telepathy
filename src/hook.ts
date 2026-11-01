@@ -11,6 +11,8 @@ import { unrefWakeTimers } from './core/wake.ts';
 import { guideText } from './core/guide.ts';
 import { listAgentsRow } from './core/listing.ts';
 import { claimInbox, formatForContext } from './core/messages.ts';
+import { isRemoteAddress, remoteListings } from './bridge/remote.ts';
+import { noteTag } from './core/tags.ts';
 import { peerDir, readJson, writeJsonAtomic } from './core/paths.ts';
 import { AGENT_ALTERNATION } from './core/agents.ts';
 import {
@@ -19,6 +21,7 @@ import {
   listPeers,
   markToolHook,
   peerId,
+  peerRef,
   readPeer,
   readSession,
   isDeliveryOwner,
@@ -44,7 +47,7 @@ import { antigravitySurface, expandHomePath, type AntigravitySurface } from './c
  *   turn-end        when a turn ends: keep going with pending messages instead of stopping
  *   files           after a tool call (Claude Code): note when it read or edited files another session is editing
  *   status waiting  a permission prompt is waiting for the user (Codex PermissionRequest, Gemini Notification)
- *   list-agents, send-message   Claude Code's ListAgents and SendMessage
+ *   list-agents, send-message   Claude Code's ListAgents and SendMessage; send-message also takes Qwen's send_message
  * Reads the hook's JSON input from stdin; prints output only when there is something to say.
  */
 
@@ -285,10 +288,11 @@ function waiterReminder(agent: Agent, agentPid: number): string | undefined {
   // A stream-json session with an inbox socket is woken by the post. The Bash waiter is for a host that has neither.
   if (agent !== 'claude' || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return undefined;
   const waiter = `node "${path.join(path.dirname(fileURLToPath(import.meta.url)), 'monitor.mjs')}" --agent claude --once`;
-  return (
-    "[telepathy] This session can't run telepathy's monitor, so messages from other agent sessions can't wake it " +
-    `yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits ` +
-    'when a message arrives, which wakes you; after handling the message, start it again the same way.'
+  return noteTag(
+    'wake',
+    "This session can't run telepathy's monitor, so messages from other agent sessions can't wake it " +
+      `yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits ` +
+      'when a message arrives, which wakes you; after handling the message, start it again the same way.',
   );
 }
 
@@ -332,8 +336,14 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   // A prompt or a tool call means a turn is running; for Codex it also ends a permission prompt that was answered.
   if (statusFromHooks(agent) || agent === 'codex') writeStatus(selfId, 'busy');
   const overlap = touchedFilesNote(agent, agentPid, input);
+  // Qwen's list_agents shows its own sessions. A hook can't rewrite that result, so the rest follows as context.
+  const listing =
+    agent === 'qwen' && /PostToolUse/i.test(event) && input.tool_name === NATIVE_TOOLS.qwen?.list
+      ? nativeListingBlock('qwen', selfId)
+      : undefined;
   if (hasListener(selfId) || socketOwnsDelivery(selfId)) {
-    if (overlap) reply(shape.context(overlap, event));
+    const parts = [listing ?? '', overlap ?? ''].filter(Boolean);
+    if (parts.length) reply(shape.context(parts.join('\n\n'), event));
     return;
   }
   if (agent === 'codex') {
@@ -346,7 +356,7 @@ async function inbox(agent: Agent, agentPid: number, input: HookInput, event: st
   if (hostInjected?.size) rememberHostPrompt(selfId, hostInjected);
   const messages = claimInbox(selfId, hostInjected);
   if (messages.length) debugLog('hook', `${agent} ${event}: delivered ${messages.map((m) => m.id).join(', ')}`);
-  const parts = [messages.length ? formatForContext(messages) : '', overlap ?? '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
+  const parts = [listing ?? '', messages.length ? formatForContext(messages) : '', overlap ?? '', waiterReminder(agent, agentPid) ?? ''].filter(Boolean);
   if (parts.length) reply(shape.context(parts.join('\n\n'), event));
 }
 
@@ -394,19 +404,51 @@ function waiting(agent: Agent, agentPid: number, input: HookInput): void {
   writeStatus(idOf(agent, agentPid, input), 'waiting');
 }
 
+/** What each harness calls its own listing and send tools, and which sessions that listing already shows. */
+const NATIVE_TOOLS: Partial<Record<Agent, { list: string; send: string }>> = {
+  claude: { list: 'ListAgents', send: 'SendMessage' },
+  qwen: { list: 'list_agents', send: 'send_message' },
+};
+
+/**
+ * The sessions a harness's own agent listing does not show: other agents' sessions here, and every session on
+ * another device. Claude's ListAgents and Qwen's list_agents already list their own harness's sessions here.
+ */
+function nativeListingBlock(agent: Agent, selfId: string): string | undefined {
+  const tools = NATIVE_TOOLS[agent];
+  if (!tools) return undefined;
+  const others = listPeers().filter((p) => p.id !== selfId && p.agent !== agent);
+  const remote = remoteListings().filter((listing) => listing.online && listing.peers.length);
+  if (!others.length && !remote.length) return undefined;
+  const sections: string[] = [];
+  if (others.length) {
+    sections.push(
+      [
+        `Other agents' sessions (${others.length}), reachable through the telepathy plugin with send_message ` +
+          `(${tools.send} only reaches ${agentLabel(agent)} sessions; a ${tools.send} to one of these is delivered by telepathy, stopped, and shows an error):`,
+        ...others.map((p) => listAgentsRow(p)),
+      ].join('\n'),
+    );
+  }
+  for (const { device, peers } of remote) {
+    sections.push(
+      [
+        `Sessions on device ${device.slug} (${peers.length}), reachable through the telepathy bridge with send_message:`,
+        ...peers.map(({ peer, status }) => `  ${peerRef(peer)}  ·  interactive${status ? `  ·  ${status}` : ''}`),
+      ].join('\n'),
+    );
+  }
+  return sections.join('\n\n');
+}
+
 /**
  * Claude PostToolUse on ListAgents: the built-in listing only shows Claude sessions, so add the other
  * agents' sessions to it, as rows in ListAgents' own shape. ListAgents returns `{ listing: string }`; if that
  * ever changes, a rewrite would be ignored, so fall back to a note next to the result.
  */
 function listAgents(agentPid: number, input: HookInput): void {
-  const selfId = peerId('claude', agentPid);
-  const others = listPeers().filter((p) => p.id !== selfId && p.agent !== 'claude');
-  if (!others.length) return;
-  const heading =
-    `Other agents' sessions (${others.length}), reachable through the telepathy plugin with send_message ` +
-    '(SendMessage only reaches Claude sessions; a SendMessage to one of these is stopped and shows an error):';
-  const block = [heading, ...others.map((p) => listAgentsRow(p))].join('\n');
+  const block = nativeListingBlock('claude', peerId('claude', agentPid));
+  if (!block) return;
   const response = input.tool_response as { listing?: unknown } | undefined;
   if (typeof response?.listing === 'string') {
     const listing = `${response.listing.trimEnd()}\n\n${block}`;
@@ -416,33 +458,46 @@ function listAgents(agentPid: number, input: HookInput): void {
   print({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } });
 }
 
-const OTHER_AGENTS = AGENT_ALTERNATION.split('|')
-  .filter((a) => a !== 'claude')
-  .join('|');
-const OTHER_PREFIX_RE = new RegExp(`^\\s*["'\`]?(${OTHER_AGENTS}):`, 'i');
-const OTHER_BRACKET_REF_RE = new RegExp(`\\[\\s*(${OTHER_AGENTS})-[a-z0-9][a-z0-9_-]*\\s*\\]\\s*$`, 'i');
-const OTHER_REF_RE = new RegExp(`^(${OTHER_AGENTS})-[a-z0-9][a-z0-9_-]*$`);
-
-/**
- * Only addresses that can't name a Claude session count as ours: another agent's namespace (`codex:`), a
- * `[codex-<pid>]` ref (Claude's refs are hex), or the exact ref of a live session of another agent. A bare
- * name, or one merely starting with "codex-", may be a Claude session (Claude names sessions after their
- * folder), so it is left to SendMessage.
- */
-function addressedToOtherAgent(to: string): boolean {
-  if (OTHER_PREFIX_RE.test(to) || OTHER_BRACKET_REF_RE.test(to)) return true;
-  const ref = to.trim().replace(/^["'`]|["'`]$/g, '').toLowerCase();
-  return OTHER_REF_RE.test(ref) && listPeers().some((p) => p.agent !== 'claude' && p.id === ref);
+/** Addresses another harness's sessions can have: `codex:…`, a `[codex-…]` ref, or a live session's exact ref. */
+function otherAgentPatterns(agent: Agent) {
+  const others = AGENT_ALTERNATION.split('|')
+    .filter((a) => a !== agent)
+    .join('|');
+  return {
+    prefix: new RegExp(`^\\s*["'\`]?(${others}):`, 'i'),
+    bracketRef: new RegExp(`\\[\\s*(${others})-[a-z0-9][a-z0-9_-]*\\s*\\]\\s*$`, 'i'),
+    ref: new RegExp(`^(${others})-[a-z0-9][a-z0-9_-]*$`),
+  };
 }
 
 /**
- * Claude PreToolUse on SendMessage: SendMessage only reaches Claude sessions, so a message addressed to
- * another agent's session is delivered here instead, and the SendMessage call is stopped with a reason
- * saying so.
+ * Only addresses that can't name one of the harness's own sessions count as ours: another agent's namespace
+ * (`codex:`), a `[codex-<pid>]` ref (Claude's refs are hex), the exact ref of a live session of another agent,
+ * or a session on another device. A bare name, or one merely starting with "codex-", may be one of the harness's
+ * own sessions (Claude names sessions after their folder), so it is left to the native tool. Qwen's own
+ * destination names never have a `qwen:` prefix, so for Qwen that prefix is ours too.
  */
-async function interceptSendMessage(agentPid: number, input: HookInput): Promise<void> {
+function addressedToOtherAgent(agent: Agent, to: string): boolean {
+  const patterns = otherAgentPatterns(agent);
+  if (patterns.prefix.test(to) || patterns.bracketRef.test(to)) return true;
+  if (agent === 'qwen' && /^\s*["'`]?qwen:/i.test(to)) return true;
+  // A session on another device, the harness's own included, is only reachable through the bridge.
+  if (isRemoteAddress(to)) return true;
+  const ref = to.trim().replace(/^["'`]|["'`]$/g, '').toLowerCase();
+  return patterns.ref.test(ref) && listPeers().some((p) => p.agent !== agent && p.id === ref);
+}
+
+/**
+ * PreToolUse on the harness's own send tool (Claude's SendMessage, Qwen's send_message): it only reaches its
+ * own harness's sessions, so a message addressed to another agent's session is delivered here instead, and the
+ * native call is stopped with a reason saying so. Deny is the only decision that stops it, so it shows as an error.
+ */
+async function interceptSendMessage(agent: Agent, agentPid: number, input: HookInput): Promise<void> {
+  const tools = NATIVE_TOOLS[agent];
+  if (!tools) return;
+  if (typeof input.tool_name === 'string' && input.tool_name !== tools.send) return;
   const to = input.tool_input?.to;
-  if (typeof to !== 'string' || !addressedToOtherAgent(to)) return; // not ours: let SendMessage run normally
+  if (typeof to !== 'string' || !addressedToOtherAgent(agent, to)) return; // not ours: let the native tool run
   const message = typeof input.tool_input?.message === 'string' ? input.tool_input.message : '';
   const deny = (reason: string) =>
     print({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
@@ -451,19 +506,19 @@ async function interceptSendMessage(agentPid: number, input: HookInput): Promise
     deny('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
     return;
   }
-  const fromInput = idOf('claude', agentPid, input);
-  const bound = fromInput !== peerId('claude', agentPid) ? fromInput : (linkedPeerId('claude', agentPid) ?? fromInput);
+  const fromInput = idOf(agent, agentPid, input);
+  const bound = fromInput !== peerId(agent, agentPid) ? fromInput : (linkedPeerId(agent, agentPid) ?? fromInput);
   const ownsClock = beginToolCall();
   let result: Awaited<ReturnType<typeof sendMessage>>;
   try {
-    result = await sendMessage(selfPeer('claude', agentPid, bound), to, message);
+    result = await sendMessage(selfPeer(agent, agentPid, bound), to, message);
   } finally {
     if (ownsClock) endToolCall();
   }
-  debugLog('hook', result.ok ? `SendMessage → ${result.recipient.id}` : `SendMessage failed: ${result.error}`);
+  debugLog('hook', result.ok ? `${tools.send} → ${result.recipient.id}` : `${tools.send} failed: ${result.error}`);
   deny(
     result.ok
-      ? `${result.status} (Sent by telepathy: SendMessage can't reach ${agentLabel(result.recipient.agent)}, so this ` +
+      ? `${result.status} (Sent by telepathy: ${tools.send} can't reach ${agentLabel(result.recipient.agent)}, so this ` +
           "shows as an error. Don't resend.)"
       : `Not delivered: ${result.error}`,
   );
@@ -490,7 +545,7 @@ async function main(): Promise<void> {
   else if (action === 'files') files(agent, agentPid, input);
   else if (action === 'status' && event === 'waiting') waiting(agent, agentPid, input);
   else if (action === 'list-agents' && agent === 'claude') listAgents(agentPid, input);
-  else if (action === 'send-message' && agent === 'claude') await interceptSendMessage(agentPid, input);
+  else if (action === 'send-message') await interceptSendMessage(agent, agentPid, input);
   else throw new Error(`unknown hook action ${JSON.stringify(action)} for ${agent}`);
 }
 

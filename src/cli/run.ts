@@ -11,11 +11,13 @@ import { runHeadless } from '../headless/run.ts';
 import { writeStatus } from '../core/status.ts';
 import { claimPluginSession, clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump, type HostedPeer } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
-import { acpCommand, canonicalRunAgent, harnessByAgent, harnesses, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
+import { acpCommand, canonicalRunAgent, defaultRunMode, harnessByAgent, harnesses, headlessPlane, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
 
 export interface RunArgs {
   acp: boolean;
+  /** Exec the vendor TUI instead of the ACP host. */
+  tui: boolean;
   headless: boolean;
   list: boolean;
   /** Install or repair the plugin before starting. Unset, `run` does not touch global configs. */
@@ -29,6 +31,7 @@ export interface RunArgs {
 /** Flags that belong to telepathy stay in front of the agent. Later arguments are the harness's. */
 export function parseRunArgs(argv: string[]): RunArgs {
   let acp = false;
+  let tui = false;
   let headless = false;
   let list = false;
   let install = false;
@@ -42,6 +45,10 @@ export function parseRunArgs(argv: string[]): RunArgs {
     if (arg === '--') continue;
     if (beforeAgent && arg === '--acp') {
       acp = true;
+      continue;
+    }
+    if (beforeAgent && arg === '--tui') {
+      tui = true;
       continue;
     }
     if (beforeAgent && arg === '--headless') {
@@ -65,7 +72,7 @@ export function parseRunArgs(argv: string[]): RunArgs {
     }
     positionals.push(arg);
   }
-  return { acp, headless, list, install, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
+  return { acp, tui, headless, list, install, name, cwd, agent: positionals[0], userArgs: positionals.slice(1) };
 }
 
 async function prepare(agent: Harness['agent'], install: boolean): Promise<boolean> {
@@ -109,7 +116,16 @@ export async function runCommand(argv: string[]): Promise<number> {
   }
   const harness = harnessByAgent(agent);
   if (!harness) return 1;
-  if (harness.agent === 'antigravity' && (parsed.headless || parsed.acp)) {
+  if (parsed.tui && (parsed.acp || parsed.headless)) {
+    console.error(`telepathy: --tui runs the ${agentLabel(agent)} CLI itself; it cannot be combined with ${parsed.acp ? '--acp' : '--headless'}.`);
+    return 1;
+  }
+  if (parsed.acp && !harness.acp) {
+    console.error(`telepathy: ${harness.agent} has no ACP launcher. \`telepathy run --tui ${harness.agent}\` starts its CLI.`);
+    return 1;
+  }
+  const useAcp = !parsed.headless && !parsed.tui && (parsed.acp || defaultRunMode(harness) === 'acp');
+  if (harness.agent === 'antigravity' && (parsed.headless || useAcp)) {
     const auth = ensureAgyApiKey();
     if (!auth.ok) {
       console.error(auth.warning);
@@ -121,7 +137,7 @@ export async function runCommand(argv: string[]): Promise<number> {
   const name = parsed.name;
 
   if (parsed.headless) {
-    const plane = parsed.acp ? 'acp' : harness.headless;
+    const plane = headlessPlane(harness, parsed.acp);
     if (!plane) {
       const supported = harnesses()
         .filter((item) => item.headless)
@@ -136,7 +152,7 @@ export async function runCommand(argv: string[]): Promise<number> {
         return 1;
       }
       const acpBin = resolvedAcpBin(harness.acp);
-      if (!acpBin) return missingAcp(harness.acp);
+      if (!acpBin) return missingAcp(harness);
       const peerName = name ?? `${harness.agent}-headless`;
       return runHeadless({
         agent: harness.agent,
@@ -165,18 +181,9 @@ export async function runCommand(argv: string[]): Promise<number> {
     });
   }
 
-  if (parsed.acp || harness.defaultMode === 'acp') {
-    if (!harness.acp) {
-      console.error(`telepathy: ${harness.agent} has no ACP launcher. \`telepathy run ${harness.agent}\` starts its CLI.`);
-      return 1;
-    }
+  if (useAcp && harness.acp) {
     const acpBin = resolvedAcpBin(harness.acp);
-    if (!acpBin) {
-      return missing(
-        acpCommand(harness.acp),
-        harness.acp.adapter ? 'It is an optional adapter. The native CLI does not speak ACP.' : 'Install the CLI and try again.',
-      );
-    }
+    if (!acpBin) return missingAcp(harness);
     return runInteractiveAcp(harness, acpBin, parsed.userArgs, cwd, name);
   }
 
@@ -186,8 +193,16 @@ export async function runCommand(argv: string[]): Promise<number> {
   return execPassthrough(bin, parsed.userArgs, cwd, launchEnv(harness.agent, name));
 }
 
-function missingAcp(acp: AcpLaunch): number {
-  return missing(acpCommand(acp), 'Install it, or run without --acp where a native plane exists.');
+/** `telepathy run` starts the ACP mode. A missing adapter says how to get it, and that `--tui` is the vendor CLI. */
+function missingAcp(harness: Harness): number {
+  const acp = harness.acp as AcpLaunch;
+  const get = acp.installHint
+    ? `${agentLabel(harness.agent)} speaks ACP through that adapter. Install it with \`${acp.installHint}\`.`
+    : acp.adapter
+      ? `${agentLabel(harness.agent)} speaks ACP through that adapter. Install it and try again.`
+      : 'Install the CLI and try again.';
+  const tui = harness.passthroughBin ? ` \`telepathy run --tui ${harness.agent}\` starts the ${agentLabel(harness.agent)} CLI instead.` : '';
+  return missing(acpCommand(acp), get + tui);
 }
 
 /** `telepathy run copilot --resume <id>` (and `-r`). The id is the harness session, not the peer name. */

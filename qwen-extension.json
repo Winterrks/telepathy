@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Telepathy for your coding agents: Qwen Code, Claude Code, Codex, Antigravity, OpenCode and other sessions on this machine message each other.",
   "mcpServers": {
     "telepathy": {
@@ -20,6 +20,18 @@
             "type": "command",
             "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen session-start",
             "timeout": 10000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "send_message",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${extensionPath}/plugin/dist/hook.mjs\" --agent qwen send-message",
+            "timeout": 150000
           }
         ]
       }

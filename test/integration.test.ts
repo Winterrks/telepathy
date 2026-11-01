@@ -86,15 +86,15 @@ describe('telepathy plugin', () => {
   });
   after(() => sb.cleanup());
 
-  test('exposes the same three tools to both agents', async () => {
+  test('exposes the same tools to both agents', async () => {
     for (const agent of ['claude', 'codex'] as const) {
       const client = await connect(agent, spawnAgent().pid);
       const { tools } = await client.listTools();
-      assert.deepEqual(tools.map((t) => t.name).sort(), ['list_peers', 'read_messages', 'send_message']);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'start_agent', 'stop_agent']);
       assert.equal(client.getServerCapabilities()?.resources, undefined);
       assert.equal(client.getServerCapabilities()?.logging, undefined);
       const instructions = client.getInstructions() ?? '';
-      assert.match(instructions, /come from another AI agent, not your user/);
+      assert.match(instructions, /are from another AI agent, not your user/);
       assert.match(instructions, /telepathy:using-telepathy skill/);
       if (agent === 'claude') assert.match(instructions, /ListAgents/);
       else assert.doesNotMatch(instructions, /ListAgents|SendMessage/);
@@ -121,9 +121,9 @@ describe('telepathy plugin', () => {
     assert.equal(queued.argv[1], '--thread=thread-abc');
     assert.equal(queued.codexHome, sb.codexHome);
     const text = queued.argv[2].replace(/^--message=/, '');
-    assert.match(text, /^\[telepathy\] Message from Claude Code session claude:api \[claude-claude-s1\]/);
+    assert.match(text, /^<telepathy-peer-message [^>]*>\nMessage from Claude Code session claude:api \[claude-claude-s1\]/);
     assert.match(text, /to: "claude:api"/);
-    assert.ok(text.endsWith('Schema migration finished.\n--flags stay literal'));
+    assert.ok(text.endsWith('Schema migration finished.\n--flags stay literal\n</telepathy-peer-message>'));
   });
 
   test('read_messages in Codex takes unread messages back out of its queue, and skips ones it already got as a turn', async () => {
@@ -421,7 +421,7 @@ describe('telepathy plugin', () => {
     const afterRestart = spawnAgent();
     runHook(sb, 'codex', afterRestart.pid, 'session-start', { session_id: 'thread-r', cwd: '/w/cx' });
     const res = runHook(sb, 'codex', afterRestart.pid, 'inbox', { session_id: 'thread-r' }, 'UserPromptSubmit');
-    assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /while you restart$/);
+    assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /while you restart\n<\/telepathy-peer-message>$/);
     assert.deepEqual(JSON.parse(fs.readFileSync(`${sb.codexLog}.queue.json`, 'utf8')), []);
   });
 
@@ -458,7 +458,7 @@ describe('telepathy plugin', () => {
       fs.writeFileSync(presence, JSON.stringify({ ...JSON.parse(fs.readFileSync(presence, 'utf8')), version: '99.0.0' }));
       assert.match(
         toolText(await call(codex, 'read_messages')),
-        /\[telepathy setup\] This session runs telepathy \d+\.\d+\.\d+, but another session runs 99\.0\.0, so messages may not reach this session as they should\. Tell your user to update telepathy in this agent and restart this session\.$/,
+        /<telepathy-note kind="setup">This session runs telepathy \d+\.\d+\.\d+, but another session runs 99\.0\.0, so messages may not reach this session as they should\. Tell your user to update telepathy in this agent and restart this session\.<\/telepathy-note>$/,
       );
       fs.writeFileSync(presence, JSON.stringify({ ...JSON.parse(fs.readFileSync(presence, 'utf8')), version: undefined }));
 
@@ -467,10 +467,10 @@ describe('telepathy plugin', () => {
       const qwen = path.join(sb.env.HOME, '.qwen', 'extensions', 'telepathy');
       fs.mkdirSync(qwen, { recursive: true });
       fs.writeFileSync(path.join(qwen, 'qwen-extension.json'), JSON.stringify({ name: 'telepathy', version: '0.1.0' }));
-      const notes = toolText(await call(codex, 'read_messages')).split('\n').filter((l) => l.startsWith('[telepathy setup]'));
+      const notes = toolText(await call(codex, 'read_messages')).split('\n').filter((l) => l.startsWith('<telepathy-note kind="setup">'));
       assert.deepEqual(notes, [
-        `[telepathy setup] This session runs telepathy ${notes[0].match(/runs telepathy ([\d.]+)/)?.[1]}, but 99.1.0 is installed, so messages may not reach this session as they should. Tell your user to restart this session to load the update.`,
-        `[telepathy setup] Some agents have an older telepathy installed than 99.1.0: Qwen Code 0.1.0. Tell your user; with their OK, you can update them all with: node "${path.join(DIST, 'update-all.mjs')}"`,
+        `<telepathy-note kind="setup">This session runs telepathy ${notes[0].match(/runs telepathy ([\d.]+)/)?.[1]}, but 99.1.0 is installed, so messages may not reach this session as they should. Tell your user to restart this session to load the update.</telepathy-note>`,
+        `<telepathy-note kind="setup">Some agents have an older telepathy installed than 99.1.0: Qwen Code 0.1.0. Tell your user; with their OK, you can update them all with: node "${path.join(DIST, 'update-all.mjs')}"</telepathy-note>`,
       ]);
     } finally {
       fs.rmSync(config, { force: true });
@@ -633,7 +633,7 @@ describe('telepathy plugin', () => {
       );
       const [queued] = codexCalls(sb);
       assert.equal(queued.argv[1], '--thread=thread-x');
-      assert.ok(queued.argv[2].endsWith('Please rerun the auth tests.'));
+      assert.ok(queued.argv[2].endsWith('Please rerun the auth tests.\n</telepathy-peer-message>'));
     });
 
     test('SendMessage to anything else is left alone, including Claude sessions named codex-…', () => {
@@ -783,15 +783,15 @@ describe('telepathy plugin', () => {
       assert.match(
         note,
         new RegExp(
-          `^\\[telepathy note\\] Another session, claude:app \\[claude-s\\], edited daemon/server\\.ts \\d+s ago, so it may be working in this area\\. ` +
-            'If you need changes there, consider reaching out to it with send_message\\.$',
+          `^<telepathy-note kind="overlap">Another session, claude:app \\[claude-s\\], edited daemon/server\\.ts \\d+s ago, so it may be working in this area\\. ` +
+            'If you need changes there, consider reaching out to it with send_message\\.</telepathy-note>$',
         ),
       );
       assert.equal(codexPatch(codex.pid, 'daemon/routes.ts').stdout, '', 'the same session and folder is mentioned once');
 
       // Claude reads a file in the folder Codex edited, before editing it: the note says how Claude reaches Codex.
       const read = noteOf(claudeEdit(claudeAgent.pid, 'Read', '/w/app/ui/glass.swift'));
-      assert.match(read, new RegExp(`${named('codex', 'app', 'thread-ui')} \\[codex-thread-ui\\], edited ui/glass\\.swift .*\\. If you need changes there, consider reaching out to it with SendMessage or send_message\\.$`));
+      assert.match(read, new RegExp(`${named('codex', 'app', 'thread-ui')} \\[codex-thread-ui\\], edited ui/glass\\.swift .*\\. If you need changes there, consider reaching out to it with SendMessage or send_message\\.</telepathy-note>$`));
     });
 
     test('edits of a session that ended no longer count; shell commands and odd inputs touch nothing', async () => {
@@ -837,7 +837,7 @@ describe('telepathy plugin', () => {
         const codex = spawnAgent(); // a fresh session each time: a session hears about a folder once
         runHook(sb, 'codex', codex.pid, 'session-start', { session_id: `t-${codex.pid}`, cwd: proj });
         const note = noteOf(codexShell(codex.pid, command));
-        if (noted) assert.match(note, /^\[telepathy note\] Another session, claude:proj \[claude-s\], edited daemon\/server\.ts /, command);
+        if (noted) assert.match(note, /^<telepathy-note kind="overlap">Another session, claude:proj \[claude-s\], edited daemon\/server\.ts /, command);
         else assert.equal(note, '', command);
       }
 
@@ -854,7 +854,7 @@ describe('telepathy plugin', () => {
       const qwen = spawnAgent();
       runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g', cwd: '/w/app' });
       const res = runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g', tool_name: 'read_file', tool_input: { absolute_path: '/w/app/sdk/client.ts' } }, 'AfterTool');
-      assert.match(noteOf(res), new RegExp(`^\\[telepathy note\\] Another session, ${named('copilot', 'app', 'cp')} \\[copilot-cp\\], edited sdk/client\\.ts `));
+      assert.match(noteOf(res), new RegExp(`^<telepathy-note kind="overlap">Another session, ${named('copilot', 'app', 'cp')} \\[copilot-cp\\], edited sdk/client\\.ts `));
     });
   });
 
@@ -888,7 +888,7 @@ describe('telepathy plugin', () => {
     test('registers native tools, and wakes the active session with promptAsync once it is idle', async () => {
       const oc = startOpenCode('/w/ui');
       const ready = await oc.take('ready');
-      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages']);
+      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission']);
       const pid = ready.ready as number;
 
       oc.send({ op: 'chat', sessionID: 'ses_main' });
@@ -911,8 +911,8 @@ describe('telepathy plugin', () => {
       const { prompt } = await oc.take('prompt');
       assert.equal(prompt.path.id, 'ses_main');
       assert.equal(prompt.body.agent, 'build');
-      assert.match(prompt.body.parts[0].text, /^\[telepathy\] Message from Claude Code session claude:sdk/);
-      assert.match(prompt.body.parts[0].text, /new daemon API is in$/);
+      assert.match(prompt.body.parts[0].text, /^<telepathy-peer-message [^>]*>\nMessage from Claude Code session claude:sdk/);
+      assert.match(prompt.body.parts[0].text, /new daemon API is in\n<\/telepathy-peer-message>$/);
     });
 
     test('records the files its tools edit, and adds a note to a tool result that touches another session\'s files', async () => {
@@ -924,12 +924,12 @@ describe('telepathy plugin', () => {
       const claudeAgent = spawnAgent();
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/app' });
       const res = runHook(sb, 'claude', claudeAgent.pid, 'files', { session_id: 's', cwd: '/w/app', tool_name: 'Edit', tool_input: { file_path: '/w/app/ui/glass.swift' } });
-      assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /^\[telepathy note\] Another session, opencode:app-o[0-9a-f]{2} \[opencode-\d+\], edited ui\/glass\.swift /);
+      assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /^<telepathy-note kind="overlap">Another session, opencode:app-o[0-9a-f]{2} \[opencode-\d+\], edited ui\/glass\.swift /);
 
       oc.send({ op: 'run', name: 'read', args: { filePath: 'ui/glass.swift' }, sessionID: 'ses_ui' });
       assert.match(
         (await oc.take('ran')).output,
-        /^ok\n\n\[telepathy note\] Another session, claude:app \[claude-s\], edited ui\/glass\.swift .* telepathy_send_message/,
+        /^ok\n\n<telepathy-note kind="overlap">Another session, claude:app \[claude-s\], edited ui\/glass\.swift .* telepathy_send_message/,
       );
     });
 
@@ -1188,7 +1188,7 @@ describe('telepathy plugin', () => {
     test('each session of the service is a peer of its own, woken through session.prompt', async () => {
       const oc = startService(['/w/api', '/w/web']);
       const ready = await oc.take('ready');
-      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages']);
+      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission']);
       assert.deepEqual(ready.skills, ['using-telepathy']);
       await oc.run({ op: 'prompt', sessionID: 'ses_A', directory: '/w/api' });
       await oc.run({ op: 'prompt', sessionID: 'ses_B', directory: '/w/web' });
@@ -1203,8 +1203,8 @@ describe('telepathy plugin', () => {
       const { prompt } = await oc.take('prompt');
       assert.equal(prompt.sessionID, 'ses_B');
       assert.equal(prompt.delivery, 'steer', 'it starts a turn, or joins the running one');
-      assert.match(prompt.text, /^\[telepathy\] Message from Claude Code session claude:sdk/);
-      assert.match(prompt.text, /the API changed$/);
+      assert.match(prompt.text, /^<telepathy-peer-message [^>]*>\nMessage from Claude Code session claude:sdk/);
+      assert.match(prompt.text, /the API changed\n<\/telepathy-peer-message>$/);
 
       oc.send({ op: 'tool', name: 'telepathy_list_peers', sessionID: 'ses_A', directory: '/w/api' });
       const listed = (await oc.take('tool')).output as string;
@@ -1271,6 +1271,31 @@ describe('telepathy plugin', () => {
       return JSON.parse(res.stdout).hookSpecificOutput.permissionDecisionReason as string;
     };
 
+    test('Qwen\'s own list_agents is followed by the other agents\' sessions, and its send_message reaches them', () => {
+      const qwen = spawnAgent();
+      runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g-q', cwd: '/w/q' });
+      const kimi = spawnAgent();
+      runHook(sb, 'kimi', kimi.pid, 'session-start', { session_id: 'k-q', cwd: '/w/notes' });
+
+      const listed = runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-q', tool_name: 'list_agents', hook_event_name: 'PostToolUse' }, 'PostToolUse');
+      const context: string = JSON.parse(listed.stdout).hookSpecificOutput.additionalContext;
+      assert.match(context, /^Other agents' sessions \(\d+\), reachable through the telepathy plugin with send_message \(send_message only reaches Qwen Code sessions;/);
+      assert.match(context, new RegExp(`\\n  ${named('kimi', 'notes', 'k-q')} \\[kimi-k-q\\]  ·  interactive`));
+      assert.doesNotMatch(context, /\[qwen-/, "Qwen's own listing already has Qwen sessions");
+      assert.equal(runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-q', tool_name: 'read_file' }, 'PostToolUse').stdout, '');
+
+      const send = (toolName: string, to: string) =>
+        runHook(sb, 'qwen', qwen.pid, 'send-message', { session_id: 'g-q', tool_name: toolName, tool_input: { to, message: 'hello from qwen' } }).stdout;
+      const reason: string = JSON.parse(send('send_message', named('kimi', 'notes', 'k-q'))).hookSpecificOutput.permissionDecisionReason;
+      assert.equal(
+        reason,
+        `Message stored for ${named('kimi', 'notes', 'k-q')} [kimi-k-q]. It can't be woken while idle, so it will see it at its next turn. ` +
+          "(Sent by telepathy: send_message can't reach Kimi Code, so this shows as an error. Don't resend.)",
+      );
+      assert.equal(send('send_message', 'researcher'), '', 'a Qwen teammate name is left to Qwen');
+      assert.equal(send('mcp__telepathy__send_message', named('kimi', 'notes', 'k-q')), '', "telepathy's own tool is not intercepted");
+    });
+
     test('Qwen gets messages as context at its next prompt or tool call, once', () => {
       const qwen = spawnAgent();
       runHook(sb, 'qwen', qwen.pid, 'session-start', { session_id: 'g-1', cwd: '/w/docs', hook_event_name: 'SessionStart' });
@@ -1283,9 +1308,9 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-1', hook_event_name: 'AfterTool' }, 'AfterTool');
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.hookEventName, 'AfterTool');
-      assert.match(out.additionalContext, /^\[telepathy\] A new message from another AI agent session \(not your user\)/);
-      assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
-      assert.match(out.additionalContext, /Is the API reference current\?$/);
+      assert.match(out.additionalContext, /^<telepathy-note kind="inbox">A new message from another AI agent session \(not your user\)/);
+      assert.match(out.additionalContext, /<telepathy-peer-message [^>]*>\nMessage from Claude Code session claude:web/);
+      assert.match(out.additionalContext, /Is the API reference current\?\n<\/telepathy-peer-message>$/);
       assert.equal(runHook(sb, 'qwen', qwen.pid, 'inbox', { session_id: 'g-1' }, 'BeforeAgent').stdout, '');
     });
 
@@ -1309,8 +1334,8 @@ describe('telepathy plugin', () => {
       const res = runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h', hook_event_name: 'PostToolUse' }, 'PostToolUse');
       const out = JSON.parse(res.stdout).hookSpecificOutput;
       assert.equal(out.hookEventName, 'PostToolUse');
-      assert.match(out.additionalContext, /\[telepathy\] Message from Claude Code session claude:web/);
-      assert.match(out.additionalContext, /first$/);
+      assert.match(out.additionalContext, /<telepathy-peer-message [^>]*>\nMessage from Claude Code session claude:web/);
+      assert.match(out.additionalContext, /first\n<\/telepathy-peer-message>$/);
       assert.deepEqual(JSON.parse(fs.readFileSync(queueFile, 'utf8')), [], 'no second copy as a turn');
 
       assert.equal(
@@ -1318,7 +1343,7 @@ describe('telepathy plugin', () => {
         `Message delivered to ${ref}. It's in the middle of a turn and gets it after its next tool call, or when the turn ends.${tail}`,
       );
       const prompt = runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h' }, 'UserPromptSubmit');
-      assert.match(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /second$/);
+      assert.match(JSON.parse(prompt.stdout).hookSpecificOutput.additionalContext, /second\n<\/telepathy-peer-message>$/);
       assert.equal(runHook(sb, 'codex', codex.pid, 'inbox', { session_id: 'thread-h' }, 'PostToolUse').stdout, '');
     });
 
@@ -1337,7 +1362,7 @@ describe('telepathy plugin', () => {
         runHook(sb, agent, proc.pid, 'session-start', { session_id: `${agent}-s`, cwd: `/w/${agent}-proj` });
         sendFromClaude(`${agent}:${agent}-proj`, `ping ${agent}`);
         const res = runHook(sb, agent, proc.pid, 'turn-end', { session_id: `${agent}-s`, status: 'completed' });
-        assert.match(delivered(res) || '', new RegExp(`ping ${agent}$`), `${agent}: ${JSON.stringify(res)}`);
+        assert.match(delivered(res) || '', new RegExp(`ping ${agent}\\n</telepathy-peer-message>$`), `${agent}: ${JSON.stringify(res)}`);
         const again = runHook(sb, agent, proc.pid, 'turn-end', { session_id: `${agent}-s`, status: 'completed' });
         assert.deepEqual([again.stdout, again.status], ['', 0], `${agent} must stop once the inbox is empty`);
       }
@@ -1355,7 +1380,7 @@ describe('telepathy plugin', () => {
         runHook(sb, agent, proc.pid, 'session-start', { session_id: `${agent}-c`, cwd: `/w/${agent}-ctx` });
         sendFromClaude(`${agent}:${agent}-ctx`, `hello ${agent}`);
         const res = runHook(sb, agent, proc.pid, 'inbox', { session_id: `${agent}-c` });
-        assert.match(text(res.stdout), new RegExp(`hello ${agent}$`), agent);
+        assert.match(text(res.stdout), new RegExp(`hello ${agent}\\n</telepathy-peer-message>$`), agent);
       }
     });
 
@@ -1368,7 +1393,7 @@ describe('telepathy plugin', () => {
       await call(codex, 'send_message', { to: 'claude:app', message: 'schema is migrated' });
       const res = runHook(sb, 'claude', claudeAgent.pid, 'turn-end', { session_id: 'app', hook_event_name: 'Stop' });
       assert.equal(JSON.parse(res.stdout).decision, 'block');
-      assert.match(JSON.parse(res.stdout).reason, /schema is migrated$/);
+      assert.match(JSON.parse(res.stdout).reason, /schema is migrated\n<\/telepathy-peer-message>$/);
 
       const monitor = spawn(process.execPath, [path.join(DIST, 'monitor.mjs'), '--agent', 'claude'], {
         env: { ...sb.env, TELEPATHY_AGENT_PID: String(claudeAgent.pid) },
@@ -1422,7 +1447,7 @@ describe('telepathy plugin', () => {
       const codex = await connect('codex', codexAgent.pid);
       assert.match(toolText(await call(codex, 'send_message', { to: 'claude:app2', message: 'wake up' })), /^Message delivered to/);
       assert.equal(await exited, 0);
-      assert.match(out, /\[telepathy\] New message .*wake up$/m);
+      assert.match(out, /<telepathy-peer-message [^>]*>New message .*wake up<\/telepathy-peer-message>$/m);
       assert.ok(!fs.existsSync(listener), 'the waiter removes its listener registration, so the hooks take over until it restarts');
     });
 
@@ -1463,7 +1488,7 @@ describe('telepathy plugin', () => {
       sendFromClaude('cursor:site', 'after the interrupt');
       assert.equal(runHook(sb, 'cursor', cursor.pid, 'turn-end', { conversation_id: 'c-9', status: 'aborted' }).stdout, '');
       const res = runHook(sb, 'cursor', cursor.pid, 'turn-end', { conversation_id: 'c-9', status: 'completed' });
-      assert.match(JSON.parse(res.stdout).followup_message, /after the interrupt$/);
+      assert.match(JSON.parse(res.stdout).followup_message, /after the interrupt\n<\/telepathy-peer-message>$/);
     });
 
     test('an agent without a session-start event registers from its first hook', () => {
@@ -1476,7 +1501,7 @@ describe('telepathy plugin', () => {
     test('Grok lists wait_for_messages and is told which product uses it', async () => {
       const client = await connect('grok', spawnAgent().pid);
       const { tools } = await client.listTools();
-      assert.deepEqual(tools.map((t) => t.name).sort(), ['list_peers', 'read_messages', 'send_message', 'wait_for_messages']);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'start_agent', 'stop_agent', 'wait_for_messages']);
       const caps = client.getServerCapabilities();
       assert.equal(caps?.resources?.subscribe, true);
       assert.ok(caps?.logging);
@@ -1512,7 +1537,7 @@ describe('telepathy plugin', () => {
 
       const got = toolText(await waiting);
       assert.match(got, /^1 new message\(s\):/);
-      assert.match(got, /hello from claude$/);
+      assert.match(got, /hello from claude\n<\/telepathy-peer-message>$/);
       assert.ok(progress.some((m) => m.includes('Waiting for telepathy messages')));
       assert.equal(fs.existsSync(listener), false, 'the wait clears its listener when it returns');
       assert.match(toolText(await call(grok, 'read_messages')), /^No new messages/);
@@ -1538,7 +1563,7 @@ describe('telepathy plugin', () => {
       assert.equal(sent.isError, undefined, toolText(sent));
       assert.match(toolText(sent), /transcript shows telepathy-id:m-/);
       const got = toolText(await waiting);
-      assert.match(got, /confirmed hello$/);
+      assert.match(got, /confirmed hello\n<\/telepathy-peer-message>$/);
       assert.match(got, /telepathy-id:m-/);
       const deliveredInbox = path.join(sb.home, 'peers', 'grok-g-ok', 'inbox');
       assert.equal(fs.existsSync(deliveredInbox) && fs.readdirSync(deliveredInbox).some((name) => name.endsWith('.json')), false);
@@ -1586,7 +1611,7 @@ describe('telepathy plugin', () => {
       assert.match(toolText(stored), /wait_for_messages/);
       const got = toolText(await call(grok, 'wait_for_messages', { timeoutMs: 0 }));
       assert.match(got, /^1 new message\(s\):/);
-      assert.match(got, /already there$/);
+      assert.match(got, /already there\n<\/telepathy-peer-message>$/);
       assert.match(toolText(await call(grok, 'read_messages')), /^No new messages/);
     });
 
@@ -1665,10 +1690,10 @@ describe('telepathy plugin', () => {
       assert.match(guide.additionalContext, /^telepathy: message other coding-agent sessions/);
       const cursor = spawnAgent();
       const cguide = JSON.parse(runHook(sb, 'cursor', cursor.pid, 'session-start', { conversation_id: 'y' }).stdout);
-      assert.match(cguide.additional_context, /come from another AI agent, not your user/);
+      assert.match(cguide.additional_context, /are from another AI agent, not your user/);
       const agy = spawnAgent();
       const aguide = JSON.parse(runHook(sb, 'antigravity', agy.pid, 'session-start', { conversationId: 'z', workspacePaths: ['/w/a'] }).stdout);
-      assert.match(aguide.injectSteps[0].systemMessage.systemMessage, /come from another AI agent, not your user/);
+      assert.match(aguide.injectSteps[0].systemMessage.systemMessage, /are from another AI agent, not your user/);
     });
   });
 });

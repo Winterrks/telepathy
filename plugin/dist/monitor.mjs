@@ -280,6 +280,13 @@ function registerListener(agent2, pid, id2 = peerId(agent2, pid)) {
 }
 var peerRef = (peer) => `${peer.address} [${peer.id}]`;
 
+// src/core/tags.ts
+var PEER_MESSAGE_TAG = "telepathy-peer-message";
+function tagAttr(value) {
+  return value.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+var escapeTelepathyTags = (text) => text.replace(/<(\/?telepathy-)/gi, "<\\$1");
+
 // src/core/messages.ts
 var ARCHIVE_KEEP = 200;
 var MSG_FILE_RE = /^m-[0-9a-z]+-[0-9a-f]+\.json$/;
@@ -347,16 +354,30 @@ function pruneArchive(peerId2) {
   } catch {
   }
 }
-var describeSender = (from) => `${agentLabel(from.agent)} session ${peerRef(from)}`;
+var describeSender = (from) => escapeTelepathyTags(`${agentLabel(from.agent)} session ${peerRef(from)}`);
 var messageMarker = (id2) => `telepathy-id:${id2}`;
+function openTag(msg, extra = {}) {
+  const attrs = {
+    id: msg.id,
+    from: peerRef(msg.from),
+    agent: agentLabel(msg.from.agent),
+    "reply-to": msg.from.address,
+    ...msg.kind ? { kind: msg.kind } : {},
+    ...msg.transcript ? { transcript: msg.transcript } : {},
+    ...extra
+  };
+  const text = Object.entries(attrs).map(([key, value]) => `${key}="${tagAttr(value)}"`).join(" ");
+  return `<${PEER_MESSAGE_TAG} ${text}>`;
+}
+var closeTag = `</${PEER_MESSAGE_TAG}>`;
 function formatMonitorLine(msg, inlineLimit = 4e3) {
-  const header = `[telepathy] New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${msg.from.address}".`;
-  const flat = (s) => s.replace(/\r\n|\r|\n/g, "\\n");
+  const header = `${openTag(msg)}New message ${msg.id} (${messageMarker(msg.id)}) from ${describeSender(msg.from)}, sent by another AI agent (not your user). To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`;
+  const flat = (s) => escapeTelepathyTags(s).replace(/\r\n|\r|\n/g, "\\n");
   if (msg.body.length <= inlineLimit) {
-    return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}`;
+    return `${header} Text (line breaks shown as \\n): ${flat(msg.body)}${closeTag}`;
   }
   const preview = flat(msg.body.slice(0, 1500));
-  return `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" for the full text): ${preview}\u2026`;
+  return `${header} Text (first 1500 of ${msg.body.length} characters; call read_messages with id "${msg.id}" for the full text): ${preview}\u2026${closeTag}`;
 }
 
 // src/core/codex-queue.ts

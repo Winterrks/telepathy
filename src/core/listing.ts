@@ -2,6 +2,7 @@ import { agentSpec } from './agents.ts';
 import { crossSessionInbound, readClaudeSocket } from './claude-socket.ts';
 import { type Peer, peerRef, sameStableName } from './peers.ts';
 import { peerStatus, statusText } from './status.ts';
+import { formatRemoteListings, remoteListings } from '../bridge/remote.ts';
 
 /** `45s ago`, `14m ago`, `10h ago`, `1d ago`: the relative times Claude Code's ListAgents shows. */
 export function formatAgo(ms: number): string {
@@ -40,7 +41,7 @@ function launchHint(peer: Peer): string | undefined {
   return undefined;
 }
 
-function deliveryHint(peer: Peer): string | undefined {
+export function deliveryHint(peer: Peer): string | undefined {
   const launch = launchHint(peer);
   if (launch) return launch;
   // Plain Copilot receives through its hooks at the next turn, including before sessionStart.
@@ -70,27 +71,37 @@ export function describePeer(peer: Peer): string {
   return [`- ${peerRef(peer)}`, ...notes].join(' · ');
 }
 
-export function formatPeerList(self: Peer, peers: Peer[]): string {
+export function formatPeerList(self: Peer, peers: Peer[], remote = remoteListings()): string {
   const lines = [`This session is ${peerRef(self)}.`];
+  const elsewhere = formatRemoteListings(remote);
   const dupes = peers.filter((p) => sameStableName(self, p));
   if (self.stableName && dupes.length) {
     lines.push(
       `${dupes.length + 1} live sessions share the name ${self.agent}:${self.stableName}. Use the [ref] to pick one.`,
     );
   }
-  if (!peers.length) {
+  if (!peers.length && !elsewhere.length) {
     lines.push(
       'No other sessions with telepathy are running. A session of any supported agent appears here once it starts with the plugin installed.',
     );
     return lines.join('\n');
   }
+  if (peers.length) {
+    lines.push(
+      `Reachable sessions (${peers.length}):`,
+      ...peers.map((p) => {
+        const shared = p.duplicate || sameStableName(self, p) || peers.some((other) => sameStableName(p, other));
+        return shared ? `${describePeer(p)} · duplicate session` : describePeer(p);
+      }),
+    );
+  } else {
+    lines.push('No other sessions on this device.');
+  }
+  lines.push(...elsewhere);
   lines.push(
-    `Reachable sessions (${peers.length}):`,
-    ...peers.map((p) => {
-      const shared = p.duplicate || sameStableName(self, p) || peers.some((other) => sameStableName(p, other));
-      return shared ? `${describePeer(p)} · duplicate session` : describePeer(p);
-    }),
+    elsewhere.length
+      ? 'Send with send_message, using the address (e.g. "codex:name", or "codex:name@device" on another device) or the [ref] when names collide.'
+      : 'Send with send_message, using the address (e.g. "codex:name") or the [ref] when names collide.',
   );
-  lines.push('Send with send_message, using the address (e.g. "codex:name") or the [ref] when names collide.');
   return lines.join('\n');
 }

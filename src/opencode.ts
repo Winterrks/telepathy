@@ -12,6 +12,7 @@ import { isDeliveryOwner, isPeerAlive, keepSessionName, peerId, readPeer, readSe
 import { commandLine, processTable } from './core/proc.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
+import { answerPermissionTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
 import { startWakeFlusher } from './core/wake.ts';
 
 startWakeFlusher();
@@ -514,6 +515,21 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
         args: TOOLS.read_messages.args,
         execute: async (args: { id?: string; limit?: number }) => out(readMessagesTool(id, args)),
       },
+      telepathy_start_agent: {
+        description: TOOLS.start_agent.description,
+        args: TOOLS.start_agent.args,
+        execute: async (args: unknown) => out(await startAgentTool(self(), z.object(TOOLS.start_agent.args).parse(args))),
+      },
+      telepathy_stop_agent: {
+        description: TOOLS.stop_agent.description,
+        args: TOOLS.stop_agent.args,
+        execute: async (args: { name: string }) => out(await stopAgentTool(self(), args.name)),
+      },
+      telepathy_answer_permission: {
+        description: TOOLS.answer_permission.description,
+        args: TOOLS.answer_permission.args,
+        execute: async (args: { agent: string; request: string; allow: boolean }) => out(answerPermissionTool(self(), args)),
+      },
     },
   };
 };
@@ -713,6 +729,30 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
           const args = z.object(TOOLS.read_messages.args).parse(input ?? {});
           return { content: out(readMessagesTool(self(c.sessionID).id, args)) };
         },
+      });
+      editor.add({
+        name: 'telepathy_start_agent',
+        description: TOOLS.start_agent.description,
+        input: jsonSchema(TOOLS.start_agent.args),
+        execute: async (input, c) => ({
+          content: out(await startAgentTool(self(c.sessionID), z.object(TOOLS.start_agent.args).parse(input))),
+        }),
+      });
+      editor.add({
+        name: 'telepathy_stop_agent',
+        description: TOOLS.stop_agent.description,
+        input: jsonSchema(TOOLS.stop_agent.args),
+        execute: async (input, c) => ({
+          content: out(await stopAgentTool(self(c.sessionID), z.object(TOOLS.stop_agent.args).parse(input).name)),
+        }),
+      });
+      editor.add({
+        name: 'telepathy_answer_permission',
+        description: TOOLS.answer_permission.description,
+        input: jsonSchema(TOOLS.answer_permission.args),
+        execute: async (input, c) => ({
+          content: out(answerPermissionTool(self(c.sessionID), z.object(TOOLS.answer_permission.args).parse(input))),
+        }),
       });
     }),
   );

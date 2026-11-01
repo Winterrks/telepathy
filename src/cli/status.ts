@@ -1,5 +1,6 @@
 import { agentLabel, type Agent } from '../core/agents.ts';
 import { ANTIGRAVITY_SIDECAR_ID, antigravitySidecarEnabled, leftoverGeminiExtension, LEFTOVER_GEMINI_NOTE } from '../core/antigravity.ts';
+import { describeHookState, telepathyCodexHooks } from '../core/codex-hooks.ts';
 import { findInstalls, isNewer, type Install } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { VERSION } from '../core/version.ts';
@@ -66,6 +67,13 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
     lines.push(
       `Antigravity App sidecar (${ANTIGRAVITY_SIDECAR_ID}): ${antigravitySidecarEnabled() ? 'enabled' : 'not enabled in ~/.gemini/config/config.json'}`,
     );
+    if (installs.some((install) => install.agent === 'codex')) {
+      // Every telepathy update changes the plugin's hash, and Codex stops running the hooks until they are approved.
+      const { hooks, error } = await telepathyCodexHooks();
+      const state = error ? `could not ask Codex (${error})` : describeHookState(hooks);
+      const pending = hooks.some((hook) => hook.trustStatus === 'untrusted' || hook.trustStatus === 'modified');
+      lines.push(`Codex hooks: ${state}${pending ? '. `telepathy setup` approves them, or trust them in /hooks.' : ''}`);
+    }
     const leftover = leftoverGeminiExtension();
     if (leftover) lines.push(`Leftover Gemini CLI extension: ${leftover}. ${LEFTOVER_GEMINI_NOTE} \`telepathy install --remove-legacy\` removes it.`);
   }
