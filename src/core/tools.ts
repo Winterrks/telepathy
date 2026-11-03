@@ -74,7 +74,8 @@ export const TOOLS = {
       "It works in the background with telepathy's tools and returns at once with its address and transcript path. " +
       'Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. ' +
       'Continue it with send_message to its address; stop it with stop_agent when you no longer need it. ' +
-      "It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission.",
+      "It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. " +
+      'In Claude Code\'s terminal it is a background task instead: its report is the task\'s result, TaskStop stops it, and a permission request goes to your user in a dialog.',
     args: {
       harness: z.enum(startableHarnesses() as [string, ...string[]]).describe('Which coding agent to start'),
       description: z.string().describe('A short (3-5 word) description of what it is for; also its name unless name is set'),

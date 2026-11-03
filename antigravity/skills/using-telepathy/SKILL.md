@@ -16,9 +16,9 @@ message each other.
   on, or could take part of the work. You can coordinate directly; there's no need to go through your user.
 - **Send** with telepathy's `send_message`. It waits until the other session's transcript shows the message,
   and it succeeds only then. A session that is not running fails immediately and nothing is left. A Codex window
-  that has not been prompted yet is listed as `no thread yet`; a send to it fails immediately the same way. In Claude Code, `SendMessage` only reaches Claude sessions. For Codex, OpenCode,
-  Antigravity, and every other telepathy peer, use `send_message`. A `SendMessage` aimed at one of those is stopped
-  and the tool result is an error, even when telepathy also stored the message.
+  that has not been prompted yet is listed as `no thread yet`; a send to it fails immediately the same way. In Claude Code, `SendMessage` reaches every telepathy peer too: telepathy delivers
+  it and stops the built-in call, so the result reads as an error although the message was sent. Don't resend it.
+  `send_message` does the same with a normal result.
 - The other session doesn't share your context, so make messages self-contained. Replies arrive as new
   messages: don't wait or poll for them. Some agents only see a message at their next turn, so a reply can
   take a while.
@@ -31,7 +31,9 @@ message each other.
   self-contained task. It returns at once; each time that agent's turn ends, its final message arrives as a message
   with `kind="agent-result"` and its transcript path. Don't wait or poll. Continue it with `send_message`, and
   `stop_agent` it when you're done. A `kind="permission"` message is it asking for permission: ask your user, then
-  `answer_permission`. Never answer one on your own.
+  `answer_permission`. Never answer one on your own. In Claude Code's terminal, `start_agent` is a background task
+  instead: its report is the task's result, `send_message` to it is a task for the next report, `TaskStop` stops it
+  while it works, and its permission requests go to your user in a dialog. It ends with your session.
 - **Other devices:** with `telepathy bridge` running, `list_peers` also lists sessions on your other devices.
   Their addresses end in `@<device>` (`codex:api-c3f@laptop`); message them like any other session. A device
   that is offline fails at once.

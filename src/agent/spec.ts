@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { Agent } from '../core/agents.ts';
 import type { Party } from '../core/messages.ts';
-import { ensureDir, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
+import { ensureDir, envDurationMs, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
 import { isAlive, isSameProcess } from '../core/proc.ts';
 
 /**
@@ -109,6 +109,9 @@ export interface PermissionAnswer {
   allow: boolean;
   at: string;
 }
+
+/** How long a permission request waits for an answer before it is denied. */
+export const permissionWaitMs = () => envDurationMs('TELEPATHY_AGENT_PERMISSION_MS', 10 * 60_000);
 
 /** Request ids as the host makes them. Anything else is refused before it becomes part of a path. */
 export const PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;

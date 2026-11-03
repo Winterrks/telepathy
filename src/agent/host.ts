@@ -4,7 +4,7 @@ import path from 'node:path';
 import { startAcpSession, type AcpSession } from '../acp/host.ts';
 import { harnessByAgent, resolvedAcpBin } from '../cli/harnesses.ts';
 import { launchEnv, pluginInstalled } from '../cli/launch.ts';
-import { agentLabel, agentSpec, AGENT_IDS } from '../core/agents.ts';
+import { type Agent, agentLabel, agentSpec, AGENT_IDS } from '../core/agents.ts';
 import { deliverLocal } from '../core/deliver.ts';
 import { formatAsUserTurn, type Message, newMessageId, type Party } from '../core/messages.ts';
 import { ensureDir, envDurationMs, readJson, writeJsonAtomic } from '../core/paths.ts';
@@ -14,6 +14,7 @@ import { removeCleanWorktree } from './worktree.ts';
 import { writeStatus } from '../core/status.ts';
 import { claimPluginSession, clearHosted, registerHostedPeer, startInboxPump, writeHeadlessRecord } from '../headless/peer.ts';
 import { applySettings } from './configure.ts';
+import { offerEvent, takeBack, type TaskEvent, taskOpen, taskPickupMs } from './task.ts';
 import {
   type AgentSpec,
   type AgentState,
@@ -21,6 +22,7 @@ import {
   permissionAnswerFile,
   permissionRequestFile,
   permissionsDir,
+  permissionWaitMs,
   readSpec,
   transcriptFile,
   writeState,
@@ -44,8 +46,15 @@ const SESSION_MARKERS = [
   ...AGENT_IDS.flatMap((agent) => agentSpec(agent).env ?? []),
 ];
 
-const permissionWaitMs = () => envDurationMs('TELEPATHY_AGENT_PERMISSION_MS', 10 * 60_000);
-const orphanMs = () => envDurationMs('TELEPATHY_AGENT_ORPHAN_MS', 10 * 60_000);
+/**
+ * How long the agent outlives its parent session. A Claude Code session's agents end with it, like its own
+ * subagents; a short grace rides over a moment the session's process is not found. Other parents get longer.
+ */
+const orphanMs = (parent: Agent) => envDurationMs('TELEPATHY_AGENT_ORPHAN_MS', parent === 'claude' ? 15_000 : 10 * 60_000);
+const span = (ms: number) => {
+  const [n, unit] = ms < 120_000 ? [Math.round(ms / 1000), 'second'] : [Math.round(ms / 60_000), 'minute'];
+  return `${n} ${unit}${n === 1 ? '' : 's'}`;
+};
 
 const now = () => new Date().toLocaleTimeString();
 
@@ -122,6 +131,8 @@ export async function runAgent(dir: string): Promise<number> {
   let self: Party | undefined;
   let pushes: Promise<unknown> = Promise.resolve();
   let stopping = false;
+  /** Asked to stop (stop_agent, TaskStop, the session ending): the turn that ends now has nothing to report. */
+  let stopRequested = false;
   const deliver = async (from: Party, body: string, kind: Message['kind']) => {
     try {
       const result = await deliverLocal(from, spec.parent.id, body, undefined, { kind, transcript });
@@ -165,7 +176,27 @@ export async function runAgent(dir: string): Promise<number> {
         ? `The turn stopped: ${result.stopReason}.`
         : '';
     const body = [final || '(The turn ended without a final message.)', why].filter(Boolean).join('\n\n');
-    void tellParent(body, 'agent-result');
+    if (stopRequested) return;
+    void offerToTask({ kind: 'result', body }).then((taken) => {
+      if (taken) write(`\n\n> Reported to ${spec.parent.address} as its task's result.\n`);
+      else void tellParent(body, 'agent-result');
+    });
+  };
+
+  /**
+   * While the parent's server has an MCP task open on this agent (start_agent or a follow-up in Claude Code), the
+   * report or permission request is the task's to take: see src/agent/task.ts. Otherwise, or when no poll takes
+   * it in time, it goes to the parent as a message.
+   */
+  const offerToTask = async (event: Omit<TaskEvent, 'at'>): Promise<boolean> => {
+    if (!taskOpen(dir)) return false;
+    const file = offerEvent(dir, event);
+    const deadline = Date.now() + taskPickupMs();
+    while (Date.now() < deadline && !stopping) {
+      if (!fs.existsSync(file)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 200).unref());
+    }
+    return !takeBack(file);
   };
 
   const askPermission = async (_params: unknown, what: string): Promise<boolean> => {
@@ -175,14 +206,19 @@ export async function runAgent(dir: string): Promise<number> {
     writeJsonAtomic(permissionRequestFile(dir, id), { id, label: what, at: new Date().toISOString() });
     write(`\n\n- permission requested: ${what} (asked ${spec.parent.address}, request ${id})`);
     let undeliverable = false;
-    void tellParent(
-      `${self.address} asks for permission: ${what}.\n` +
-        `Ask your user, then call answer_permission with agent "${self.address}", request "${id}" and allow true or false. ` +
-        `Without an answer within ${Math.round(permissionWaitMs() / 60_000)} minutes it is denied.`,
-      'permission',
-    ).then((ok) => {
-      if (!ok) undeliverable = true;
-    });
+    const minutes = Math.round(permissionWaitMs() / 60_000);
+    const asMessage = () =>
+      tellParent(
+        `${self!.address} asks for permission: ${what}.\n` +
+          `Ask your user, then call answer_permission with agent "${self!.address}", request "${id}" and allow true or false. ` +
+          `Without an answer within ${minutes} minutes it is denied.`,
+        'permission',
+      ).then((ok) => {
+        if (!ok) undeliverable = true;
+      });
+    void offerToTask({ kind: 'permission', body: `${self.address} asks for permission: ${what}.`, request: id }).then((taken) =>
+      taken ? undefined : asMessage(),
+    );
     const deadline = Date.now() + permissionWaitMs();
     while (Date.now() < deadline && !undeliverable) {
       const answer = readJson<PermissionAnswer>(permissionAnswerFile(dir, id));
@@ -283,20 +319,25 @@ export async function runAgent(dir: string): Promise<number> {
   write(`\n\n## Task from ${spec.parent.address} · ${now()}\n\n${taskText}`);
   void session.prompt(taskText);
 
-  // A parent that has been gone this long is not coming back for the result.
+  // The parent session has ended (not just its MCP server, which a plugin reload restarts): stop with it.
   let goneSince: number | undefined;
+  const orphan = orphanMs(spec.parent.agent);
   const watch = setInterval(() => {
     if (isPeerAlive(readPeer(spec.parent.id))) {
       goneSince = undefined;
       return;
     }
     goneSince ??= Date.now();
-    if (Date.now() - goneSince > orphanMs()) {
-      write(`\n\n— stopped: ${spec.parent.address} has been gone for ${Math.round(orphanMs() / 60_000)} minutes\n`);
+    if (Date.now() - goneSince > orphan) {
+      write(`\n\n— stopped: ${spec.parent.address} has been gone for ${span(orphan)}\n`);
+      stopRequested = true;
       session.close();
     }
-  }, 5000);
-  const shutdown = () => session.close();
+  }, Math.min(5000, Math.max(250, orphan / 3)));
+  const shutdown = () => {
+    stopRequested = true;
+    session.close();
+  };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 

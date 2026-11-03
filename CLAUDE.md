@@ -35,6 +35,7 @@ Do not weaken these.
 - The ACP host calls `authenticate` only for a single auth method the agent runs itself (no `terminal-auth`), with a 30s limit.
 - `telepathy setup` and updates approve Codex hooks only through Codex's app-server (`hooks/list`, then `config/batchWrite` of `hooks.state`), and only telepathy's own (`pluginId` `telepathy@…`). `setup` approves untrusted and modified hooks; `update` and auto-update only modified ones (approved before, then changed by an update).
 - `telepathy grokbot` hosts a Grok Bot as `grok:<name>`: messages go to its routine webhook as `{"context"}` with `Authorization: Bearer`, the body the Grok Bot app's Run button sends. The POST is the submit, so a 2xx is the delivery marker (like `session/prompt` in the ACP host); a refused POST never is. The key lives in `~/.telepathy/grokbot/<name>.json`, mode 600, and never goes into a log or output.
+- In Claude Code, `start_agent` (and `send_message` to an agent the session started) answers with an MCP task when the request's 2026-07-28 envelope declares the tasks extension (`src/agent/mcp-tasks.ts`). The Claude server runs on `serveStdio` for that revision and answers `tasks/get`, `tasks/update` and `tasks/cancel` ahead of the SDK, which has none on it. While a task is open (`<agent>/task/open/`), the host offers each report or permission request as an event file; a poll claims it by rename, or the host takes it back after `TELEPATHY_TASK_PICKUP_MS` (30 s) and sends it as a message. A permission request is the task's `input_required` elicitation, answered by the user. `tasks/cancel` (TaskStop) stops the agent. The server ending does not (a plugin reload restarts it): a new server adopts a task it doesn't know when the id names an agent of this session. An agent stops when its parent session ends, 15 s after for a Claude parent (`TELEPATHY_AGENT_ORPHAN_MS`), 10 minutes for others. The Agent tool always runs a Claude model, so an Agent call naming another harness is denied with a pointer to `start_agent`; no model ever relays a report.
 - `/exit` and `/quit` in the ACP host shut down the way an idle Ctrl-C does. They are not forwarded as prompts. Ctrl-C during a turn still cancels the turn first.
 
 ## Commands
@@ -48,4 +49,4 @@ npm run check          # typecheck, bundle, test
 
 Commit the bundle with the source change. Do not add `build`, `prepare`, `install`, or `postinstall` scripts.
 
-Never bump the version or publish without the maintainer. The version stays `0.11.2` until they release.
+Never bump the version or publish without the maintainer. The version stays `0.12.0` until they release.

@@ -36,6 +36,7 @@ import { type Agent, findAgent, isStreamJsonClaude, parseAgent } from './core/pr
 import { statusFromHooks, writeStatus } from './core/status.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 import { argvFlag } from './core/argv.ts';
+import { harnessAgentType } from './agent/task.ts';
 import { antigravitySurface, expandHomePath, type AntigravitySurface } from './core/antigravity.ts';
 
 /**
@@ -48,6 +49,7 @@ import { antigravitySurface, expandHomePath, type AntigravitySurface } from './c
  *   files           after a tool call (Claude Code): note when it read or edited files another session is editing
  *   status waiting  a permission prompt is waiting for the user (Codex PermissionRequest, Gemini Notification)
  *   list-agents, send-message   Claude Code's ListAgents and SendMessage; send-message also takes Qwen's send_message
+ *   agent           Claude Code's Agent tool naming another harness: pointed to start_agent
  * Reads the hook's JSON input from stdin; prints output only when there is something to say.
  */
 
@@ -497,30 +499,52 @@ async function interceptSendMessage(agent: Agent, agentPid: number, input: HookI
   if (!tools) return;
   if (typeof input.tool_name === 'string' && input.tool_name !== tools.send) return;
   const to = input.tool_input?.to;
-  if (typeof to !== 'string' || !addressedToOtherAgent(agent, to)) return; // not ours: let the native tool run
   const message = typeof input.tool_input?.message === 'string' ? input.tool_input.message : '';
-  const deny = (reason: string) =>
-    print({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
+  if (typeof to !== 'string' || !addressedToOtherAgent(agent, to)) return; // not ours: let the native tool run
 
   if (!message.trim()) {
-    deny('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
+    denyTool('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
     return;
   }
-  const fromInput = idOf(agent, agentPid, input);
-  const bound = fromInput !== peerId(agent, agentPid) ? fromInput : (linkedPeerId(agent, agentPid) ?? fromInput);
   const ownsClock = beginToolCall();
   let result: Awaited<ReturnType<typeof sendMessage>>;
   try {
-    result = await sendMessage(selfPeer(agent, agentPid, bound), to, message);
+    result = await sendMessage(boundSelf(agent, agentPid, input), to, message);
   } finally {
     if (ownsClock) endToolCall();
   }
   debugLog('hook', result.ok ? `${tools.send} → ${result.recipient.id}` : `${tools.send} failed: ${result.error}`);
-  deny(
+  denyTool(
     result.ok
       ? `${result.status} (Sent by telepathy: ${tools.send} can't reach ${agentLabel(result.recipient.agent)}, so this ` +
           "shows as an error. Don't resend.)"
       : `Not delivered: ${result.error}`,
+  );
+}
+
+/** The session a Claude hook runs for, bound the way its tool calls are. */
+function boundSelf(agent: Agent, agentPid: number, input: HookInput) {
+  const fromInput = idOf(agent, agentPid, input);
+  const bound = fromInput !== peerId(agent, agentPid) ? fromInput : (linkedPeerId(agent, agentPid) ?? fromInput);
+  return selfPeer(agent, agentPid, bound);
+}
+
+const denyTool = (reason: string) =>
+  print({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
+const toolInput = (input: HookInput) => (input.tool_input ?? {}) as Record<string, unknown>;
+
+/**
+ * Claude PreToolUse on Agent naming another harness (`telepathy:codex`, `codex`, `codex:<name>`): the Agent tool
+ * always runs a Claude model, so the call is stopped with a pointer to start_agent, which runs that harness itself.
+ */
+function redirectAgent(input: HookInput): void {
+  const tool = toolInput(input);
+  const harness = harnessAgentType(tool.subagent_type, typeof input.cwd === 'string' ? input.cwd : undefined);
+  if (!harness) return;
+  const name = harness.name ? `, name "${harness.name}"` : '';
+  denyTool(
+    `Not started: ${agentLabel(harness.harness)} isn't a Claude agent type. Start it with telepathy's start_agent (harness "${harness.harness}"${name}, ` +
+      'with this description and prompt). In the terminal it runs as a background task: its report comes back when it is done, and TaskStop stops it.',
   );
 }
 
@@ -546,6 +570,7 @@ async function main(): Promise<void> {
   else if (action === 'status' && event === 'waiting') waiting(agent, agentPid, input);
   else if (action === 'list-agents' && agent === 'claude') listAgents(agentPid, input);
   else if (action === 'send-message') await interceptSendMessage(agent, agentPid, input);
+  else if (action === 'agent' && agent === 'claude') redirectAgent(input);
   else throw new Error(`unknown hook action ${JSON.stringify(action)} for ${agent}`);
 }
 

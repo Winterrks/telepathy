@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/server';
-import { StdioServerTransport } from '@modelcontextprotocol/server/stdio';
+import { serveStdio, StdioServerTransport } from '@modelcontextprotocol/server/stdio';
 import { z } from 'zod';
 import { withdrawFromCodexQueue } from './core/codex-queue.ts';
 import { beginToolCall, endToolCall } from './core/confirm.ts';
@@ -30,7 +30,7 @@ import {
 } from './core/peers.ts';
 import { argvFlag } from './core/argv.ts';
 import { claimResumedCopilot } from './core/copilot-resume.ts';
-import { findAgent, isStreamJsonClaude, parseAgent } from './core/proc.ts';
+import { findAgent, isStreamJsonClaude, parseAgent, procStart } from './core/proc.ts';
 import {
   ALREADY_LISTENING,
   DEFAULT_WAIT_MS,
@@ -43,6 +43,8 @@ import {
 } from './core/tools.ts';
 import { attachGrokDelivery } from './grok-delivery.ts';
 import { answerPermissionTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { installedTaskHarnesses } from './agent/task.ts';
+import { answerTaskRequest, clientTakesTasks, continueAgentTask, startAgentTask } from './agent/mcp-tasks.ts';
 import { VERSION } from './core/version.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 
@@ -176,21 +178,7 @@ function selfIdFor(meta: Record<string, unknown> | undefined): string {
   return id;
 }
 
-const server = new McpServer(
-  { name: 'telepathy', version: VERSION },
-  {
-    // Grok Bot has no host-owned wake. Logging and resource updates are a best-effort side channel;
-    // wait_for_messages, registered below, is what actually returns the message.
-    capabilities: agent === 'grok' ? { tools: {}, resources: { subscribe: true }, logging: {} } : { tools: {} },
-    // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
-    // using-telepathy skill, loaded on demand.
-    instructions: guideText(agent, {
-      monitorCommand: agent === 'grok' ? monitorCommand() : undefined,
-      waiterCommand: claudeWithoutMonitor() ? `${monitorCommand()} --once` : undefined,
-    }),
-  },
-);
-
+const ownProcStart = procStart(process.pid);
 const text = ({ text, isError, structured }: ToolResult) => ({
   content: [{ type: 'text' as const, text }],
   ...(structured ? { structuredContent: structured } : {}),
@@ -205,6 +193,27 @@ function withSetupNotes(selfId: string, result: ToolResult): ToolResult {
   const notes = unseenSetupNotes(selfPeer(agent, agentPid, selfId));
   return notes.length ? { ...result, text: `${result.text}\n\n${notes.join('\n')}` } : result;
 }
+
+/**
+ * The server and its tools. Claude Code's stdio connection may build one per protocol era it tries (see the end of
+ * this function), so this has no side effects of its own.
+ */
+function buildServer(): McpServer {
+const server = new McpServer(
+  { name: 'telepathy', version: VERSION },
+  {
+    // Grok Bot has no host-owned wake. Logging and resource updates are a best-effort side channel;
+    // wait_for_messages, registered below, is what actually returns the message.
+    capabilities: agent === 'grok' ? { tools: {}, resources: { subscribe: true }, logging: {} } : { tools: {} },
+    // Claude Code keeps these in its system prompt; Codex shows them with the tools. The full guide is the
+    // using-telepathy skill, loaded on demand.
+    instructions: guideText(agent, {
+      monitorCommand: agent === 'grok' ? monitorCommand() : undefined,
+      waiterCommand: claudeWithoutMonitor() ? `${monitorCommand()} --once` : undefined,
+      taskHarnesses: agent === 'claude' ? installedTaskHarnesses() : undefined,
+    }),
+  },
+);
 
 server.registerTool(
   'list_peers',
@@ -232,6 +241,12 @@ server.registerTool(
     const ownsClock = beginToolCall();
     try {
       const selfId = selfIdFor(ctx.mcpReq._meta);
+      if (agent === 'claude' && clientTakesTasks(ctx)) {
+        // A follow-up to an agent this session started: its next report is the task's result.
+        const task = await continueAgentTask(selfPeer(agent, agentPid, selfId), to, message, ownProcStart);
+        if (task && 'resultType' in task) return task as unknown as ReturnType<typeof text>;
+        if (task) return text(task);
+      }
       return text(withSetupNotes(selfId, await sendMessageTool(selfPeer(agent, agentPid, selfId), to, message)));
     } finally {
       if (ownsClock) endToolCall();
@@ -267,6 +282,11 @@ server.registerTool(
   },
   async (args, ctx) => {
     const selfId = selfIdFor(ctx.mcpReq._meta);
+    if (agent === 'claude' && clientTakesTasks(ctx)) {
+      // Claude Code follows it as a background task of its own: see src/agent/task.ts.
+      const task = startAgentTask(selfPeer(agent, agentPid, selfId), args, ownProcStart);
+      return 'resultType' in task ? (task as unknown as ReturnType<typeof text>) : text(task);
+    }
     return text(await startAgentTool(selfPeer(agent, agentPid, selfId), args));
   },
 );
@@ -351,6 +371,28 @@ if (agent === 'grok') {
 
   attachGrokDelivery(server, boundId);
 }
+return server;
+}
 
-await server.connect(new StdioServerTransport());
+if (agent !== 'claude') {
+  await buildServer().connect(new StdioServerTransport());
+  return;
+}
+// Claude Code asks for protocol revision 2026-07-28, on which start_agent can answer with an MCP task. serveStdio
+// settles the revision per connection. The SDK has no tasks/* methods on that revision, so they are answered here,
+// ahead of it.
+const wire = new StdioServerTransport();
+serveStdio(buildServer, { transport: wire });
+const sdkOnMessage = wire.onmessage;
+wire.onmessage = (message) => {
+  const request = message as { id?: string | number; method?: string; params?: Record<string, unknown> };
+  const reply =
+    request.id !== undefined && typeof request.method === 'string'
+      ? answerTaskRequest(request.method, request.params, () => selfPeer(agent, agentPid, boundId()), ownProcStart)
+      : undefined;
+  if (!reply) return sdkOnMessage?.(message);
+  void wire.send({ jsonrpc: '2.0', id: request.id!, ...(reply.error ? { error: reply.error } : { result: reply.result! }) } as never).catch(() => undefined);
+};
+// Agents don't stop with this server: a plugin reload restarts it mid-session. They stop when the session itself
+// ends (the agent host watches it), and a restarted server takes their tasks up again (see adopt in mcp-tasks.ts).
 }

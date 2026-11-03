@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.11.2" src="https://img.shields.io/badge/version-0.11.2-6d28d9">
+  <img alt="version 0.12.0" src="https://img.shields.io/badge/version-0.12.0-6d28d9">
   <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local, or your own devices with the bridge" src="https://img.shields.io/badge/network-local%20%2B%20your%20devices-6d28d9">
 </p>
@@ -79,8 +79,9 @@ subagent ([Subagents](#subagents)). Grok also gets `wait_for_messages`, which ho
 message arrives. Grok Bot uses that call to receive while idle; Grok Build keeps using its monitor and does not call
 it. Addresses look like `codex:api-c3f` or `opencode:shop-ui-o1a`, so any session can reach any
 other: Codex to Codex, OpenCode to Claude, Antigravity to Copilot. Claude Code also sees the other agents' sessions in its
-built-in `ListAgents` and can reach them with its built-in `SendMessage`; Qwen Code does the same with its `list_agents`
-and `send_message`.
+built-in `ListAgents` and can reach them with its built-in `SendMessage`, and there `start_agent` runs as a background
+task Claude Code follows itself ([In Claude Code: a background task](#in-claude-code-a-background-task)); Qwen Code
+does the same with its `list_agents` and `send_message`.
 
 The receiving side is what makes it feel like telepathy. Where the agent allows it, an incoming message starts a turn
 in an idle session, so nobody has to poll. Where it doesn't, the message rides along with the agent's next turn.
@@ -435,7 +436,7 @@ The same updates are `telepathy update` (and `telepathy update --dry-run`) once 
 
 ## The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.11.2. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.12.0. Requires Node 20 or newer.
 
 ```sh
 telepathy setup [--dry-run]           # install, update, approve hooks and install ACP adapters, everywhere
@@ -544,9 +545,36 @@ start_agent(harness: "codex", description: "Review auth changes", prompt: "Revie
   `answer_permission`. No answer within 10 minutes is a denial.
 - **Isolation:** `isolation: "worktree"` gives it a git worktree and a `telepathy/<name>` branch under
   `~/.telepathy/worktrees`. At stop, an unchanged worktree is removed with its branch; a changed one is kept.
-- **Lifetime:** until `stop_agent`, or 10 minutes after the parent session is gone.
+- **Lifetime:** until `stop_agent`, or until the session that started it ends: within 15 seconds for a Claude Code
+  session, like its own subagents, and 10 minutes for other agents. A restart of the session's MCP server (a plugin
+  reload) is not the session ending.
 - **Harnesses:** every one with an ACP mode (see `telepathy run --list`). Claude Code and Codex need their ACP adapters.
   A harness that needs a sign-in it cannot do itself (`kimi login`, `grok login`) fails to start with that reason.
+
+### In Claude Code: a background task
+
+In Claude Code's terminal, `start_agent` answers with an [MCP task](https://code.claude.com/docs/en/mcp) instead of a
+result, so the agent is a background task of Claude Code's own, with no model standing in between:
+
+```
+start_agent(harness: "opencode", description: "Build bridge API", prompt: "Add the /v1/devices endpoint…")
+  ⎿ started server-side task opencode:build-bridge-api            (the footer counts it: 1 MCP task)
+⏺ MCP task opencode:build-bridge-api (plugin:telepathy:bridge/start_agent) completed.
+```
+
+- **The report** is the task's result: Claude gets it when the agent's turn ends, and starts on it if it was idle.
+- **Follow-ups:** `send_message` to the agent returns a task the same way (`opencode:build-bridge-api#2`), whose
+  result is its next report.
+- **Stopping:** `TaskStop`, or `x` in `/tasks`, cancels the task, and that stops the agent. Ending the session stops
+  every agent it started, working or idle, like Claude's own agents. `/reload-plugins` doesn't: the restarted server
+  takes the open tasks up again.
+- **Permissions:** a permission request the agent makes opens a dialog for you (Allow, then Accept or Decline). It
+  is your answer, not Claude's.
+- **Where:** MCP tasks need Claude Code's terminal (v2.1.304 or later, protocol revision 2026-07-28), and are in
+  public beta there. Elsewhere (`claude -p`, the VS Code extension, the desktop app, other agents), `start_agent`
+  works as described above: it returns at once and the report comes as a message.
+- **The Agent tool** always runs a Claude model, so an Agent call naming another harness (`telepathy:codex`,
+  `codex`, `codex:<name>`) is stopped with a pointer to `start_agent`, unless a Claude agent or plugin goes by that name.
 
 ## Use
 
@@ -625,7 +653,8 @@ Messages over 4,000 characters come with a preview and are read in full with `re
 | Grok Bot receives | `wait_for_messages` long-polls the inbox on the MCP connection the bot already holds and returns the message as the tool result. That return records `telepathy-id` so the sender's confirm succeeds. A logging line and `resources/updated` on `telepathy://inbox` are also sent, and claim nothing. A failed confirm withdraws the copy; a later wait does not see it |
 | The others receive | Their hooks: before a prompt or after a tool call the pending messages go into the context; at the end of a turn they keep the turn going (`decision: block`, Cursor's `followup_message`, Antigravity's `continue`) |
 | Guidance | A few lines of instructions: MCP server instructions where the agent shows them, otherwise a session-start hook, a rule file or a system-prompt field. The `using-telepathy` skill has the full guide |
-| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions, and every session on another device, to the ListAgents result, in its own row format. Message those sessions with `send_message`. `SendMessage` only reaches Claude sessions. A PreToolUse hook delivers a `SendMessage` aimed at another harness or device, then stops the native call; that tool result is an error (deny is the only decision that prevents the native call). Claude-to-Claude `SendMessage` is left alone |
+| `ListAgents` / `SendMessage` | A Claude PostToolUse hook adds the other agents' sessions, and every session on another device, to the ListAgents result, in its own row format. `SendMessage` on its own only reaches Claude sessions, so a PreToolUse hook delivers a `SendMessage` aimed at another harness or device, then stops the native call; that tool result is an error (deny is the only decision that prevents the native call). Claude-to-Claude `SendMessage` is left alone |
+| `start_agent` in Claude Code | The server speaks protocol revision 2026-07-28 with Claude Code (`serveStdio`) and answers `start_agent`, and `send_message` to an agent it started, with an MCP task when the request declares the tasks extension. It answers Claude Code's `tasks/get`, `tasks/update` and `tasks/cancel` itself. The agent host offers its report or permission request to the open task (`~/.telepathy/agents/<name>/task/`) and sends it as a message when no task takes it |
 | Qwen's `list_agents` / `send_message` | Qwen Code 0.24 and later list their own background agents and other Qwen sessions. Its PostToolUse hook cannot rewrite a result, so the other agents' sessions follow `list_agents` as context. A PreToolUse hook on `send_message` delivers a message aimed at a `<agent>:` address, a `[ref]`, or another device, and stops the native call the same way. Teammate names and Qwen's own destinations are left alone |
 
 Each agent gets its own manifest, so none of them runs another's hooks: `plugin/.claude-plugin`, `.codex-plugin`,
@@ -741,6 +770,8 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   doesn't know, so the hook delivers the message and then stops the call, and hooks can't turn a stopped call into a
   successful one. The error text says the message was delivered and not to resend it. The plugin's `send_message`
   gives a normal result, and Claude can use either. Claude-to-Claude SendMessage calls are never touched.
+- **A finished task can't be stopped.** Once an agent has reported, its task is done and `TaskStop` says so, as for
+  any finished agent. The agent waits for a follow-up until `stop_agent` or the end of the session.
 - **Statuses.** `list_peers` and the rows telepathy adds to ListAgents say what each session is doing: **busy** (in a
   turn), **shell** (not generating, but a command it started is still running), **idle**, **waiting** (a permission
   prompt is waiting for its user, so nothing moves until they answer) and, for Codex, **interrupted** (its last turn was
@@ -795,7 +826,8 @@ gone; their unread mail waits an hour. `list_peers` only shows sessions that are
   stores none of it. It records which files each session edits with its edit tools (paths and times only, never
   contents), in that session's folder in `~/.telepathy`, removed when the session ends.
 - **What runs:** the MCP server while a session is open; in Claude Code, the hooks in `plugin/hooks/claude-hooks.json`
-  (SessionStart; PostToolUse/PreToolUse matched to ListAgents and SendMessage; PostToolUse matched to the file,
+  (SessionStart; PostToolUse/PreToolUse matched to ListAgents and SendMessage; PreToolUse on Agent, which points a
+  call naming another harness to `start_agent`; PostToolUse matched to the file,
   search and Bash tools, which records edited paths and adds the note above; UserPromptSubmit and Stop). SessionStart,
   UserPromptSubmit, and Stop also start an idle-wake hook when the session has no inbox socket. Those hooks hand
   over waiting messages and, in a stream-json host without a socket, remind Claude to start a one-shot waiter. In

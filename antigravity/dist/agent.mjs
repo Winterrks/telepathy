@@ -2,8 +2,8 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/agent/host.ts
 import crypto4 from "node:crypto";
-import fs17 from "node:fs";
-import path20 from "node:path";
+import fs18 from "node:fs";
+import path21 from "node:path";
 
 // src/acp/host.ts
 import { spawn as spawn3 } from "node:child_process";
@@ -510,7 +510,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.11.2" : "0.0.0-dev";
+var VERSION = true ? "0.12.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -4069,19 +4069,56 @@ async function applySettings(request, sessionId, created, wanted) {
   return { settings, notes };
 }
 
-// src/agent/spec.ts
+// src/agent/task.ts
+import fs17 from "node:fs";
 import path19 from "node:path";
-var specFile = (dir) => path19.join(dir, "spec.json");
-var stateFile = (dir) => path19.join(dir, "state.json");
-var transcriptFile = (dir) => path19.join(dir, "transcript.md");
-var permissionsDir = (dir) => path19.join(dir, "permissions");
+var taskDir = (dir) => path19.join(dir, "task");
+var eventsDir = (dir) => path19.join(taskDir(dir), "events");
+var openDir = (dir) => path19.join(taskDir(dir), "open");
+var taskPickupMs = () => envDurationMs("TELEPATHY_TASK_PICKUP_MS", 3e4);
+var lastSeq = -1;
+function offerEvent(dir, event) {
+  ensureDir(eventsDir(dir));
+  if (lastSeq < 0) lastSeq = fs17.readdirSync(eventsDir(dir)).length;
+  const file = path19.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
+  writeJsonAtomic(file, { ...event, at: (/* @__PURE__ */ new Date()).toISOString() });
+  return file;
+}
+function takeBack(file) {
+  try {
+    fs17.renameSync(file, file.replace(/\.json$/, ".sent"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+function taskOpen(dir) {
+  let names;
+  try {
+    names = fs17.readdirSync(openDir(dir));
+  } catch {
+    return false;
+  }
+  return names.some((name) => {
+    const marker = readJson(path19.join(openDir(dir), name));
+    return !!marker?.pid && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart);
+  });
+}
+
+// src/agent/spec.ts
+import path20 from "node:path";
+var specFile = (dir) => path20.join(dir, "spec.json");
+var stateFile = (dir) => path20.join(dir, "state.json");
+var transcriptFile = (dir) => path20.join(dir, "transcript.md");
+var permissionsDir = (dir) => path20.join(dir, "permissions");
 var readSpec = (dir) => readJson(specFile(dir));
 function writeState(dir, state) {
   ensureDir(dir);
   writeJsonAtomic(stateFile(dir), state);
 }
-var permissionRequestFile = (dir, id) => path19.join(permissionsDir(dir), `${id}.json`);
-var permissionAnswerFile = (dir, id) => path19.join(permissionsDir(dir), `${id}.answer.json`);
+var permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
+var permissionRequestFile = (dir, id) => path20.join(permissionsDir(dir), `${id}.json`);
+var permissionAnswerFile = (dir, id) => path20.join(permissionsDir(dir), `${id}.answer.json`);
 
 // src/agent/host.ts
 var SESSION_MARKERS = [
@@ -4097,8 +4134,11 @@ var SESSION_MARKERS = [
   "TELEPATHY_NAME",
   ...AGENT_IDS.flatMap((agent) => agentSpec(agent).env ?? [])
 ];
-var permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
-var orphanMs = () => envDurationMs("TELEPATHY_AGENT_ORPHAN_MS", 10 * 6e4);
+var orphanMs = (parent) => envDurationMs("TELEPATHY_AGENT_ORPHAN_MS", parent === "claude" ? 15e3 : 10 * 6e4);
+var span = (ms) => {
+  const [n, unit] = ms < 12e4 ? [Math.round(ms / 1e3), "second"] : [Math.round(ms / 6e4), "minute"];
+  return `${n} ${unit}${n === 1 ? "" : "s"}`;
+};
 var now = () => (/* @__PURE__ */ new Date()).toLocaleTimeString();
 var RESULT_RETRIES = 3;
 var resultRetryMs = () => envDurationMs("TELEPATHY_AGENT_RESULT_RETRY_MS", 6e4);
@@ -4120,9 +4160,9 @@ async function runAgent(dir) {
   const bin = harness?.acp ? resolvedAcpBin(harness.acp) : void 0;
   if (!harness?.acp || !bin) return fail(`${spec.harness} has no ACP launcher on PATH`);
   const transcript = transcriptFile(dir);
-  const out = fs17.createWriteStream(transcript, { flags: "a" });
+  const out = fs18.createWriteStream(transcript, { flags: "a" });
   const write = (text) => out.write(text);
-  const log = fs17.createWriteStream(path20.join(dir, "host.log"), { flags: "a" });
+  const log = fs18.createWriteStream(path21.join(dir, "host.log"), { flags: "a" });
   const label = agentLabel(spec.harness);
   const notes = [];
   let segment = "";
@@ -4163,6 +4203,7 @@ async function runAgent(dir) {
   let self;
   let pushes = Promise.resolve();
   let stopping = false;
+  let stopRequested = false;
   const deliver2 = async (from, body, kind) => {
     try {
       const result = await deliverLocal(from, spec.parent.id, body, void 0, { kind, transcript });
@@ -4207,7 +4248,24 @@ async function runAgent(dir) {
 `);
     const why = result.error ? `The turn failed: ${result.error}.` : result.stopReason && result.stopReason !== "end_turn" ? `The turn stopped: ${result.stopReason}.` : "";
     const body = [final || "(The turn ended without a final message.)", why].filter(Boolean).join("\n\n");
-    void tellParent(body, "agent-result");
+    if (stopRequested) return;
+    void offerToTask({ kind: "result", body }).then((taken) => {
+      if (taken) write(`
+
+> Reported to ${spec.parent.address} as its task's result.
+`);
+      else void tellParent(body, "agent-result");
+    });
+  };
+  const offerToTask = async (event) => {
+    if (!taskOpen(dir)) return false;
+    const file = offerEvent(dir, event);
+    const deadline = Date.now() + taskPickupMs();
+    while (Date.now() < deadline && !stopping) {
+      if (!fs18.existsSync(file)) return true;
+      await new Promise((resolve) => setTimeout(resolve, 200).unref());
+    }
+    return !takeBack(file);
   };
   const askPermission = async (_params, what) => {
     if (!self) return false;
@@ -4218,13 +4276,17 @@ async function runAgent(dir) {
 
 - permission requested: ${what} (asked ${spec.parent.address}, request ${id})`);
     let undeliverable = false;
-    void tellParent(
+    const minutes = Math.round(permissionWaitMs() / 6e4);
+    const asMessage = () => tellParent(
       `${self.address} asks for permission: ${what}.
-Ask your user, then call answer_permission with agent "${self.address}", request "${id}" and allow true or false. Without an answer within ${Math.round(permissionWaitMs() / 6e4)} minutes it is denied.`,
+Ask your user, then call answer_permission with agent "${self.address}", request "${id}" and allow true or false. Without an answer within ${minutes} minutes it is denied.`,
       "permission"
     ).then((ok) => {
       if (!ok) undeliverable = true;
     });
+    void offerToTask({ kind: "permission", body: `${self.address} asks for permission: ${what}.`, request: id }).then(
+      (taken) => taken ? void 0 : asMessage()
+    );
     const deadline = Date.now() + permissionWaitMs();
     while (Date.now() < deadline && !undeliverable) {
       const answer = readJson(permissionAnswerFile(dir, id));
@@ -4327,21 +4389,26 @@ ${text}`);
 ${taskText}`);
   void session.prompt(taskText);
   let goneSince;
+  const orphan = orphanMs(spec.parent.agent);
   const watch = setInterval(() => {
     if (isPeerAlive(readPeer(spec.parent.id))) {
       goneSince = void 0;
       return;
     }
     goneSince ??= Date.now();
-    if (Date.now() - goneSince > orphanMs()) {
+    if (Date.now() - goneSince > orphan) {
       write(`
 
-\u2014 stopped: ${spec.parent.address} has been gone for ${Math.round(orphanMs() / 6e4)} minutes
+\u2014 stopped: ${spec.parent.address} has been gone for ${span(orphan)}
 `);
+      stopRequested = true;
       session.close();
     }
-  }, 5e3);
-  const shutdown = () => session.close();
+  }, Math.min(5e3, Math.max(250, orphan / 3)));
+  const shutdown = () => {
+    stopRequested = true;
+    session.close();
+  };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
   await session.exited;
