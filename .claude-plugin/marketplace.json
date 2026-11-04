@@ -3,12 +3,12 @@
   "owner": {
     "name": "Winterrks"
   },
-  "description": "Telepathy: coding-agent sessions on one machine (Claude Code, Codex, OpenCode, Antigravity and more) message each other.",
+  "description": "Telepathy: coding-agent sessions (Claude Code, Codex, OpenCode, Antigravity and more) message each other, on one machine or across your devices.",
   "plugins": [
     {
       "name": "telepathy",
       "source": "./plugin",
-      "description": "Let Claude Code, Codex, OpenCode, Antigravity, Copilot CLI and other agent sessions on this machine message each other.",
+      "description": "Let Claude Code, Codex, OpenCode, Antigravity, Copilot CLI and other agent sessions on this machine and your other devices message each other.",
       "homepage": "https://github.com/Winterrks/telepathy"
     }
   ]

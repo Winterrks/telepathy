@@ -37,7 +37,7 @@ export function isRemoteAddress(to: string): boolean {
   return !!target && !!findDevice(target.slug);
 }
 
-function findDevice(slug: string): RemoteDevice | undefined {
+export function findDevice(slug: string): RemoteDevice | undefined {
   const devices = knownDevices();
   return (
     devices.find((d) => d.slug === slug) ??
@@ -117,7 +117,14 @@ interface SendReply {
   recipient?: { id: string; agent: Peer['agent']; name: string; address: string };
 }
 
-export async function sendRemote(self: Peer, target: RemoteTarget, body: string): Promise<SendResult> {
+export async function sendRemote(
+  self: Peer,
+  target: RemoteTarget,
+  body: string,
+  extra: Pick<Message, 'kind' | 'transcript'> = {},
+  /** `rate: false` for an agent's reports to its parent, which the parent asked for, as a local delivery has none. */
+  opts: { rate?: boolean } = {},
+): Promise<SendResult> {
   const device = findDevice(target.slug);
   if (!device) {
     const known = knownDevices().map((d) => d.slug);
@@ -154,7 +161,7 @@ export async function sendRemote(self: Peer, target: RemoteTarget, body: string)
   }
   const to = 'peer' in resolved ? resolved.peer.id : target.query;
   const rateKey = `${to}@${device.id}`;
-  const limited = checkRate(self.id, rateKey, body);
+  const limited = opts.rate === false ? undefined : checkRate(self.id, rateKey, body);
   if (limited) return { ok: false, error: limited };
 
   const plan = confirmWindow();
@@ -165,7 +172,7 @@ export async function sendRemote(self: Peer, target: RemoteTarget, body: string)
   const from = partyOf(self);
   let reply: SendReply;
   try {
-    reply = await call<SendReply>(device, '/v1/send', { from, to, body, budgetMs }, budgetMs + marginMs());
+    reply = await call<SendReply>(device, '/v1/send', { from, to, body, budgetMs, ...extra }, budgetMs + marginMs());
   } catch (err) {
     const code = ((err as Error & { cause?: { code?: string } }).cause ?? {}).code;
     const why = (err as Error).name === 'TimeoutError' ? 'it did not answer before the wait ended' : (err as Error).message;
@@ -186,7 +193,7 @@ export async function sendRemote(self: Peer, target: RemoteTarget, body: string)
   logEvent({ dir: 'out', device: device.slug, from: from.address, to: toAddress, ok: reply.ok, status, preview: preview(body) });
   if (!reply.ok || !reply.recipient) return { ok: false, error: status };
 
-  recordSent(self.id, rateKey, body);
+  if (opts.rate !== false) recordSent(self.id, rateKey, body);
   const recipient = asPeer(reply.recipient, device, true);
   const toParty: Party = { id: recipient.id, agent: recipient.agent, name: recipient.name, address: recipient.address };
   const message: Message = { id: reply.messageId ?? newMessageId(), from, to: toParty, body, sentAt: new Date().toISOString() };

@@ -1,9 +1,9 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/agent/host.ts
-import crypto4 from "node:crypto";
-import fs18 from "node:fs";
-import path21 from "node:path";
+import crypto6 from "node:crypto";
+import fs19 from "node:fs";
+import path22 from "node:path";
 
 // src/acp/host.ts
 import { spawn as spawn3 } from "node:child_process";
@@ -510,7 +510,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.12.0" : "0.0.0-dev";
+var VERSION = true ? "0.13.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -3371,9 +3371,9 @@ function resolvedAcpBin(acp, env = process.env) {
 }
 
 // src/core/deliver.ts
-import crypto3 from "node:crypto";
-import fs15 from "node:fs";
-import path17 from "node:path";
+import crypto5 from "node:crypto";
+import fs16 from "node:fs";
+import path18 from "node:path";
 
 // src/core/claude-socket.ts
 import fs14 from "node:fs";
@@ -3529,7 +3529,212 @@ function peerStatus(peer) {
 var STALE_MS = 15 * 6e4;
 
 // src/bridge/crypto.ts
+import crypto3 from "node:crypto";
 var SPKI_X25519_PREFIX = Buffer.from("302a300506032b656e032100", "hex");
+function seal(key, aad, value, t = Date.now()) {
+  const iv = crypto3.randomBytes(12);
+  const cipher = crypto3.createCipheriv("aes-256-gcm", Buffer.from(key, "base64"), iv);
+  cipher.setAAD(Buffer.from(`${aad}\0${t}`));
+  const body = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final(), cipher.getAuthTag()]);
+  return { t, n: iv.toString("base64"), c: body.toString("base64") };
+}
+function open(key, aad, sealed) {
+  const iv = Buffer.from(String(sealed.n), "base64");
+  const data = Buffer.from(String(sealed.c), "base64");
+  if (iv.length !== 12 || data.length < 16) throw new Error("bad envelope");
+  if (iv.toString("base64") !== sealed.n) throw new Error("bad envelope");
+  const decipher = crypto3.createDecipheriv("aes-256-gcm", Buffer.from(key, "base64"), iv);
+  decipher.setAAD(Buffer.from(`${aad}\0${sealed.t}`));
+  decipher.setAuthTag(data.subarray(data.length - 16));
+  const plain = Buffer.concat([decipher.update(data.subarray(0, data.length - 16)), decipher.final()]);
+  return JSON.parse(plain.toString("utf8"));
+}
+
+// src/bridge/state.ts
+import crypto4 from "node:crypto";
+import fs15 from "node:fs";
+import os8 from "node:os";
+import path17 from "node:path";
+var bridgeDir = () => path17.join(stateDir(), "bridge");
+var deviceFile = () => path17.join(bridgeDir(), "device.json");
+var trustedFile = () => path17.join(bridgeDir(), "trusted.json");
+var remoteFile = () => path17.join(bridgeDir(), "remote.json");
+var daemonFile = () => path17.join(bridgeDir(), "daemon.json");
+var eventsFile = () => path17.join(bridgeDir(), "events.jsonl");
+function bridgePort() {
+  const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
+  return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
+}
+function localBridgePort() {
+  const port = readJson(daemonFile())?.port;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port < 65536 ? port : bridgePort();
+}
+var onlineWindowMs = () => envDurationMs("TELEPATHY_BRIDGE_ONLINE_MS", 15e3);
+function deviceIdentity() {
+  const stored = readJson(deviceFile());
+  if (stored?.id && stored.name) return stored;
+  const identity = { id: crypto4.randomBytes(8).toString("hex"), name: defaultDeviceName() };
+  writeSecret(deviceFile(), identity);
+  return identity;
+}
+function defaultDeviceName() {
+  const host = os8.hostname().replace(/\.local$/i, "").split(".")[0];
+  return slugify(host) || "device";
+}
+function trustedDevices() {
+  return readJson(trustedFile()) ?? {};
+}
+function writeSecret(file, value) {
+  ensureDir(path17.dirname(file));
+  writeJsonAtomic(file, value);
+  try {
+    fs15.chmodSync(file, 384);
+  } catch {
+  }
+}
+function readRemoteState() {
+  return readJson(remoteFile());
+}
+var isOnline = (device, now2 = Date.now()) => now2 - Date.parse(device.lastSeen) < onlineWindowMs();
+function knownDevices() {
+  const state = readRemoteState();
+  if (!state) return [];
+  return state.devices.filter((device) => device.trusted);
+}
+function safeName(value, fallback = "device", max = 48) {
+  const text = String(value ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u206f\ufeff]/g, "").replace(/\s+/g, " ").trim().slice(0, max);
+  return text || fallback;
+}
+function logEvent(event) {
+  try {
+    ensureDir(bridgeDir());
+    fs15.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs15.statSync(eventsFile()).size;
+    if (size > 512 * 1024) {
+      const lines = fs15.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs15.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+    }
+  } catch {
+  }
+}
+var preview = (body) => safeName(body, "", 160);
+
+// src/bridge/client.ts
+var UNREACHABLE = "TELEPATHY_UNREACHABLE";
+var requestAad = (path23, from, to) => `req ${path23} ${from}->${to}`;
+var responseAad = (path23, from, to, nonce) => `res ${path23} ${from}->${to} ${nonce}`;
+var baseUrl = (addr) => `http://${addr}`;
+var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
+async function call(target, path23, body, timeoutMs, signal) {
+  const self = deviceIdentity();
+  const trusted = trustedDevices();
+  const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
+  if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
+  const wire = { device: self.id, name: self.name };
+  if (key) wire.sealed = seal(key, requestAad(path23, self.id, target.id), body);
+  else wire.body = body;
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path23);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path23}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
+    body: JSON.stringify(reverse ? { device: target.id, route: path23, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
+    signal: signal ? AbortSignal.any([timeout, signal]) : timeout
+  });
+  const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
+  if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
+  if (key) {
+    if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
+    return open(key, responseAad(path23, self.id, target.id, wire.sealed.n), reply.sealed);
+  }
+  return reply.body;
+}
+
+// src/bridge/remote.ts
+function findDevice(slug) {
+  const devices = knownDevices();
+  return devices.find((d) => d.slug === slug) ?? devices.find((d) => d.name.toLowerCase() === slug) ?? devices.find((d) => d.id === slug);
+}
+var qualify = (value, device) => `${value}@${device.slug}`;
+function asPeer(wire, device, qualified) {
+  return {
+    id: qualified ? qualify(wire.id, device) : wire.id,
+    agent: wire.agent,
+    pid: 0,
+    startedAt: wire.startedAt,
+    cwd: wire.cwd,
+    name: wire.name,
+    address: qualified ? qualify(wire.address, device) : wire.address,
+    hasListener: true,
+    hasServer: true
+  };
+}
+var marginMs = () => envDurationMs("TELEPATHY_BRIDGE_MARGIN_MS", 1500);
+async function sendRemote(self, target, body, extra = {}, opts = {}) {
+  const device = findDevice(target.slug);
+  if (!device) {
+    const known = knownDevices().map((d) => d.slug);
+    return {
+      ok: false,
+      error: `No device named "${target.slug}" is reachable. ` + (known.length ? `Known devices: ${known.join(", ")}.` : "Run `telepathy bridge start` on both devices; devices of your own tailnet appear by themselves, others need `telepathy bridge pair`.")
+    };
+  }
+  if (!isOnline(device)) {
+    return {
+      ok: false,
+      error: `Message failed: device ${device.slug} is offline (its telepathy bridge is not answering). Nothing was sent.`
+    };
+  }
+  if (device.incompatible) {
+    return {
+      ok: false,
+      error: `Message failed: device ${device.slug} runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}). Nothing was sent. The older one updates by itself when its auto-update is on; \`telepathy update\` there updates now.`
+    };
+  }
+  const unqualified = device.peers.map((wire) => asPeer(wire, device, false));
+  const resolved = resolvePeer(target.query, unqualified);
+  if ("error" in resolved && / (?:matches|is a prefix of) \d+ sessions: /.test(resolved.error)) {
+    return { ok: false, error: qualifyText(resolved.error, unqualified, device) };
+  }
+  const to = "peer" in resolved ? resolved.peer.id : target.query;
+  const rateKey = `${to}@${device.id}`;
+  const limited = opts.rate === false ? void 0 : checkRate(self.id, rateKey, body);
+  if (limited) return { ok: false, error: limited };
+  const plan = confirmWindow();
+  const deadline = plan.deadline ?? Date.now() + plan.abort + plan.grace;
+  const budgetMs = deadline - Date.now() - marginMs();
+  if (budgetMs < 2e3) return { ok: false, error: `Message failed: too little of this call's wait is left to reach device ${device.slug}.` };
+  const from = partyOf(self);
+  let reply;
+  try {
+    reply = await call(device, "/v1/send", { from, to, body, budgetMs, ...extra }, budgetMs + marginMs());
+  } catch (err) {
+    const code = (err.cause ?? {}).code;
+    const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
+    const error = code === UNREACHABLE ? `Message failed: device ${device.slug} is offline (${err.message}). Nothing was sent.` : ["ECONNREFUSED", "EHOSTUNREACH", "ENETUNREACH", "EHOSTDOWN"].includes(code ?? "") ? `Message failed: device ${device.slug} is offline (its telepathy bridge refused the connection). Nothing was sent.` : `Message not confirmed: the bridge on device ${device.slug} failed (${why}). That device withdraws any copy it could not confirm, so a later turn there will not show it.`;
+    logEvent({ dir: "out", device: device.slug, from: from.address, to: `${target.query}@${device.slug}`, ok: false, status: error, preview: preview(body) });
+    return { ok: false, error };
+  }
+  const peers = reply.recipient ? [...unqualified, asPeer({ ...reply.recipient }, device, false)] : unqualified;
+  const status = qualifyText(reply.ok ? reply.status ?? "Message delivered." : reply.error ?? "Message failed.", peers, device);
+  const toAddress = reply.recipient ? qualify(reply.recipient.address, device) : `${target.query}@${device.slug}`;
+  logEvent({ dir: "out", device: device.slug, from: from.address, to: toAddress, ok: reply.ok, status, preview: preview(body) });
+  if (!reply.ok || !reply.recipient) return { ok: false, error: status };
+  if (opts.rate !== false) recordSent(self.id, rateKey, body);
+  const recipient = asPeer(reply.recipient, device, true);
+  const toParty = { id: recipient.id, agent: recipient.agent, name: recipient.name, address: recipient.address };
+  const message = { id: reply.messageId ?? newMessageId(), from, to: toParty, body, sentAt: (/* @__PURE__ */ new Date()).toISOString() };
+  const delivery = { confirmed: true, attempts: [{ id: "bridge", result: "confirmed", when: "immediate", detail: device.slug }] };
+  return { ok: true, message, recipient, status, delivery };
+}
+function qualifyText(text, peers, device) {
+  let out = text;
+  for (const peer of peers) {
+    out = out.split(peerRef(peer)).join(`${qualify(peer.address, device)} [${qualify(peer.id, device)}]`);
+  }
+  return out;
+}
 
 // src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
@@ -3538,11 +3743,11 @@ var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path17.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path18.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now2 = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now2 - e.at < RATE_WINDOW_MS);
-  const hash = crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16);
+  const hash = crypto5.createHash("sha256").update(body).digest("hex").slice(0, 16);
   const dup = log.find((e) => e.to === toId && e.hash === hash && now2 - e.at < DUPLICATE_WINDOW_MS);
   if (dup) {
     return `The same message was already sent to ${toId} ${Math.round((now2 - dup.at) / 1e3)}s ago. Don't resend; a reply will arrive as a new message.`;
@@ -3555,10 +3760,10 @@ function checkRate(selfId, toId, body) {
 function recordSent(selfId, toId, body) {
   const now2 = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now2 - e.at < RATE_WINDOW_MS);
-  log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now2 });
+  log.push({ to: toId, hash: crypto5.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now2 });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs15.existsSync(path17.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs16.existsSync(path18.join(inboxDir(peerId2), `${messageId}.json`));
 async function deliverLocal(from, to, body, self, extra = {}) {
   const peers = listPeers().filter((p) => p.id !== self?.id);
   let resolved = resolvePeer(to, peers);
@@ -3619,7 +3824,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs15.existsSync(path17.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs16.existsSync(path18.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -3819,22 +4024,22 @@ function removeCleanWorktree(spec) {
 }
 
 // src/headless/peer.ts
-import fs16 from "node:fs";
-import path18 from "node:path";
-var headlessDir = () => path18.join(stateDir(), "headless");
-var headlessRecordPath = (agent, slug) => path18.join(headlessDir(), `${agent}-${slug}.json`);
+import fs17 from "node:fs";
+import path19 from "node:path";
+var headlessDir = () => path19.join(stateDir(), "headless");
+var headlessRecordPath = (agent, slug) => path19.join(headlessDir(), `${agent}-${slug}.json`);
 function writeHeadlessRecord(record) {
   writeJsonAtomic(headlessRecordPath(record.agent, record.slug), record);
 }
 function writeHosted(peerId2) {
-  writeJsonAtomic(path18.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path19.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid)
   });
 }
 function clearHosted(peerId2) {
   try {
-    fs16.rmSync(path18.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs17.rmSync(path19.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -3898,14 +4103,14 @@ function linkCopilotPlaceholders(spawnedPid, agentPid, sessionPeer) {
     const info = table.get(pid);
     const line = lines.get(pid) ?? "";
     const looksCopilot = !!info && isAgentProcess("copilot", info.comm, () => line);
-    const listed = fs16.existsSync(peerDir(peerId("copilot", pid)));
+    const listed = fs17.existsSync(peerDir(peerId("copilot", pid)));
     if (pid !== spawnedPid && !looksCopilot && !listed) continue;
     linkAgentProcess("copilot", pid, sessionPeer);
   }
 }
 function appendTranscript(peerId2, text) {
-  const file = path18.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs16.appendFileSync(file, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file = path19.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs17.appendFileSync(file, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 function startInboxPump(peerId2, inject) {
   const resolve = typeof peerId2 === "function" ? peerId2 : () => peerId2;
@@ -3921,10 +4126,10 @@ function startInboxPump(peerId2, inject) {
     try {
       for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
-        const file = path18.join(inboxDir(id), `${msg.id}.json`);
-        const withdrawnFile = path18.join(withdrawnDir(id), `${msg.id}.json`);
-        const pending = () => fs16.existsSync(file);
-        const withdrawn = () => fs16.existsSync(withdrawnFile);
+        const file = path19.join(inboxDir(id), `${msg.id}.json`);
+        const withdrawnFile = path19.join(withdrawnDir(id), `${msg.id}.json`);
+        const pending = () => fs17.existsSync(file);
+        const withdrawn = () => fs17.existsSync(withdrawnFile);
         if (!pending()) {
           done.add(msg.id);
           continue;
@@ -4070,23 +4275,23 @@ async function applySettings(request, sessionId, created, wanted) {
 }
 
 // src/agent/task.ts
-import fs17 from "node:fs";
-import path19 from "node:path";
-var taskDir = (dir) => path19.join(dir, "task");
-var eventsDir = (dir) => path19.join(taskDir(dir), "events");
-var openDir = (dir) => path19.join(taskDir(dir), "open");
+import fs18 from "node:fs";
+import path20 from "node:path";
+var taskDir = (dir) => path20.join(dir, "task");
+var eventsDir = (dir) => path20.join(taskDir(dir), "events");
+var openDir = (dir) => path20.join(taskDir(dir), "open");
 var taskPickupMs = () => envDurationMs("TELEPATHY_TASK_PICKUP_MS", 3e4);
 var lastSeq = -1;
 function offerEvent(dir, event) {
   ensureDir(eventsDir(dir));
-  if (lastSeq < 0) lastSeq = fs17.readdirSync(eventsDir(dir)).length;
-  const file = path19.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
+  if (lastSeq < 0) lastSeq = fs18.readdirSync(eventsDir(dir)).length;
+  const file = path20.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
   writeJsonAtomic(file, { ...event, at: (/* @__PURE__ */ new Date()).toISOString() });
   return file;
 }
 function takeBack(file) {
   try {
-    fs17.renameSync(file, file.replace(/\.json$/, ".sent"));
+    fs18.renameSync(file, file.replace(/\.json$/, ".sent"));
     return true;
   } catch {
     return false;
@@ -4095,30 +4300,31 @@ function takeBack(file) {
 function taskOpen(dir) {
   let names;
   try {
-    names = fs17.readdirSync(openDir(dir));
+    names = fs18.readdirSync(openDir(dir));
   } catch {
     return false;
   }
   return names.some((name) => {
-    const marker = readJson(path19.join(openDir(dir), name));
+    const marker = readJson(path20.join(openDir(dir), name));
+    if (marker?.until !== void 0 && marker.until < Date.now()) return false;
     return !!marker?.pid && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart);
   });
 }
 
 // src/agent/spec.ts
-import path20 from "node:path";
-var specFile = (dir) => path20.join(dir, "spec.json");
-var stateFile = (dir) => path20.join(dir, "state.json");
-var transcriptFile = (dir) => path20.join(dir, "transcript.md");
-var permissionsDir = (dir) => path20.join(dir, "permissions");
+import path21 from "node:path";
+var specFile = (dir) => path21.join(dir, "spec.json");
+var stateFile = (dir) => path21.join(dir, "state.json");
+var transcriptFile = (dir) => path21.join(dir, "transcript.md");
+var permissionsDir = (dir) => path21.join(dir, "permissions");
 var readSpec = (dir) => readJson(specFile(dir));
 function writeState(dir, state) {
   ensureDir(dir);
   writeJsonAtomic(stateFile(dir), state);
 }
 var permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
-var permissionRequestFile = (dir, id) => path20.join(permissionsDir(dir), `${id}.json`);
-var permissionAnswerFile = (dir, id) => path20.join(permissionsDir(dir), `${id}.answer.json`);
+var permissionRequestFile = (dir, id) => path21.join(permissionsDir(dir), `${id}.json`);
+var permissionAnswerFile = (dir, id) => path21.join(permissionsDir(dir), `${id}.answer.json`);
 
 // src/agent/host.ts
 var SESSION_MARKERS = [
@@ -4140,6 +4346,14 @@ var span = (ms) => {
   return `${n} ${unit}${n === 1 ? "" : "s"}`;
 };
 var now = () => (/* @__PURE__ */ new Date()).toLocaleTimeString();
+var unreachableMs = () => envDurationMs("TELEPATHY_AGENT_UNREACHABLE_MS", 10 * 6e4);
+function parentPresent(spec) {
+  if (!spec.remote) return isPeerAlive(readPeer(spec.parent.id));
+  const { device: id, parentId } = spec.remote;
+  const device = knownDevices().find((d) => d.id === id);
+  if (!device || !isOnline(device)) return void 0;
+  return device.peers.some((peer) => peer.id === parentId);
+}
 var RESULT_RETRIES = 3;
 var resultRetryMs = () => envDurationMs("TELEPATHY_AGENT_RESULT_RETRY_MS", 6e4);
 async function runAgent(dir) {
@@ -4160,9 +4374,9 @@ async function runAgent(dir) {
   const bin = harness?.acp ? resolvedAcpBin(harness.acp) : void 0;
   if (!harness?.acp || !bin) return fail(`${spec.harness} has no ACP launcher on PATH`);
   const transcript = transcriptFile(dir);
-  const out = fs18.createWriteStream(transcript, { flags: "a" });
+  const out = fs19.createWriteStream(transcript, { flags: "a" });
   const write = (text) => out.write(text);
-  const log = fs18.createWriteStream(path21.join(dir, "host.log"), { flags: "a" });
+  const log = fs19.createWriteStream(path22.join(dir, "host.log"), { flags: "a" });
   const label = agentLabel(spec.harness);
   const notes = [];
   let segment = "";
@@ -4206,7 +4420,8 @@ async function runAgent(dir) {
   let stopRequested = false;
   const deliver2 = async (from, body, kind) => {
     try {
-      const result = await deliverLocal(from, spec.parent.id, body, void 0, { kind, transcript });
+      const sender = spec.remote && peerId2 ? readPeer(peerId2) : void 0;
+      const result = spec.remote ? sender ? await sendRemote(sender, { slug: spec.remote.device, query: spec.remote.parentId }, body, { kind, transcript }, { rate: false }) : { ok: false, error: "this agent has no session record" } : await deliverLocal(from, spec.parent.id, body, void 0, { kind, transcript });
       if (!result.ok) write(`
 
 > Not delivered to ${spec.parent.address}: ${result.error}
@@ -4262,14 +4477,14 @@ async function runAgent(dir) {
     const file = offerEvent(dir, event);
     const deadline = Date.now() + taskPickupMs();
     while (Date.now() < deadline && !stopping) {
-      if (!fs18.existsSync(file)) return true;
+      if (!fs19.existsSync(file)) return true;
       await new Promise((resolve) => setTimeout(resolve, 200).unref());
     }
     return !takeBack(file);
   };
   const askPermission = async (_params, what) => {
     if (!self) return false;
-    const id = `p-${Date.now().toString(36)}-${crypto4.randomBytes(2).toString("hex")}`;
+    const id = `p-${Date.now().toString(36)}-${crypto6.randomBytes(2).toString("hex")}`;
     ensureDir(permissionsDir(dir));
     writeJsonAtomic(permissionRequestFile(dir, id), { id, label: what, at: (/* @__PURE__ */ new Date()).toISOString() });
     write(`
@@ -4390,17 +4605,25 @@ ${taskText}`);
   void session.prompt(taskText);
   let goneSince;
   const orphan = orphanMs(spec.parent.agent);
+  const unreachable = Math.max(orphan, unreachableMs());
   const watch = setInterval(() => {
-    if (isPeerAlive(readPeer(spec.parent.id))) {
+    const present = parentPresent(spec);
+    if (present === true) {
       goneSince = void 0;
       return;
     }
     goneSince ??= Date.now();
-    if (Date.now() - goneSince > orphan) {
-      write(`
+    const limit = present === void 0 ? unreachable : orphan;
+    if (Date.now() - goneSince > limit) {
+      write(
+        present === void 0 ? `
+
+\u2014 stopped: the device ${spec.parent.address} is on has been out of reach for ${span(limit)}
+` : `
 
 \u2014 stopped: ${spec.parent.address} has been gone for ${span(orphan)}
-`);
+`
+      );
       stopRequested = true;
       session.close();
     }

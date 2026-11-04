@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.12.0" : "0.0.0-dev";
+    VERSION = true ? "0.13.0" : "0.0.0-dev";
   }
 });
 
@@ -3348,28 +3348,28 @@ var init_state = __esm({
 });
 
 // src/bridge/client.ts
-async function call(target, path35, body, timeoutMs2, signal) {
+async function call(target, path36, body, timeoutMs2, signal) {
   const self2 = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire2 = { device: self2.id, name: self2.name };
-  if (key) wire2.sealed = seal(key, requestAad(path35, self2.id, target.id), body);
+  if (key) wire2.sealed = seal(key, requestAad(path36, self2.id, target.id), body);
   else wire2.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path35);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path36);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path35}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path36}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path35, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
+    body: JSON.stringify(reverse ? { device: target.id, route: path36, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire2.sealed) throw new Error("the answer was not sealed");
-    return open2(key, responseAad(path35, self2.id, target.id, wire2.sealed.n), reply.sealed);
+    return open2(key, responseAad(path36, self2.id, target.id, wire2.sealed.n), reply.sealed);
   }
   return reply.body;
 }
@@ -3380,10 +3380,10 @@ var init_client = __esm({
     init_crypto();
     init_state();
     UNREACHABLE = "TELEPATHY_UNREACHABLE";
-    requestAad = (path35, from, to) => `req ${path35} ${from}->${to}`;
-    responseAad = (path35, from, to, nonce) => `res ${path35} ${from}->${to} ${nonce}`;
+    requestAad = (path36, from, to) => `req ${path36} ${from}->${to}`;
+    responseAad = (path36, from, to, nonce) => `res ${path36} ${from}->${to} ${nonce}`;
     baseUrl = (addr) => `http://${addr}`;
-    REVERSE_ROUTES = ["/v1/peers", "/v1/send"];
+    REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
   }
 });
 
@@ -3444,7 +3444,7 @@ function formatRemoteListings(listings, now = Date.now()) {
   }
   return lines;
 }
-async function sendRemote(self2, target, body) {
+async function sendRemote(self2, target, body, extra = {}, opts = {}) {
   const device = findDevice(target.slug);
   if (!device) {
     const known = knownDevices().map((d) => d.slug);
@@ -3472,7 +3472,7 @@ async function sendRemote(self2, target, body) {
   }
   const to = "peer" in resolved ? resolved.peer.id : target.query;
   const rateKey = `${to}@${device.id}`;
-  const limited = checkRate(self2.id, rateKey, body);
+  const limited = opts.rate === false ? void 0 : checkRate(self2.id, rateKey, body);
   if (limited) return { ok: false, error: limited };
   const plan = confirmWindow();
   const deadline = plan.deadline ?? Date.now() + plan.abort + plan.grace;
@@ -3481,7 +3481,7 @@ async function sendRemote(self2, target, body) {
   const from = partyOf(self2);
   let reply;
   try {
-    reply = await call(device, "/v1/send", { from, to, body, budgetMs }, budgetMs + marginMs());
+    reply = await call(device, "/v1/send", { from, to, body, budgetMs, ...extra }, budgetMs + marginMs());
   } catch (err) {
     const code = (err.cause ?? {}).code;
     const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
@@ -3494,7 +3494,7 @@ async function sendRemote(self2, target, body) {
   const toAddress = reply.recipient ? qualify(reply.recipient.address, device) : `${target.query}@${device.slug}`;
   logEvent({ dir: "out", device: device.slug, from: from.address, to: toAddress, ok: reply.ok, status, preview: preview(body) });
   if (!reply.ok || !reply.recipient) return { ok: false, error: status };
-  recordSent(self2.id, rateKey, body);
+  if (opts.rate !== false) recordSent(self2.id, rateKey, body);
   const recipient = asPeer(reply.recipient, device, true);
   const toParty = { id: recipient.id, agent: recipient.agent, name: recipient.name, address: recipient.address };
   const message = { id: reply.messageId ?? newMessageId(), from, to: toParty, body, sentAt: (/* @__PURE__ */ new Date()).toISOString() };
@@ -3559,14 +3559,14 @@ function bodyProblem(body) {
   }
   return void 0;
 }
-async function sendMessage(self2, to, body) {
+async function sendMessage(self2, to, body, extra = {}) {
   const ownsClock = beginToolCall();
   try {
     const problem = bodyProblem(body);
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
-    if (remote) return await sendRemote(self2, remote, body);
-    return await deliverLocal(partyOf(self2), to, body, self2);
+    if (remote) return await sendRemote(self2, remote, body, extra);
+    return await deliverLocal(partyOf(self2), to, body, self2, extra);
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -4029,8 +4029,8 @@ var init_harnesses = __esm({
 });
 
 // src/headless/peer.ts
-import fs28 from "node:fs";
-import path30 from "node:path";
+import fs29 from "node:fs";
+import path31 from "node:path";
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
 }
@@ -4038,14 +4038,14 @@ function writeHeadlessRecord(record2) {
   writeJsonAtomic(headlessRecordPath(record2.agent, record2.slug), record2);
 }
 function writeHosted(peerId2) {
-  writeJsonAtomic(path30.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path31.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid)
   });
 }
 function clearHosted(peerId2) {
   try {
-    fs28.rmSync(path30.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs29.rmSync(path31.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -4069,15 +4069,15 @@ var init_peer = __esm({
     init_paths();
     init_proc();
     init_peers();
-    headlessDir = () => path30.join(stateDir(), "headless");
-    headlessRecordPath = (agent, slug) => path30.join(headlessDir(), `${agent}-${slug}.json`);
-    headlessLogPath = (agent, slug) => path30.join(headlessDir(), `${agent}-${slug}.log`);
+    headlessDir = () => path31.join(stateDir(), "headless");
+    headlessRecordPath = (agent, slug) => path31.join(headlessDir(), `${agent}-${slug}.json`);
+    headlessLogPath = (agent, slug) => path31.join(headlessDir(), `${agent}-${slug}.log`);
   }
 });
 
 // src/grokbot/config.ts
-import fs29 from "node:fs";
-import path31 from "node:path";
+import fs30 from "node:fs";
+import path32 from "node:path";
 function urlProblem(raw) {
   let url2;
   try {
@@ -4099,7 +4099,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file2 = configPath(slug);
   try {
-    if ((fs29.statSync(file2).mode & 63) !== 0) return void 0;
+    if ((fs30.statSync(file2).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -4116,14 +4116,14 @@ function writeConfig(name, url2, key) {
 }
 function removeConfig(slug) {
   const file2 = configPath(slug);
-  if (!fs29.existsSync(file2)) return false;
-  fs29.rmSync(file2, { force: true });
+  if (!fs30.existsSync(file2)) return false;
+  fs30.rmSync(file2, { force: true });
   return true;
 }
 function listConfigs() {
   let names = [];
   try {
-    names = fs29.readdirSync(grokbotDir());
+    names = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
@@ -4132,14 +4132,14 @@ function listConfigs() {
 function looseConfigs() {
   let names = [];
   try {
-    names = fs29.readdirSync(grokbotDir());
+    names = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
   return names.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs29.statSync(path31.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs30.statSync(path32.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -4151,15 +4151,15 @@ var init_config = __esm({
     "use strict";
     init_paths();
     init_peers();
-    grokbotDir = () => path31.join(stateDir(), "grokbot");
-    configPath = (slug) => path31.join(grokbotDir(), `${slug}.json`);
+    grokbotDir = () => path32.join(stateDir(), "grokbot");
+    configPath = (slug) => path32.join(grokbotDir(), `${slug}.json`);
   }
 });
 
 // src/grokbot/host.ts
-import fs30 from "node:fs";
+import fs31 from "node:fs";
 import os12 from "node:os";
-import path32 from "node:path";
+import path33 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 async function postContext(config2, context) {
   const start = Date.now();
@@ -4193,21 +4193,21 @@ async function postContext(config2, context) {
   }
 }
 function grokbotArgv() {
-  const here = path32.dirname(fileURLToPath4(import.meta.url));
-  for (const file2 of [path32.join(here, "grokbot.mjs"), path32.join(here, "..", "grokbot-main.ts")]) {
-    if (fs30.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
+  const here = path33.dirname(fileURLToPath4(import.meta.url));
+  for (const file2 of [path33.join(here, "grokbot.mjs"), path33.join(here, "..", "grokbot-main.ts")]) {
+    if (fs31.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
 function takeLock(slug) {
-  const file2 = path32.join(ensureDir(grokbotDir()), `${slug}.lock`);
+  const file2 = path33.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs30.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs31.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs30.readFileSync(file2, "utf8"));
-          if (held.pid === process.pid) fs30.rmSync(file2, { force: true });
+          const held = JSON.parse(fs31.readFileSync(file2, "utf8"));
+          if (held.pid === process.pid) fs31.rmSync(file2, { force: true });
         } catch {
         }
       };
@@ -4215,12 +4215,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs30.readFileSync(file2, "utf8"));
+        held = JSON.parse(fs31.readFileSync(file2, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs30.rmSync(file2, { force: true });
+      fs31.rmSync(file2, { force: true });
     }
   }
   return void 0;
@@ -4242,8 +4242,8 @@ function contextFor(config2, messages, cli = cliCommand()) {
   return [note, ...turns].join("\n\n");
 }
 function appendTranscript(peerId2, text) {
-  const file2 = path32.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs30.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file2 = path33.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs31.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -4260,10 +4260,10 @@ async function runGrokbotHost(slug) {
     return 1;
   }
   const logFile2 = headlessLogPath("grok", slug);
-  ensureDir(path32.dirname(logFile2));
+  ensureDir(path33.dirname(logFile2));
   const log = (line) => {
     try {
-      fs30.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs31.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -4297,8 +4297,8 @@ async function runGrokbotHost(slug) {
         stop();
         return;
       }
-      const pendingFile = (msg) => path32.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs30.existsSync(pendingFile(msg)));
+      const pendingFile = (msg) => path33.join(inboxDir(hosted.peerId), `${msg.id}.json`);
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs31.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now = Date.now();
@@ -4311,7 +4311,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs30.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs31.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config2, live, cli);
       const result = await postContext(config2, context);
@@ -4324,9 +4324,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs30.existsSync(path32.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs31.existsSync(path33.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript(hosted.peerId, formatAsUserTurn(msg));
-        if (fs30.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs31.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -4386,9 +4386,9 @@ __export(cli_exports, {
   grokbotCommand: () => grokbotCommand
 });
 import { spawn as spawn7 } from "node:child_process";
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import os13 from "node:os";
-import path33 from "node:path";
+import path34 from "node:path";
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -4436,12 +4436,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile2 = headlessLogPath("grok", slug);
-  fs31.mkdirSync(path33.dirname(logFile2), { recursive: true, mode: 448 });
-  const out = fs31.openSync(logFile2, "a", 384);
+  fs32.mkdirSync(path34.dirname(logFile2), { recursive: true, mode: 448 });
+  const out = fs32.openSync(logFile2, "a", 384);
   const [cmd, ...args] = grokbotArgv();
   const home2 = os13.homedir();
   const child = spawn7(cmd, [...args, "host", slug], {
-    cwd: fs31.existsSync(home2) ? home2 : stateDir(),
+    cwd: fs32.existsSync(home2) ? home2 : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -4449,7 +4449,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs31.closeSync(out);
+  fs32.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record2 = readHeadlessRecord("grok", slug);
@@ -4628,7 +4628,7 @@ machine. The key stays in ~/.telepathy/grokbot/<name>.json (mode 600) and is nev
 });
 
 // src/server.ts
-import path34 from "node:path";
+import path35 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -5504,10 +5504,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path35) {
-  if (!path35)
+function getElementAtPath(obj, path36) {
+  if (!path36)
     return obj;
-  return path35.reduce((acc, key) => acc?.[key], obj);
+  return path36.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -5847,11 +5847,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path35, issues) {
+function prefixIssues(path36, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path35);
+    iss.path.unshift(path36);
     return iss;
   });
 }
@@ -6301,16 +6301,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path35 = []) => {
+  const processError = (error63, path36 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path35, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path36, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path35, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path35, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
       } else {
-        const fullpath = [...path35, ...issue2.path];
+        const fullpath = [...path36, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -6349,17 +6349,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path35 = []) => {
+  const processError = (error63, path36 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path35, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path36, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path35, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path35, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
       } else {
-        const fullpath = [...path35, ...issue2.path];
+        const fullpath = [...path36, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -6398,8 +6398,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path35 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path35) {
+  const path36 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path36) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23501,13 +23501,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path35 = ref.slice(1).split("/").filter(Boolean);
-  if (path35.length === 0) {
+  const path36 = ref.slice(1).split("/").filter(Boolean);
+  if (path36.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path35[0] === defsKey) {
-    const key = path35[1] === void 0 ? void 0 : decodeJSONPointerSegment(path35[1]);
+  if (path36[0] === defsKey) {
+    const key = path36[1] === void 0 ? void 0 : decodeJSONPointerSegment(path36[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -27930,9 +27930,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path35 = issue2.path.map(String);
-      const key = path35.length > 0 ? path35.join(".") : "_meta";
-      if (path35.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path36 = issue2.path.map(String);
+      const key = path36.length > 0 ? path36.join(".") : "_meta";
+      if (path36.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -28253,29 +28253,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path35, reachable) => {
+  const visit2 = (node2, path36, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path35.length === 0) return `${pathName(path35)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path36.length === 0) return `${pathName(path36)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path35)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path35)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path36)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path36)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path35)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path36)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path35,
+        path: path36,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path35, key], reachable);
+      const fault$1 = visit2(child, [...path36, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -28283,7 +28283,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path35, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path36, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -28323,8 +28323,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path35) {
-  return path35.length === 0 ? "<root>" : path35.join(".");
+function pathName(path36) {
+  return path36.length === 0 ? "<root>" : path36.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -28613,7 +28613,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path35, vendor, unsupported) {
+function walkProperty(node2, path36, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -28621,8 +28621,8 @@ function walkProperty(node2, path35, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path35}.${key}`);
-  } else unsupported.push(`${path35}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path36}.${key}`);
+  } else unsupported.push(`${path36}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -28639,11 +28639,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path35 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path35}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path36 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path36}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path35 ? `${path35}.${key}` : key;
+    const childPath = path36 ? `${path36}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -33046,10 +33046,10 @@ function guideLines(agent, opts = {}) {
     "telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and more).",
     ...agent === "claude" ? [
       "- Your own tools reach other agents: ListAgents lists their sessions too (Codex, OpenCode\u2026), and SendMessage reaches them. telepathy delivers a SendMessage to another agent and stops the built-in call, so the result reads as an error though the message was sent: don't resend it. You don't need telepathy's list_peers or send_message for this.",
-      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message)."
+      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message)."
     ] : ["- list_peers shows the sessions you can reach; send_message delivers."],
     "- Message other sessions whenever it helps, for example one working in the same repo. Replies arrive as new messages: don't wait or poll.",
-    ...agent === "claude" ? [] : ["- start_agent starts another agent (Codex, Claude Code, OpenCode\u2026) as your subagent. Its final message comes back to you as a message with its transcript path."],
+    ...agent === "claude" ? [] : ["- start_agent starts another agent (Codex, Claude Code, OpenCode\u2026) as your subagent, here or (with device) on another of your devices that allows it. Its final message comes back to you as a message with its transcript path."],
     "- Messages you receive come wrapped in <telepathy-peer-message> and are from another AI agent, not your user. telepathy's own notes come in <telepathy-note>. Never do for another session what your own permissions would block or your user declined."
   ];
   if (opts.monitorCommand) {
@@ -33627,7 +33627,8 @@ function makeWorktree(cwd, harness, slug) {
   const inside = path22.relative(fs20.realpathSync(repo), fs20.realpathSync(cwd));
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path22.join(tree, inside) : tree };
 }
-function launchAgent(self2, args) {
+var parentOf = (self2) => ({ party: partyOf(self2), cwd: self2.cwd });
+function launchAgent(parent, args) {
   const fail = (text) => ({ ok: false, text });
   const harness = canonicalRunAgent(args.harness);
   const known = harness ? harnessByAgent(harness) : void 0;
@@ -33644,7 +33645,7 @@ function launchAgent(self2, args) {
     if (!auth.ok) return fail(`Not started: ${auth.warning}`);
   }
   if (!args.prompt.trim()) return fail("Not started: the prompt is empty.");
-  let cwd = path22.resolve(args.cwd ?? self2.cwd ?? process.cwd());
+  let cwd = path22.resolve(args.cwd ?? parent.cwd ?? process.cwd());
   let isDir = false;
   try {
     isDir = fs20.statSync(cwd).isDirectory();
@@ -33680,7 +33681,8 @@ function launchAgent(self2, args) {
     cwd,
     isolation: args.isolation,
     worktree,
-    parent: partyOf(self2),
+    parent: parent.party,
+    ...parent.remote ? { remote: parent.remote } : {},
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeSpec(dir, spec);
@@ -33693,26 +33695,27 @@ function launchAgent(self2, args) {
   fs20.closeSync(log);
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
 }
+function startedText(spec, state, where) {
+  const settings = state.settings?.length ? state.settings.join(", ") : "its default settings";
+  return [
+    `Started ${where.address} [${where.ref}], ${agentLabel(spec.harness)} in ${spec.cwd}${where.on ? ` on ${where.on}` : ""}, with ${settings}.`,
+    `Transcript: ${where.transcript}`,
+    spec.worktree ? `It works in its own worktree on branch ${spec.worktree.branch}; an unchanged worktree is removed when it stops.` : "",
+    `It works in the background. When its turn ends, its final message arrives here as a message from it (kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to "${where.address}"; stop it with stop_agent when you no longer need it.`,
+    ...state.notes ?? []
+  ].filter(Boolean).join("\n");
+}
 async function startAgentTool(self2, args) {
-  const launched = launchAgent(self2, args);
+  const launched = launchAgent(parentOf(self2), args);
   if (!launched.ok) return failed(launched.text);
   const { dir, spec, child } = launched;
-  const { harness, worktree, cwd } = spec;
+  const { harness } = spec;
   const deadline = Date.now() + startWaitMs();
   while (Date.now() < deadline) {
     const state = readState(dir);
     if (state?.status === "failed") return failed(`Not started: ${agentLabel(harness)} ${state.error ?? "failed to start"}.`.replace(/\.\.$/, "."));
     if (state?.status === "ready" && state.address && state.peerId) {
-      const settings = state.settings?.length ? state.settings.join(", ") : "its default settings";
-      return {
-        text: [
-          `Started ${state.address} [${state.peerId}], ${agentLabel(harness)} in ${cwd}, with ${settings}.`,
-          `Transcript: ${transcriptFile(dir)}`,
-          worktree ? `It works in its own worktree on branch ${worktree.branch}; an unchanged worktree is removed when it stops.` : "",
-          `It works in the background. When its turn ends, its final message arrives here as a message from it (kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to "${state.address}"; stop it with stop_agent when you no longer need it.`,
-          ...state.notes ?? []
-        ].filter(Boolean).join("\n")
-      };
+      return { text: startedText(spec, state, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }) };
     }
     const spawnError = launched.spawnError();
     if (spawnError) {
@@ -33810,7 +33813,7 @@ var TOOLS = {
   },
   start_agent: {
     title: "Start an agent session",
-    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) on this machine as your subagent, in its harness's ACP mode. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
+    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
     args: {
       harness: external_exports.enum(startableHarnesses()).describe("Which coding agent to start"),
       description: external_exports.string().describe("A short (3-5 word) description of what it is for; also its name unless name is set"),
@@ -33818,7 +33821,8 @@ var TOOLS = {
       name: external_exports.string().optional().describe('Its address name, as in "codex:<name>". Defaults to the description'),
       model: external_exports.string().optional().describe('A model the harness offers, by id or a unique part of it (e.g. "opus", "gpt-5.5")'),
       effort: external_exports.string().optional().describe("Reasoning effort, as the harness names it (low, medium, high, xhigh, max)"),
-      cwd: external_exports.string().optional().describe("Folder to work in. Defaults to yours"),
+      cwd: external_exports.string().optional().describe("Folder to work in. Defaults to yours (on another device, yours when that folder exists there too)"),
+      device: external_exports.string().optional().describe('Run it on another of your devices (as in "@<device>" addresses) instead of this one. That device must allow it: `telepathy bridge allow-agents <this device>` there'),
       isolation: external_exports.enum(["worktree"]).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops')
     }
   },
@@ -33995,34 +33999,154 @@ function attachGrokDelivery(server, currentId) {
   poll.unref();
 }
 
-// src/agent/task.ts
+// src/agent/remote.ts
+init_agents();
+init_messages();
+init_paths();
+init_version();
+init_client();
+init_remote();
+init_state();
 import fs22 from "node:fs";
+import path23 from "node:path";
+function agentDevice(name) {
+  const device = findDevice(name.trim().toLowerCase());
+  if (!device) {
+    const known = knownDevices().filter((d) => d.trusted).map((d) => d.slug);
+    return { error: `Not started: no device named "${name}". ${known.length ? `Your devices: ${known.join(", ")}.` : "Start the telepathy bridge on both devices first."}` };
+  }
+  if (!isOnline(device)) return { error: `Not started: device ${device.slug} is offline (its telepathy bridge is not answering).` };
+  if (device.incompatible) return { error: `Not started: device ${device.slug} runs telepathy ${device.version ?? "?"}, which can't talk to this one (${VERSION}).` };
+  return device;
+}
+async function agentsRequest(device, self2, request, timeoutMs2 = 15e3) {
+  try {
+    const reply = await call(device, "/v1/agents", { from: partyOf(self2), ...request }, timeoutMs2);
+    if (!reply || typeof reply !== "object" || typeof reply.ok !== "boolean") return { ok: false, error: `device ${device.slug} sent a malformed answer`, reached: false };
+    return reply;
+  } catch (err) {
+    const message = err.message;
+    if (message === "not found") {
+      return { ok: false, error: `device ${device.slug} runs telepathy ${device.version ?? "older than 0.13.0"}, which can't start agents for another device. Update it with \`telepathy update\` there.` };
+    }
+    const why = err.name === "TimeoutError" ? "it did not answer in time" : message;
+    return { ok: false, error: `device ${device.slug} did not answer (${why})`, reached: false };
+  }
+}
+var childrenDir = () => path23.join(stateDir(), "agents-elsewhere");
+var childFile = (child) => path23.join(childrenDir(), `${child.parentId}--${child.device}--${child.harness}-${child.slug}.json`.replace(/[^\w.@-]/g, "_"));
+function rememberChild(self2, device, agent) {
+  const child = {
+    device: device.id,
+    address: `${agent.harness}:${agent.slug}`,
+    harness: agent.harness,
+    slug: agent.slug,
+    description: agent.description,
+    parentId: self2.id,
+    createdAt: agent.createdAt
+  };
+  ensureDir(childrenDir());
+  writeJsonAtomic(childFile(child), child);
+  return child;
+}
+var childAddress = (child) => `${child.address}@${findDevice(child.device)?.slug ?? child.device}`;
+function findRemoteChild(self2, name) {
+  let q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const target = remoteTarget(q);
+  const device = target ? findDevice(target.slug) : void 0;
+  if (target && device) q = target.query;
+  let names;
+  try {
+    names = fs22.readdirSync(childrenDir());
+  } catch {
+    return void 0;
+  }
+  return names.map((file2) => readJson(path23.join(childrenDir(), file2))).filter((child) => !!child && child.parentId === self2.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+var failed2 = (text) => ({ text, isError: true });
+var sleep4 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+async function launchRemoteAgent(self2, deviceName, args, leaseMs) {
+  const device = agentDevice(deviceName);
+  if ("error" in device) return { ok: false, text: device.error };
+  const { device: _ignored, ...rest } = args;
+  const reply = await agentsRequest(device, self2, { op: "start", args: rest, cwd: self2.cwd, ...leaseMs ? { leaseMs } : {} }, 2e4);
+  if (!reply.ok) return { ok: false, text: reply.error.startsWith("Not started") ? reply.error : `Not started: ${reply.error.replace(/\.$/, "")}.` };
+  return { ok: true, device, agent: reply.agent, child: rememberChild(self2, device, reply.agent) };
+}
+async function startRemoteAgentTool(self2, deviceName, args) {
+  const launched = await launchRemoteAgent(self2, deviceName, args);
+  if (!launched.ok) return failed2(launched.text);
+  const { device, child } = launched;
+  let agent = launched.agent;
+  const address = childAddress(child);
+  const deadline = Date.now() + startWaitMs() + 5e3;
+  while (Date.now() < deadline) {
+    const state = agent.state;
+    if (state?.status === "failed") return failed2(`Not started: ${agentLabel(agent.harness)} ${state.error ?? "failed to start"} on ${device.slug}.`);
+    if (state?.status === "ready" && state.peerId) {
+      return {
+        text: startedText(agent, state, {
+          address,
+          ref: `${state.peerId}@${device.slug}`,
+          transcript: `${agent.transcript} on ${device.slug}`,
+          on: device.slug
+        })
+      };
+    }
+    if (state && !agent.alive) break;
+    await sleep4(500);
+    const reply = await agentsRequest(device, self2, { op: "poll", address: child.address });
+    if (reply.ok) agent = reply.agent;
+  }
+  await agentsRequest(device, self2, { op: "stop", address: child.address }, 2e4);
+  return failed2(`Not started: ${agentLabel(agent.harness)} did not get ready on ${device.slug}. See ${agent.log} on ${device.slug}.`);
+}
+async function stopRemoteAgentTool(self2, child) {
+  const address = childAddress(child);
+  const device = agentDevice(child.device);
+  if ("error" in device) return failed2(device.error.replace(/^Not started: /, `Not stopped: `));
+  const reply = await agentsRequest(device, self2, { op: "stop", address: child.address }, 2e4);
+  if (!reply.ok) return failed2(`Not stopped: ${reply.error.replace(/\.$/, "")}.`);
+  if (reply.text === "not running") return { text: `${address} is not running.` };
+  const kept = reply.agent.state?.worktreeKept && reply.agent.worktree ? ` Its worktree ${reply.agent.worktree.path} (branch ${reply.agent.worktree.branch}) on ${device.slug} has changes and was kept.` : "";
+  return { text: `Stopped ${address}. Transcript: ${reply.agent.transcript} on ${device.slug}.${kept}` };
+}
+async function answerRemotePermission(self2, child, request, allow) {
+  const device = agentDevice(child.device);
+  if ("error" in device) return failed2(device.error.replace(/^Not started: /, ""));
+  const reply = await agentsRequest(device, self2, { op: "answer", address: child.address, request, allow });
+  if (!reply.ok) return failed2(reply.error);
+  return { text: `${allow ? "Allowed" : "Denied"} request ${request} for ${childAddress(child)}.` };
+}
+
+// src/agent/task.ts
+import fs23 from "node:fs";
 init_harnesses();
 init_agents();
 init_paths();
 init_proc();
-import path23 from "node:path";
+import path24 from "node:path";
 var taskHarnesses = () => harnesses().filter((h) => h.acp && h.agent !== "claude").map((h) => h.agent);
 var installedTaskHarnesses = () => taskHarnesses().filter((agent) => {
   const acp = harnesses().find((h) => h.agent === agent)?.acp;
   return !!acp && !!resolvedAcpBin(acp);
 });
-var taskDir = (dir) => path23.join(dir, "task");
-var eventsDir = (dir) => path23.join(taskDir(dir), "events");
-var openDir = (dir) => path23.join(taskDir(dir), "open");
+var taskDir = (dir) => path24.join(dir, "task");
+var eventsDir = (dir) => path24.join(taskDir(dir), "events");
+var openDir = (dir) => path24.join(taskDir(dir), "open");
 var PENDING = /^\d{6}\.json$/;
 function claimEvent(dir) {
   let names;
   try {
-    names = fs22.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
+    names = fs23.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
   } catch {
     return void 0;
   }
   for (const name of names) {
-    const from = path23.join(eventsDir(dir), name);
+    const from = path24.join(eventsDir(dir), name);
     const to = from.replace(/\.json$/, ".taken");
     try {
-      fs22.renameSync(from, to);
+      fs23.renameSync(from, to);
     } catch {
       continue;
     }
@@ -34034,19 +34158,22 @@ function claimEvent(dir) {
 var openSeq = 0;
 function openTask(dir, taskId, procStart2) {
   ensureDir(openDir(dir));
-  const file2 = path23.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
+  const file2 = path24.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
   writeJsonAtomic(file2, { taskId, pid: process.pid, procStart: procStart2 });
-  return () => fs22.rmSync(file2, { force: true });
+  return () => fs23.rmSync(file2, { force: true });
 }
 
 // src/agent/mcp-tasks.ts
 init_agents();
 init_deliver();
 init_paths();
-import fs23 from "node:fs";
-import path24 from "node:path";
+init_remote();
+import fs24 from "node:fs";
+import path25 from "node:path";
 var TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 var POLL_MS = 2e3;
+var LEASE_MS = 3e4;
+var LOST_MS = 12e4;
 function clientTakesTasks(ctx) {
   const envelope = ctx?.mcpReq?.envelope;
   const capabilities = envelope?.["io.modelcontextprotocol/clientCapabilities"];
@@ -34067,24 +34194,93 @@ var wire = (task) => ({
   ...task.error ? { error: task.error } : {},
   ...task.inputRequests ? { inputRequests: task.inputRequests } : {}
 });
-function createTask(entry, taskId, statusMessage, procStart2) {
-  let id = taskId;
-  for (let n = 2; tasks.has(id); n++) id = `${taskId}#${n}`;
-  const task = {
-    taskId: id,
-    entry,
-    status: "working",
-    statusMessage,
-    createdAt: stamp(),
-    lastUpdatedAt: stamp(),
-    close: openTask(entry.dir, id, procStart2)
-  };
-  tasks.set(id, task);
+function freeId(base) {
+  let id = base;
+  for (let n = 2; tasks.has(id); n++) id = `${base}#${n}`;
+  return id;
+}
+function createTask(taskId, source, statusMessage) {
+  const task = { taskId, source, status: "working", statusMessage, createdAt: stamp(), lastUpdatedAt: stamp() };
+  tasks.set(taskId, task);
   return task;
 }
 function settle2(task, status, fields = {}) {
   Object.assign(task, { status, lastUpdatedAt: stamp(), inputRequests: void 0, request: void 0 }, fields);
-  task.close();
+  task.source.close();
+}
+function localSource(entry, taskId, procStart2) {
+  const { dir, spec } = entry;
+  const close = openTask(dir, taskId, procStart2);
+  return {
+    label: agentLabel(spec.harness),
+    address: () => agentAddress(entry),
+    description: spec.description,
+    createdAt: spec.createdAt,
+    transcript: () => transcriptFile(dir),
+    log: () => path25.join(dir, "host.log"),
+    next: () => claimEvent(dir),
+    state: () => {
+      const state = readState(dir);
+      return { status: state?.status, error: state?.error, alive: hostAlive(state) };
+    },
+    answered: (request) => fs24.existsSync(permissionAnswerFile(dir, request)),
+    answer: (request, allow) => writeJsonAtomic(permissionAnswerFile(dir, request), { allow, at: stamp() }),
+    stop: () => void stopAgentEntry(entry, 0),
+    close
+  };
+}
+function remoteSource(self2, device, child, taskId, agent) {
+  const events = [];
+  let last = agent;
+  let lastAnswer = Date.now();
+  let lost;
+  let closed = false;
+  let inflight = false;
+  const poll = async () => {
+    if (closed || inflight) return;
+    inflight = true;
+    try {
+      const reply = await agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, leaseMs: LEASE_MS }, 1e4);
+      if (closed) return;
+      if (reply.ok) {
+        last = reply.agent;
+        lastAnswer = Date.now();
+        if (reply.event) events.push(reply.event);
+      } else if (!("reached" in reply)) {
+        lost = `${childAddress(child)}: ${reply.error}`;
+      } else if (Date.now() - lastAnswer > LOST_MS) {
+        lost = `Lost touch with ${childAddress(child)}: ${reply.error} for ${Math.round(LOST_MS / 6e4)} minutes. It stops by itself if this device stays out of its reach.`;
+      }
+    } finally {
+      inflight = false;
+    }
+  };
+  void poll();
+  const timer2 = setInterval(() => void poll(), POLL_MS);
+  timer2.unref();
+  const on = ` on ${device.slug}`;
+  return {
+    label: agentLabel(child.harness),
+    address: () => childAddress(child),
+    description: child.description,
+    createdAt: child.createdAt,
+    transcript: () => `${last?.transcript ?? "its transcript"}${on}`,
+    log: () => `${last?.log ?? "its host.log"}${on}`,
+    next: () => events.shift(),
+    state: () => ({ status: last?.state?.status, error: last?.state?.error, alive: last?.alive ?? false, lost }),
+    answered: (request) => !!last && last.permission !== request,
+    answer: (request, allow) => {
+      if (last) last = { ...last, permission: void 0 };
+      void agentsRequest(device, self2, { op: "answer", address: child.address, request, allow });
+    },
+    stop: () => void agentsRequest(device, self2, { op: "stop", address: child.address }, 2e4),
+    close: () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(timer2);
+      void agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, close: true });
+    }
+  };
 }
 var ALLOW_SCHEMA = {
   type: "object",
@@ -34093,19 +34289,18 @@ var ALLOW_SCHEMA = {
 };
 function refresh(task) {
   if (terminal(task.status)) return;
-  const { dir, spec } = task.entry;
-  const label = agentLabel(spec.harness);
-  const address = agentAddress(task.entry);
+  const source = task.source;
+  const { label } = source;
   if (task.status === "input_required") {
-    if (!task.request || !fs23.existsSync(permissionAnswerFile(dir, task.request))) return;
+    if (!task.request || !source.answered(task.request)) return;
     Object.assign(task, { status: "working", inputRequests: void 0, request: void 0, lastUpdatedAt: stamp() });
   }
-  const event = claimEvent(dir);
+  const event = source.next();
   if (event?.kind === "result") {
     const text = `${event.body}
 
-(${label} agent ${address}; transcript: ${transcriptFile(dir)})`;
-    settle2(task, "completed", { result: { content: [{ type: "text", text }] }, statusMessage: `${address} reported.` });
+(${label} agent ${source.address()}; transcript: ${source.transcript()})`;
+    settle2(task, "completed", { result: { content: [{ type: "text", text }] }, statusMessage: `${source.address()} reported.` });
     return;
   }
   if (event?.kind === "permission" && event.request) {
@@ -34120,57 +34315,87 @@ function refresh(task) {
     });
     return;
   }
-  const state = readState(dir);
-  if (state?.status === "failed") {
+  const state = source.state();
+  if (state.lost) {
+    settle2(task, "failed", { error: { code: -32e3, message: state.lost } });
+    return;
+  }
+  if (state.status === "failed") {
     settle2(task, "failed", { error: { code: -32e3, message: `${label} did not start: ${state.error ?? "it failed to start"}`.replace(/\.$/, "") } });
     return;
   }
-  if (state && !hostAlive(state)) {
-    if (state.status === "starting") settle2(task, "failed", { error: { code: -32e3, message: `${label} did not start. See ${path24.join(dir, "host.log")}` } });
-    else settle2(task, "cancelled", { statusMessage: `${address} has stopped. Transcript: ${transcriptFile(dir)}` });
+  if (state.status && !state.alive) {
+    if (state.status === "starting") settle2(task, "failed", { error: { code: -32e3, message: `${label} did not start. See ${source.log()}` } });
+    else settle2(task, "cancelled", { statusMessage: `${source.address()} has stopped. Transcript: ${source.transcript()}` });
     return;
   }
-  if ((!state || state.status === "starting") && Date.now() > Date.parse(spec.createdAt) + startWaitMs() + 5e3) {
-    void stopAgentEntry(task.entry, 3e3);
-    settle2(task, "failed", { error: { code: -32e3, message: `${label} did not get ready within ${Math.round(startWaitMs() / 1e3)}s. See ${path24.join(dir, "host.log")}` } });
+  if ((!state.status || state.status === "starting") && Date.now() > Date.parse(source.createdAt) + startWaitMs() + 5e3) {
+    source.stop();
+    settle2(task, "failed", { error: { code: -32e3, message: `${label} did not get ready within ${Math.round(startWaitMs() / 1e3)}s. See ${source.log()}` } });
     return;
   }
-  const working = state?.status === "ready" ? `${label} is working: ${spec.description}` : `${label} is starting: ${spec.description}`;
+  const working = state.status === "ready" ? `${label} is working: ${source.description}` : `${label} is starting: ${source.description}`;
   if (working !== task.statusMessage) Object.assign(task, { statusMessage: working, lastUpdatedAt: stamp() });
 }
-function startAgentTask(self2, args, procStart2) {
-  const launched = launchAgent(self2, args);
+async function startAgentTask(self2, args, procStart2) {
+  if (args.device) {
+    const launched2 = await launchRemoteAgent(self2, args.device, args, LEASE_MS);
+    if (!launched2.ok) return { text: launched2.text, isError: true };
+    const taskId2 = freeId(childAddress(launched2.child));
+    const source = remoteSource(self2, launched2.device, launched2.child, taskId2, launched2.agent);
+    const task2 = createTask(taskId2, source, `${source.label} is starting on ${launched2.device.slug}: ${args.description}`);
+    return { resultType: "task", ...wire(task2) };
+  }
+  const launched = launchAgent(parentOf(self2), args);
   if (!launched.ok) return { text: launched.text, isError: true };
-  const task = createTask({ dir: launched.dir, spec: launched.spec }, launched.address, `${agentLabel(launched.spec.harness)} is starting: ${args.description}`, procStart2);
+  const taskId = freeId(launched.address);
+  const task = createTask(taskId, localSource({ dir: launched.dir, spec: launched.spec }, taskId, procStart2), `${agentLabel(launched.spec.harness)} is starting: ${args.description}`);
   return { resultType: "task", ...wire(task) };
 }
 async function continueAgentTask(self2, to, message, procStart2) {
-  const found = findChild(self2, to);
-  if ("error" in found || !hostAlive(readState(found.dir)) || readState(found.dir)?.status !== "ready") return void 0;
-  const address = agentAddress(found);
-  const task = createTask(found, address, `${agentLabel(found.spec.harness)} is working on your message`, procStart2);
+  const opened = remoteTarget(to) ? await openRemoteFollowUp(self2, to) : openLocalFollowUp(self2, to, procStart2);
+  if (!opened) return void 0;
+  const { task, address } = opened;
   const sent = await sendMessage(self2, address, message);
   if (!sent.ok) {
     tasks.delete(task.taskId);
-    task.close();
+    task.source.close();
     return { text: `Not delivered to ${address}: ${sent.error}`, isError: true };
   }
   return { resultType: "task", ...wire(task) };
 }
+function openLocalFollowUp(self2, to, procStart2) {
+  const found = findChild(self2, to);
+  if ("error" in found || !hostAlive(readState(found.dir)) || readState(found.dir)?.status !== "ready") return void 0;
+  const address = agentAddress(found);
+  const taskId = freeId(address);
+  const task = createTask(taskId, localSource(found, taskId, procStart2), `${agentLabel(found.spec.harness)} is working on your message`);
+  return { task, address };
+}
+async function openRemoteFollowUp(self2, to) {
+  const child = findRemoteChild(self2, to);
+  const device = child ? findDevice(child.device) : void 0;
+  if (!child || !device) return void 0;
+  const taskId = freeId(childAddress(child));
+  const first = await agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, leaseMs: LEASE_MS }, 1e4);
+  if (!first.ok || !first.agent.alive || first.agent.state?.status !== "ready") {
+    if (first.ok) void agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, close: true });
+    return void 0;
+  }
+  const task = createTask(taskId, remoteSource(self2, device, child, taskId, first.agent), `${agentLabel(child.harness)} is working on your message`);
+  return { task, address: childAddress(child) };
+}
 function adopt(self2, taskId, procStart2) {
-  const found = findChild(self2, taskId.replace(/#\d+$/, ""));
+  const base = taskId.replace(/#\d+$/, "");
+  if (remoteTarget(base)) {
+    const child = findRemoteChild(self2, base);
+    const device = child ? findDevice(child.device) : void 0;
+    if (!child || !device) return void 0;
+    return createTask(taskId, remoteSource(self2, device, child, taskId), `${agentLabel(child.harness)} is working: ${child.description}`);
+  }
+  const found = findChild(self2, base);
   if ("error" in found) return void 0;
-  const task = {
-    taskId,
-    entry: found,
-    status: "working",
-    statusMessage: `${agentLabel(found.spec.harness)} is working: ${found.spec.description}`,
-    createdAt: stamp(),
-    lastUpdatedAt: stamp(),
-    close: openTask(found.dir, taskId, procStart2)
-  };
-  tasks.set(taskId, task);
-  return task;
+  return createTask(taskId, localSource(found, taskId, procStart2), `${agentLabel(found.spec.harness)} is working: ${found.spec.description}`);
 }
 function answerTaskRequest(method, params, self2, procStart2) {
   if (method !== "tasks/get" && method !== "tasks/update" && method !== "tasks/cancel") return void 0;
@@ -34183,15 +34408,15 @@ function answerTaskRequest(method, params, self2, procStart2) {
       if (key !== task.request) continue;
       const response = raw?.result ?? raw;
       const allow = response?.action === "accept" && response.content?.allow !== false;
-      writeJsonAtomic(permissionAnswerFile(task.entry.dir, key), { allow, at: stamp() });
+      task.source.answer(key, allow);
       Object.assign(task, { status: "working", inputRequests: void 0, request: void 0, lastUpdatedAt: stamp() });
     }
     return { result: { resultType: "complete" } };
   }
   if (method === "tasks/cancel") {
     if (!terminal(task.status)) {
-      void stopAgentEntry(task.entry, 0);
-      settle2(task, "cancelled", { statusMessage: `Stopped ${agentAddress(task.entry)}.` });
+      task.source.stop();
+      settle2(task, "cancelled", { statusMessage: `Stopped ${task.source.address()}.` });
     }
     return { result: { resultType: "complete" } };
   }
@@ -34207,22 +34432,22 @@ init_installs();
 init_paths();
 init_proc();
 import { spawn as spawn6 } from "node:child_process";
-import fs27 from "node:fs";
-import path29 from "node:path";
+import fs28 from "node:fs";
+import path30 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli-self-update.ts
 init_installs();
 init_sandbox_launch();
 import { execFileSync as execFileSync8 } from "node:child_process";
-import fs26 from "node:fs";
-import path28 from "node:path";
+import fs27 from "node:fs";
+import path29 from "node:path";
 
 // src/update-all.ts
 import { spawn as spawn5 } from "node:child_process";
-import fs25 from "node:fs";
+import fs26 from "node:fs";
 import os11 from "node:os";
-import path27 from "node:path";
+import path28 from "node:path";
 init_agents();
 
 // src/core/codex-hooks.ts
@@ -34332,7 +34557,7 @@ async function withAppServer(fn) {
     }
   );
   let timer2;
-  const failed2 = new Promise((_, reject) => {
+  const failed3 = new Promise((_, reject) => {
     child.on("error", (err) => {
       reject(err.code === "ENOENT" ? new Error("`codex` is not on PATH") : err);
     });
@@ -34344,7 +34569,7 @@ async function withAppServer(fn) {
     return fn(rpc);
   })();
   try {
-    return await Promise.race([work, failed2]);
+    return await Promise.race([work, failed3]);
   } finally {
     if (timer2) clearTimeout(timer2);
     child.stdin.end();
@@ -34398,8 +34623,8 @@ init_installs();
 // src/core/kimi-plugin.ts
 init_installs();
 import { execFileSync as execFileSync7 } from "node:child_process";
-import fs24 from "node:fs";
-import path25 from "node:path";
+import fs25 from "node:fs";
+import path26 from "node:path";
 var ID = "telepathy";
 var DEFAULT_SOURCE = "https://github.com/Winterrks/telepathy";
 var githubWeb = () => (process.env.TELEPATHY_GITHUB_WEB || "https://github.com").replace(/\/$/, "");
@@ -34440,18 +34665,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version2 = JSON.parse(fs24.readFileSync(path25.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version2 = JSON.parse(fs25.readFileSync(path26.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path25.join(kimiHome(), "plugins");
-  fs24.mkdirSync(dir, { recursive: true });
-  const final = path25.join(dir, "installed.json");
-  fs24.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs24.renameSync(`${final}.tmp`, final);
+  const dir = path26.join(kimiHome(), "plugins");
+  fs25.mkdirSync(dir, { recursive: true });
+  const final = path26.join(dir, "installed.json");
+  fs25.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs25.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -34468,15 +34693,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef2(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path25.join(home2, "plugins", "managed", ID);
+    const managed = path26.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path25.dirname(managed);
-    fs24.mkdirSync(parent, { recursive: true });
-    const staging = fs24.mkdtempSync(path25.join(parent, `${ID}-`));
+    const parent = path26.dirname(managed);
+    fs25.mkdirSync(parent, { recursive: true });
+    const staging = fs25.mkdtempSync(path26.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -34484,22 +34709,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs24.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      fs25.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
       execFileSync7("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version2 = readManifestVersion(staging);
       if (!version2) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs24.renameSync(managed, previous);
+        fs25.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs24.renameSync(staging, managed);
+      fs25.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs24.realpathSync(managed),
+        root: fs25.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -34510,16 +34735,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs24.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs25.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version2 ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version2} (${ref.value}, ${sha.slice(0, 12)})`, version: version2, changed: true };
     } catch (err) {
-      fs24.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs24.renameSync(previous, managed);
+      fs25.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs25.renameSync(previous, managed);
       throw err;
     } finally {
-      fs24.rmSync(archive, { force: true });
-      fs24.rmSync(staging, { recursive: true, force: true });
+      fs25.rmSync(archive, { force: true });
+      fs25.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -34532,9 +34757,9 @@ init_sandbox_launch();
 
 // src/version-check.ts
 init_paths();
-import path26 from "node:path";
+import path27 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path26.join(stateDir(), "github-version.json");
+var cacheFile = () => path27.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -34613,35 +34838,35 @@ function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path27.join(process.env.XDG_CACHE_HOME || path27.join(os11.homedir(), ".cache"), install.agent, "packages");
-  const relative = path27.relative(packages, install.dir).split(path27.sep);
-  const entry = path27.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path27.join(path27.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs25.renameSync(entry, aside);
+  const packages = path28.join(process.env.XDG_CACHE_HOME || path28.join(os11.homedir(), ".cache"), install.agent, "packages");
+  const relative = path28.relative(packages, install.dir).split(path28.sep);
+  const entry = path28.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path28.join(path28.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs26.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs25.rmSync(aside, { recursive: true, force: true });
+    fs26.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs25.rmSync(entry, { recursive: true, force: true });
-  fs25.renameSync(aside, entry);
+  fs26.rmSync(entry, { recursive: true, force: true });
+  fs26.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path27.join(process.env.XDG_CACHE_HOME || path27.join(os11.homedir(), ".cache"), "opencode");
-  const npm = path27.join(opencodeCache, "npm");
-  const entry = path27.join(npm, path27.relative(npm, install.dir).split(path27.sep)[0] ?? "");
-  const aside = path27.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs25.renameSync(entry, aside);
+  const opencodeCache = path28.join(process.env.XDG_CACHE_HOME || path28.join(os11.homedir(), ".cache"), "opencode");
+  const npm = path28.join(opencodeCache, "npm");
+  const entry = path28.join(npm, path28.relative(npm, install.dir).split(path28.sep)[0] ?? "");
+  const aside = path28.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs26.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs25.rmSync(aside, { recursive: true, force: true });
+    fs26.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs25.rmSync(entry, { recursive: true, force: true });
-  fs25.renameSync(aside, entry);
+  fs26.rmSync(entry, { recursive: true, force: true });
+  fs26.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -34767,9 +34992,9 @@ function globalCliDir() {
   } catch {
     return void 0;
   }
-  const dir = path28.join(root, PACKAGE);
+  const dir = path29.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs26.readFileSync(path28.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs27.readFileSync(path29.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -34777,7 +35002,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version2 = JSON.parse(fs26.readFileSync(path28.join(dir, "package.json"), "utf8")).version;
+    const version2 = JSON.parse(fs27.readFileSync(path29.join(dir, "package.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -34815,13 +35040,13 @@ function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path29.join(stateDir(), "config.json"));
+  const cfg = readJson(path30.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path29.join(stateDir(), "auto-update.json");
-var logFile = () => path29.join(stateDir(), "auto-update.log");
+var stampFile = () => path30.join(stateDir(), "auto-update.json");
+var logFile = () => path30.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -34832,7 +35057,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs27.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs28.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -34840,10 +35065,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path29.dirname(fileURLToPath3(import.meta.url));
+  const dir = path30.dirname(fileURLToPath3(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path29.join(dir, name);
-    if (fs27.existsSync(candidate)) return candidate;
+    const candidate = path30.join(dir, name);
+    if (fs28.existsSync(candidate)) return candidate;
   }
   return fileURLToPath3(import.meta.url);
 }
@@ -34871,15 +35096,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path34.dirname(path34.dirname(fileURLToPath5(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path34.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path34.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path35.dirname(path35.dirname(fileURLToPath5(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path35.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path35.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path34.join(path34.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
+    const monitor = path35.join(path35.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {
@@ -35046,10 +35271,11 @@ ${notes.join("\n")}` } : result;
       async (args, ctx) => {
         const selfId2 = selfIdFor(ctx.mcpReq._meta);
         if (agent === "claude" && clientTakesTasks(ctx)) {
-          const task = startAgentTask(selfPeer(agent, agentPid, selfId2), args, ownProcStart);
+          const task = await startAgentTask(selfPeer(agent, agentPid, selfId2), args, ownProcStart);
           return "resultType" in task ? task : text(task);
         }
-        return text(await startAgentTool(selfPeer(agent, agentPid, selfId2), args));
+        const self2 = selfPeer(agent, agentPid, selfId2);
+        return text(args.device ? await startRemoteAgentTool(self2, args.device, args) : await startAgentTool(self2, args));
       }
     );
     server.registerTool(
@@ -35060,7 +35286,11 @@ ${notes.join("\n")}` } : result;
         inputSchema: external_exports.object(TOOLS.stop_agent.args),
         annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false }
       },
-      async ({ name }, ctx) => text(await stopAgentTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), name))
+      async ({ name }, ctx) => {
+        const self2 = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+        const elsewhere = "error" in findChild(self2, name) ? findRemoteChild(self2, name) : void 0;
+        return text(elsewhere ? await stopRemoteAgentTool(self2, elsewhere) : await stopAgentTool(self2, name));
+      }
     );
     server.registerTool(
       "answer_permission",
@@ -35070,7 +35300,11 @@ ${notes.join("\n")}` } : result;
         inputSchema: external_exports.object(TOOLS.answer_permission.args),
         annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
       },
-      async (args, ctx) => text(answerPermissionTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), args))
+      async (args, ctx) => {
+        const self2 = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+        const elsewhere = "error" in findChild(self2, args.agent) ? findRemoteChild(self2, args.agent) : void 0;
+        return text(elsewhere ? await answerRemotePermission(self2, elsewhere, args.request, args.allow) : answerPermissionTool(self2, args));
+      }
     );
     if (agent === "grok") {
       const waits = /* @__PURE__ */ new Map();

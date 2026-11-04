@@ -99,14 +99,19 @@ export function bodyProblem(body: string): string | undefined {
  * Sends `body` from `self` to whatever `to` names. Used by the MCP tool and the SendMessage hook.
  * An address on another device (`codex:api@laptop`) goes through the bridge; the rest is delivered here.
  */
-export async function sendMessage(self: Peer, to: string, body: string): Promise<SendResult> {
+export async function sendMessage(
+  self: Peer,
+  to: string,
+  body: string,
+  extra: Pick<Message, 'kind' | 'transcript'> = {},
+): Promise<SendResult> {
   const ownsClock = beginToolCall();
   try {
     const problem = bodyProblem(body);
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
-    if (remote) return await sendRemote(self, remote, body);
-    return await deliverLocal(partyOf(self), to, body, self);
+    if (remote) return await sendRemote(self, remote, body, extra);
+    return await deliverLocal(partyOf(self), to, body, self, extra);
   } finally {
     if (ownsClock) endToolCall();
   }

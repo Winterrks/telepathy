@@ -4,17 +4,26 @@ import { agentLabel } from '../core/agents.ts';
 import { sendMessage } from '../core/deliver.ts';
 import { writeJsonAtomic } from '../core/paths.ts';
 import type { Peer } from '../core/peers.ts';
-import { claimEvent, openTask } from './task.ts';
-import { type AgentEntry, hostAlive, permissionAnswerFile, readState, transcriptFile } from './spec.ts';
-import { agentAddress, findChild, launchAgent, type StartArgs, startWaitMs, stopAgentEntry } from './tools.ts';
+import type { AgentInfo } from '../bridge/agents.ts';
+import { findDevice, remoteTarget } from '../bridge/remote.ts';
+import type { RemoteDevice } from '../bridge/state.ts';
+import { agentsRequest, childAddress, findRemoteChild, launchRemoteAgent, type RemoteChild } from './remote.ts';
+import { claimEvent, openTask, type TaskEvent } from './task.ts';
+import { type AgentEntry, type AgentState, hostAlive, permissionAnswerFile, readState, transcriptFile } from './spec.ts';
+import { agentAddress, findChild, launchAgent, parentOf, type StartArgs, startWaitMs, stopAgentEntry } from './tools.ts';
 
 /**
  * The server half of start_agent as an MCP task (see src/agent/task.ts): the tasks this server answered tool calls
- * with, and the `tasks/get`, `tasks/update` and `tasks/cancel` requests Claude Code follows them with.
+ * with, and the `tasks/get`, `tasks/update` and `tasks/cancel` requests Claude Code follows them with. An agent on
+ * this machine is followed through its folder; one on another device through that device's bridge.
  */
 
 export const TASKS_EXTENSION = 'io.modelcontextprotocol/tasks';
 const POLL_MS = 2_000;
+/** How long another device keeps a task open after this server's last poll. */
+const LEASE_MS = 30_000;
+/** No answer from that device for this long, and the task fails. */
+const LOST_MS = 120_000;
 
 /** The request's 2026-07-28 envelope says the client takes a task for it. */
 export function clientTakesTasks(ctx: unknown): boolean {
@@ -25,9 +34,26 @@ export function clientTakesTasks(ctx: unknown): boolean {
 
 type Status = 'working' | 'input_required' | 'completed' | 'failed' | 'cancelled';
 
+/** Where a task's agent is, and how to reach it. */
+interface Source {
+  label: string;
+  address: () => string;
+  description: string;
+  createdAt: string;
+  transcript: () => string;
+  log: () => string;
+  /** The next report or permission request, now this task's. */
+  next: () => TaskEvent | undefined;
+  state: () => { status?: AgentState['status']; error?: string; alive: boolean; lost?: string };
+  answered: (request: string) => boolean;
+  answer: (request: string, allow: boolean) => void;
+  stop: () => void;
+  close: () => void;
+}
+
 interface AgentTask {
   taskId: string;
-  entry: AgentEntry;
+  source: Source;
   status: Status;
   statusMessage: string;
   createdAt: string;
@@ -37,7 +63,6 @@ interface AgentTask {
   inputRequests?: Record<string, { method: string; params: unknown }>;
   /** The permission request `inputRequests` asks about. */
   request?: string;
-  close: () => void;
 }
 
 const tasks = new Map<string, AgentTask>();
@@ -60,25 +85,104 @@ const wire = (task: AgentTask) => ({
 /** A tools/call answer that hands Claude Code a task instead of a result. */
 export type TaskAnswer = ReturnType<typeof wire> & { resultType: 'task' };
 
-function createTask(entry: AgentEntry, taskId: string, statusMessage: string, procStart: string | undefined): AgentTask {
-  let id = taskId;
-  for (let n = 2; tasks.has(id); n++) id = `${taskId}#${n}`;
-  const task: AgentTask = {
-    taskId: id,
-    entry,
-    status: 'working',
-    statusMessage,
-    createdAt: stamp(),
-    lastUpdatedAt: stamp(),
-    close: openTask(entry.dir, id, procStart),
-  };
-  tasks.set(id, task);
+/** An id no task of this server has: the agent's address, then `#2`, `#3`… for its follow-ups. */
+function freeId(base: string): string {
+  let id = base;
+  for (let n = 2; tasks.has(id); n++) id = `${base}#${n}`;
+  return id;
+}
+
+function createTask(taskId: string, source: Source, statusMessage: string): AgentTask {
+  const task: AgentTask = { taskId, source, status: 'working', statusMessage, createdAt: stamp(), lastUpdatedAt: stamp() };
+  tasks.set(taskId, task);
   return task;
 }
 
 function settle(task: AgentTask, status: Status, fields: Partial<AgentTask> = {}): void {
   Object.assign(task, { status, lastUpdatedAt: stamp(), inputRequests: undefined, request: undefined }, fields);
-  task.close();
+  task.source.close();
+}
+
+/** An agent on this machine: its folder has the events, the state and the answers. */
+function localSource(entry: AgentEntry, taskId: string, procStart: string | undefined): Source {
+  const { dir, spec } = entry;
+  const close = openTask(dir, taskId, procStart);
+  return {
+    label: agentLabel(spec.harness),
+    address: () => agentAddress(entry),
+    description: spec.description,
+    createdAt: spec.createdAt,
+    transcript: () => transcriptFile(dir),
+    log: () => path.join(dir, 'host.log'),
+    next: () => claimEvent(dir),
+    state: () => {
+      const state = readState(dir);
+      return { status: state?.status, error: state?.error, alive: hostAlive(state) };
+    },
+    answered: (request) => fs.existsSync(permissionAnswerFile(dir, request)),
+    answer: (request, allow) => writeJsonAtomic(permissionAnswerFile(dir, request), { allow, at: stamp() }),
+    stop: () => void stopAgentEntry(entry, 0),
+    close,
+  };
+}
+
+/**
+ * An agent on another device: a poll of that device's bridge every couple of seconds keeps the task open there
+ * and brings back its state and the next event. `tasks/get` answers from the last poll.
+ */
+function remoteSource(self: Peer, device: RemoteDevice, child: RemoteChild, taskId: string, agent?: AgentInfo): Source {
+  const events: TaskEvent[] = [];
+  let last = agent;
+  let lastAnswer = Date.now();
+  let lost: string | undefined;
+  let closed = false;
+  let inflight = false;
+  const poll = async () => {
+    if (closed || inflight) return;
+    inflight = true;
+    try {
+      const reply = await agentsRequest(device, self, { op: 'poll', address: child.address, task: taskId, leaseMs: LEASE_MS }, 10_000);
+      if (closed) return;
+      if (reply.ok) {
+        last = reply.agent;
+        lastAnswer = Date.now();
+        if (reply.event) events.push(reply.event);
+      } else if (!('reached' in reply)) {
+        lost = `${childAddress(child)}: ${reply.error}`;
+      } else if (Date.now() - lastAnswer > LOST_MS) {
+        lost = `Lost touch with ${childAddress(child)}: ${reply.error} for ${Math.round(LOST_MS / 60_000)} minutes. It stops by itself if this device stays out of its reach.`;
+      }
+    } finally {
+      inflight = false;
+    }
+  };
+  void poll();
+  const timer = setInterval(() => void poll(), POLL_MS);
+  timer.unref();
+  const on = ` on ${device.slug}`;
+  return {
+    label: agentLabel(child.harness),
+    address: () => childAddress(child),
+    description: child.description,
+    createdAt: child.createdAt,
+    transcript: () => `${last?.transcript ?? 'its transcript'}${on}`,
+    log: () => `${last?.log ?? 'its host.log'}${on}`,
+    next: () => events.shift(),
+    state: () => ({ status: last?.state?.status, error: last?.state?.error, alive: last?.alive ?? false, lost }),
+    answered: (request) => !!last && last.permission !== request,
+    answer: (request, allow) => {
+      // The next poll shows the request answered; until then the task stays as the answer left it.
+      if (last) last = { ...last, permission: undefined };
+      void agentsRequest(device, self, { op: 'answer', address: child.address, request, allow });
+    },
+    stop: () => void agentsRequest(device, self, { op: 'stop', address: child.address }, 20_000),
+    close: () => {
+      if (closed) return;
+      closed = true;
+      clearInterval(timer);
+      void agentsRequest(device, self, { op: 'poll', address: child.address, task: taskId, close: true });
+    },
+  };
 }
 
 const ALLOW_SCHEMA = {
@@ -90,18 +194,17 @@ const ALLOW_SCHEMA = {
 /** Brings a task up to date with its agent: a report, a permission request, or the agent gone. */
 function refresh(task: AgentTask): void {
   if (terminal(task.status)) return;
-  const { dir, spec } = task.entry;
-  const label = agentLabel(spec.harness);
-  const address = agentAddress(task.entry);
+  const source = task.source;
+  const { label } = source;
   if (task.status === 'input_required') {
     // Answered outside the dialog (answer_permission), or timed out on the host's side: the agent moves on.
-    if (!task.request || !fs.existsSync(permissionAnswerFile(dir, task.request))) return;
+    if (!task.request || !source.answered(task.request)) return;
     Object.assign(task, { status: 'working', inputRequests: undefined, request: undefined, lastUpdatedAt: stamp() });
   }
-  const event = claimEvent(dir);
+  const event = source.next();
   if (event?.kind === 'result') {
-    const text = `${event.body}\n\n(${label} agent ${address}; transcript: ${transcriptFile(dir)})`;
-    settle(task, 'completed', { result: { content: [{ type: 'text', text }] }, statusMessage: `${address} reported.` });
+    const text = `${event.body}\n\n(${label} agent ${source.address()}; transcript: ${source.transcript()})`;
+    settle(task, 'completed', { result: { content: [{ type: 'text', text }] }, statusMessage: `${source.address()} reported.` });
     return;
   }
   if (event?.kind === 'permission' && event.request) {
@@ -116,30 +219,45 @@ function refresh(task: AgentTask): void {
     });
     return;
   }
-  const state = readState(dir);
-  if (state?.status === 'failed') {
+  const state = source.state();
+  if (state.lost) {
+    settle(task, 'failed', { error: { code: -32000, message: state.lost } });
+    return;
+  }
+  if (state.status === 'failed') {
     settle(task, 'failed', { error: { code: -32000, message: `${label} did not start: ${state.error ?? 'it failed to start'}`.replace(/\.$/, '') } });
     return;
   }
-  if (state && !hostAlive(state)) {
-    if (state.status === 'starting') settle(task, 'failed', { error: { code: -32000, message: `${label} did not start. See ${path.join(dir, 'host.log')}` } });
-    else settle(task, 'cancelled', { statusMessage: `${address} has stopped. Transcript: ${transcriptFile(dir)}` });
+  if (state.status && !state.alive) {
+    if (state.status === 'starting') settle(task, 'failed', { error: { code: -32000, message: `${label} did not start. See ${source.log()}` } });
+    else settle(task, 'cancelled', { statusMessage: `${source.address()} has stopped. Transcript: ${source.transcript()}` });
     return;
   }
-  if ((!state || state.status === 'starting') && Date.now() > Date.parse(spec.createdAt) + startWaitMs() + 5_000) {
-    void stopAgentEntry(task.entry, 3_000);
-    settle(task, 'failed', { error: { code: -32000, message: `${label} did not get ready within ${Math.round(startWaitMs() / 1000)}s. See ${path.join(dir, 'host.log')}` } });
+  if ((!state.status || state.status === 'starting') && Date.now() > Date.parse(source.createdAt) + startWaitMs() + 5_000) {
+    source.stop();
+    settle(task, 'failed', { error: { code: -32000, message: `${label} did not get ready within ${Math.round(startWaitMs() / 1000)}s. See ${source.log()}` } });
     return;
   }
-  const working = state?.status === 'ready' ? `${label} is working: ${spec.description}` : `${label} is starting: ${spec.description}`;
+  const working = state.status === 'ready' ? `${label} is working: ${source.description}` : `${label} is starting: ${source.description}`;
   if (working !== task.statusMessage) Object.assign(task, { statusMessage: working, lastUpdatedAt: stamp() });
 }
 
+type Answer = TaskAnswer | { text: string; isError: true };
+
 /** start_agent for a client that takes tasks: the agent starts, and its first report is the task's result. */
-export function startAgentTask(self: Peer, args: StartArgs, procStart: string | undefined): TaskAnswer | { text: string; isError: true } {
-  const launched = launchAgent(self, args);
+export async function startAgentTask(self: Peer, args: StartArgs & { device?: string }, procStart: string | undefined): Promise<Answer> {
+  if (args.device) {
+    const launched = await launchRemoteAgent(self, args.device, args, LEASE_MS);
+    if (!launched.ok) return { text: launched.text, isError: true };
+    const taskId = freeId(childAddress(launched.child));
+    const source = remoteSource(self, launched.device, launched.child, taskId, launched.agent);
+    const task = createTask(taskId, source, `${source.label} is starting on ${launched.device.slug}: ${args.description}`);
+    return { resultType: 'task', ...wire(task) };
+  }
+  const launched = launchAgent(parentOf(self), args);
   if (!launched.ok) return { text: launched.text, isError: true };
-  const task = createTask({ dir: launched.dir, spec: launched.spec }, launched.address, `${agentLabel(launched.spec.harness)} is starting: ${args.description}`, procStart);
+  const taskId = freeId(launched.address);
+  const task = createTask(taskId, localSource({ dir: launched.dir, spec: launched.spec }, taskId, procStart), `${agentLabel(launched.spec.harness)} is starting: ${args.description}`);
   return { resultType: 'task', ...wire(task) };
 }
 
@@ -148,19 +266,42 @@ export function startAgentTask(self: Peer, args: StartArgs, procStart: string | 
  * send_message delivers it, and the agent's next report is the task's result. Undefined when the address is not
  * such an agent, so the caller sends it the ordinary way.
  */
-export async function continueAgentTask(self: Peer, to: string, message: string, procStart: string | undefined): Promise<TaskAnswer | { text: string; isError: true } | undefined> {
+export async function continueAgentTask(self: Peer, to: string, message: string, procStart: string | undefined): Promise<Answer | undefined> {
+  const opened = remoteTarget(to) ? await openRemoteFollowUp(self, to) : openLocalFollowUp(self, to, procStart);
+  if (!opened) return undefined;
+  const { task, address } = opened;
+  const sent = await sendMessage(self, address, message);
+  if (!sent.ok) {
+    tasks.delete(task.taskId);
+    task.source.close();
+    return { text: `Not delivered to ${address}: ${sent.error}`, isError: true };
+  }
+  return { resultType: 'task', ...wire(task) };
+}
+
+function openLocalFollowUp(self: Peer, to: string, procStart: string | undefined): { task: AgentTask; address: string } | undefined {
   const found = findChild(self, to);
   if ('error' in found || !hostAlive(readState(found.dir)) || readState(found.dir)?.status !== 'ready') return undefined;
   const address = agentAddress(found);
   // Open before sending: a quick agent can report before the delivery confirm returns.
-  const task = createTask(found, address, `${agentLabel(found.spec.harness)} is working on your message`, procStart);
-  const sent = await sendMessage(self, address, message);
-  if (!sent.ok) {
-    tasks.delete(task.taskId);
-    task.close();
-    return { text: `Not delivered to ${address}: ${sent.error}`, isError: true };
+  const taskId = freeId(address);
+  const task = createTask(taskId, localSource(found, taskId, procStart), `${agentLabel(found.spec.harness)} is working on your message`);
+  return { task, address };
+}
+
+async function openRemoteFollowUp(self: Peer, to: string): Promise<{ task: AgentTask; address: string } | undefined> {
+  const child = findRemoteChild(self, to);
+  const device = child ? findDevice(child.device) : undefined;
+  if (!child || !device) return undefined;
+  const taskId = freeId(childAddress(child));
+  // The lease is open on that device before the message goes, as a local task's marker is.
+  const first = await agentsRequest(device, self, { op: 'poll', address: child.address, task: taskId, leaseMs: LEASE_MS }, 10_000);
+  if (!first.ok || !first.agent.alive || first.agent.state?.status !== 'ready') {
+    if (first.ok) void agentsRequest(device, self, { op: 'poll', address: child.address, task: taskId, close: true });
+    return undefined;
   }
-  return { resultType: 'task', ...wire(task) };
+  const task = createTask(taskId, remoteSource(self, device, child, taskId, first.agent), `${agentLabel(child.harness)} is working on your message`);
+  return { task, address: childAddress(child) };
 }
 
 export interface TaskReply {
@@ -171,22 +312,19 @@ export interface TaskReply {
 /**
  * A task this server didn't create: Claude Code keeps following its tasks when the server restarts under it
  * (`/reload-plugins`, `/mcp` reconnect). The task id names the agent, so the new server takes it up again when
- * that is an agent this session started.
+ * that is an agent this session started, here or on another device.
  */
 function adopt(self: Peer, taskId: string, procStart: string | undefined): AgentTask | undefined {
-  const found = findChild(self, taskId.replace(/#\d+$/, ''));
+  const base = taskId.replace(/#\d+$/, '');
+  if (remoteTarget(base)) {
+    const child = findRemoteChild(self, base);
+    const device = child ? findDevice(child.device) : undefined;
+    if (!child || !device) return undefined;
+    return createTask(taskId, remoteSource(self, device, child, taskId), `${agentLabel(child.harness)} is working: ${child.description}`);
+  }
+  const found = findChild(self, base);
   if ('error' in found) return undefined;
-  const task: AgentTask = {
-    taskId,
-    entry: found,
-    status: 'working',
-    statusMessage: `${agentLabel(found.spec.harness)} is working: ${found.spec.description}`,
-    createdAt: stamp(),
-    lastUpdatedAt: stamp(),
-    close: openTask(found.dir, taskId, procStart),
-  };
-  tasks.set(taskId, task);
-  return task;
+  return createTask(taskId, localSource(found, taskId, procStart), `${agentLabel(found.spec.harness)} is working: ${found.spec.description}`);
 }
 
 /** Answers `tasks/get`, `tasks/update` and `tasks/cancel`; undefined for any other method. */
@@ -206,15 +344,15 @@ export function answerTaskRequest(
       if (key !== task.request) continue;
       const response = ((raw as { result?: unknown })?.result ?? raw) as { action?: string; content?: { allow?: unknown } };
       const allow = response?.action === 'accept' && response.content?.allow !== false;
-      writeJsonAtomic(permissionAnswerFile(task.entry.dir, key), { allow, at: stamp() });
+      task.source.answer(key, allow);
       Object.assign(task, { status: 'working', inputRequests: undefined, request: undefined, lastUpdatedAt: stamp() });
     }
     return { result: { resultType: 'complete' } };
   }
   if (method === 'tasks/cancel') {
     if (!terminal(task.status)) {
-      void stopAgentEntry(task.entry, 0);
-      settle(task, 'cancelled', { statusMessage: `Stopped ${agentAddress(task.entry)}.` });
+      task.source.stop();
+      settle(task, 'cancelled', { statusMessage: `Stopped ${task.source.address()}.` });
     }
     return { result: { resultType: 'complete' } };
   }

@@ -350,7 +350,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.12.0" : "0.0.0-dev";
+var VERSION = true ? "0.13.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -2313,14 +2313,14 @@ function bodyProblem(body) {
   }
   return void 0;
 }
-async function sendMessage(self, to, body) {
+async function sendMessage(self, to, body, extra = {}) {
   const ownsClock = beginToolCall();
   try {
     const problem = bodyProblem(body);
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
-    if (remote) return await sendRemote(self, remote, body);
-    return await deliverLocal(partyOf(self), to, body, self);
+    if (remote) return await sendRemote(self, remote, body, extra);
+    return await deliverLocal(partyOf(self), to, body, self, extra);
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -2662,7 +2662,7 @@ var UNREACHABLE = "TELEPATHY_UNREACHABLE";
 var requestAad = (path20, from, to) => `req ${path20} ${from}->${to}`;
 var responseAad = (path20, from, to, nonce) => `res ${path20} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
-var REVERSE_ROUTES = ["/v1/peers", "/v1/send"];
+var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
 async function call(target, path20, body, timeoutMs, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
@@ -2748,7 +2748,7 @@ function formatRemoteListings(listings, now = Date.now()) {
   return lines;
 }
 var marginMs = () => envDurationMs("TELEPATHY_BRIDGE_MARGIN_MS", 1500);
-async function sendRemote(self, target, body) {
+async function sendRemote(self, target, body, extra = {}, opts = {}) {
   const device = findDevice(target.slug);
   if (!device) {
     const known = knownDevices().map((d) => d.slug);
@@ -2776,7 +2776,7 @@ async function sendRemote(self, target, body) {
   }
   const to = "peer" in resolved ? resolved.peer.id : target.query;
   const rateKey = `${to}@${device.id}`;
-  const limited = checkRate(self.id, rateKey, body);
+  const limited = opts.rate === false ? void 0 : checkRate(self.id, rateKey, body);
   if (limited) return { ok: false, error: limited };
   const plan = confirmWindow();
   const deadline = plan.deadline ?? Date.now() + plan.abort + plan.grace;
@@ -2785,7 +2785,7 @@ async function sendRemote(self, target, body) {
   const from = partyOf(self);
   let reply;
   try {
-    reply = await call(device, "/v1/send", { from, to, body, budgetMs }, budgetMs + marginMs());
+    reply = await call(device, "/v1/send", { from, to, body, budgetMs, ...extra }, budgetMs + marginMs());
   } catch (err) {
     const code = (err.cause ?? {}).code;
     const why = err.name === "TimeoutError" ? "it did not answer before the wait ended" : err.message;
@@ -2798,7 +2798,7 @@ async function sendRemote(self, target, body) {
   const toAddress = reply.recipient ? qualify(reply.recipient.address, device) : `${target.query}@${device.slug}`;
   logEvent({ dir: "out", device: device.slug, from: from.address, to: toAddress, ok: reply.ok, status, preview: preview(body) });
   if (!reply.ok || !reply.recipient) return { ok: false, error: status };
-  recordSent(self.id, rateKey, body);
+  if (opts.rate !== false) recordSent(self.id, rateKey, body);
   const recipient = asPeer(reply.recipient, device, true);
   const toParty = { id: recipient.id, agent: recipient.agent, name: recipient.name, address: recipient.address };
   const message = { id: reply.messageId ?? newMessageId(), from, to: toParty, body, sentAt: (/* @__PURE__ */ new Date()).toISOString() };

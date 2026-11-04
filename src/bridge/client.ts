@@ -66,7 +66,7 @@ export interface Target {
 }
 
 /** Routes that may go to a device over the connection it keeps open to this one. */
-export const REVERSE_ROUTES = ['/v1/peers', '/v1/send'];
+export const REVERSE_ROUTES = ['/v1/peers', '/v1/send', '/v1/agents'];
 
 /**
  * One authenticated call. A paired device gets a sealed body and must answer sealed under the same key.

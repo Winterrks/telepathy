@@ -10,9 +10,9 @@ import { pathToFileURL } from 'node:url';
 import { commitment, confirmMac, newKeyPair, open, pairKey, randomNonce, seal, shortCode, type PairTranscript } from '../src/bridge/crypto.ts';
 import { remoteTarget } from '../src/bridge/remote.ts';
 import { safeName } from '../src/bridge/state.ts';
+import { cli, CLI, type Device, device, freePort, pair, remoteState, spawnCli, startDaemon } from './bridge-helpers.ts';
 import { connectServer, DIST, fakeAgent, killAndWait, makeSandbox, ROOT, runHook, type Sandbox, toolText, waitFor } from './helpers.ts';
 
-const CLI = path.join(ROOT, 'src', 'cli.ts');
 // Qwen records each turn in its own transcript. The test writes what the hook handed over here instead.
 const TRANSCRIPTS = fs.mkdtempSync(path.join(os.tmpdir(), 'tp-bridge-transcripts-'));
 
@@ -60,82 +60,6 @@ describe('bridge crypto', () => {
     assert.equal(remoteTarget('codex:api@'), undefined);
   });
 });
-
-async function freePort(): Promise<number> {
-  return await new Promise((resolve) => {
-    const server = net.createServer();
-    server.listen(0, '127.0.0.1', () => {
-      const port = (server.address() as net.AddressInfo).port;
-      server.close(() => resolve(port));
-    });
-  });
-}
-
-interface Device {
-  name: string;
-  sb: Sandbox;
-  port: number;
-  env: NodeJS.ProcessEnv;
-  daemon?: ChildProcess;
-}
-
-async function device(name: string, extra: NodeJS.ProcessEnv = {}): Promise<Device> {
-  const sb = makeSandbox();
-  const port = await freePort();
-  const env = {
-    ...sb.env,
-    TELEPATHY_BRIDGE_PORT: String(port),
-    TELEPATHY_TAILSCALE_BIN: '',
-    TELEPATHY_BRIDGE_MDNS: '0',
-    TELEPATHY_BRIDGE_POLL_MS: '200',
-    TELEPATHY_BRIDGE_ONLINE_MS: '4000',
-    ...extra,
-  };
-  fs.mkdirSync(path.join(sb.home, 'bridge'), { recursive: true });
-  fs.writeFileSync(path.join(sb.home, 'bridge', 'settings.json'), JSON.stringify({ lan: false, tailscale: false, mdns: false }));
-  assert.equal(cli(env, 'bridge', 'name', name).status, 0);
-  return { name, sb, port, env };
-}
-
-const cli = (env: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(process.execPath, [CLI, ...args], { env, encoding: 'utf8' });
-
-function spawnCli(env: NodeJS.ProcessEnv, ...args: string[]) {
-  const child = spawn(process.execPath, [CLI, ...args], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-  let out = '';
-  child.stdout.on('data', (chunk) => (out += chunk));
-  child.stderr.on('data', (chunk) => (out += chunk));
-  const done = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
-  return { child, done, out: () => out };
-}
-
-async function startDaemon(d: Device): Promise<void> {
-  const run = spawnCli(d.env, 'bridge', 'run');
-  d.daemon = run.child;
-  await waitFor(() => (run.out().includes('listening on') ? true : undefined), 15_000);
-}
-
-const remoteState = (d: Device) =>
-  JSON.parse(fs.readFileSync(path.join(d.sb.home, 'bridge', 'remote.json'), 'utf8')) as {
-    devices: { slug: string; trusted: boolean; lastSeen: string; peers: { address: string }[] }[];
-  };
-
-async function pair(initiator: Device, responder: Device): Promise<void> {
-  const accept = spawnCli(responder.env, 'bridge', 'pair');
-  await waitFor(() => (accept.out().includes('Pairing is open') ? true : undefined));
-  const ask = spawnCli(initiator.env, 'bridge', 'pair', `127.0.0.1:${responder.port}`);
-  try {
-    const askCode = await waitFor(() => /Code: (\d{3} \d{3})/.exec(ask.out())?.[1]);
-    ask.child.stdin.write('y\n');
-    const acceptCode = await waitFor(() => /asks to pair\.\n\s+Code: (\d{3} \d{3})/.exec(accept.out())?.[1]);
-    assert.equal(askCode, acceptCode, 'both screens show the same code');
-    accept.child.stdin.write('y\n');
-    assert.equal(await ask.done, 0, ask.out());
-    assert.equal(await accept.done, 0, accept.out());
-  } finally {
-    // A prompt that never matched leaves both waiting on stdin, which would hold the test run open.
-    for (const run of [ask, accept]) if (run.child.exitCode === null) run.child.kill();
-  }
-}
 
 describe('bridge between two devices', () => {
   let alpha: Device;

@@ -23,6 +23,11 @@ export interface AgentSpec {
   worktree?: Worktree;
   /** The session that started it. Results and permission requests go there. */
   parent: Party;
+  /**
+   * A session on another device started it through this device's bridge. `parent` then has that device's
+   * `@<device>` on its id and address; `parentId` is the id that device knows the session by.
+   */
+  remote?: { device: string; parentId: string };
   createdAt: string;
 }
 

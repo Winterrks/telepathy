@@ -1,0 +1,541 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg0: #0b0820; --bg1: #151033;
+    --ink: #ece9f6; --dim: #8e88a6; --dim2: #6c6684;
+    --lav: #c4b5fd; --lav2: #a78bfa; --pink: #f0abfc;
+    --green: #4ade80; --green-bg: rgba(34,197,94,0.14); --red: #f87171;
+    --orange: #d97757; --teal: #5eead4; --blue: #7dd3fc; --amber: #fbbf24;
+    --win: #16141f; --win-bar: #1e1b2a; --line: rgba(255,255,255,0.09);
+    --mono: "SF Mono", ui-monospace, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 900px; overflow: hidden; background: var(--bg0); }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+  #stage { position: absolute; inset: 0; overflow: hidden;
+    background:
+      radial-gradient(700px 480px at 18% 30%, rgba(124,58,237,0.22), transparent 70%),
+      radial-gradient(640px 420px at 85% 80%, rgba(79,70,229,0.18), transparent 70%),
+      linear-gradient(160deg, var(--bg1), var(--bg0) 70%); }
+  section.scene { position: absolute; inset: 0; }
+  .abs { position: absolute; }
+
+  /* captions */
+  .cap { position: absolute; left: 0; right: 0; top: 30px; text-align: center; }
+  .cap h1 { font-size: 40px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.1;
+    background: linear-gradient(90deg, #f5f3ff, var(--lav) 60%, var(--pink));
+    -webkit-background-clip: text; background-clip: text; color: transparent; display: inline-block; padding-bottom: 4px; }
+  .cap p { margin-top: 8px; font-size: 21px; font-weight: 500; color: #b3abd6; letter-spacing: -0.005em; }
+  .cap .new { display: inline-block; vertical-align: 8px; margin-right: 12px; font-size: 15px; font-weight: 800; letter-spacing: .08em;
+    color: #1a0f3a; background: linear-gradient(90deg, #c4b5fd, #f0abfc); padding: 4px 10px 4px; border-radius: 999px; -webkit-text-fill-color: #1a0f3a; }
+
+  /* windows */
+  .win { position: absolute; border-radius: 14px; background: var(--win); border: 1px solid var(--line);
+    box-shadow: 0 30px 80px rgba(0,0,0,0.45), 0 0 0 1px rgba(0,0,0,0.3); overflow: hidden; display: flex; flex-direction: column; }
+  .win .bar { height: 38px; flex: 0 0 38px; background: var(--win-bar); display: flex; align-items: center; padding: 0 14px; border-bottom: 1px solid rgba(255,255,255,0.05); position: relative; }
+  .win .bar i { width: 12px; height: 12px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+  .win .bar i:nth-child(1) { background: #ff5f57; } .win .bar i:nth-child(2) { background: #febc2e; } .win .bar i:nth-child(3) { background: #28c840; }
+  .win .bar .title { position: absolute; left: 0; right: 0; text-align: center; font-size: 14px; font-weight: 600; color: #a39fb5; pointer-events: none; }
+  .win .body { flex: 1; position: relative; overflow: hidden; padding: 16px 22px 0; font-family: var(--mono); font-size: 17.5px; line-height: 1.5; }
+  .win .content { position: relative; }
+  .win .content > * { margin-bottom: 7px; }
+  .glowable { transition: none; }
+
+  .dim { color: var(--dim); } .dim2 { color: var(--dim2); } .b { font-weight: 700; color: #fff; }
+  .green { color: var(--green); } .lav { color: var(--lav); } .orange { color: var(--orange); } .teal { color: var(--teal); } .blue { color: var(--blue); }
+  .ln { white-space: pre-wrap; word-break: break-word; }
+  .sub { padding-left: 2.1em; text-indent: -2.1em; }
+
+  /* Claude Code */
+  .cc-head { display: flex; align-items: center; gap: 14px; padding: 4px 0 10px; }
+  .cc-logo { width: 46px; height: 46px; border-radius: 10px; background: rgba(217,119,87,0.14); display: grid; place-items: center; color: var(--orange); font-size: 30px; line-height: 1; }
+  .cc-head .t1 { font-weight: 700; color: #fff; } .cc-head .t2 { color: var(--dim); font-size: 15.5px; }
+  .u { color: #cbc6da; background: rgba(255,255,255,0.05); border-radius: 6px; padding: 5px 10px; }
+  .u::before { content: "> "; color: var(--dim); }
+  .tool .dot { color: var(--green); } .say .dot { color: #fff; } .taskdot { color: var(--lav2); }
+  .tool .name { font-weight: 700; color: #fff; } .tool .args { color: var(--dim); }
+  .res { color: var(--dim); padding-left: 2.6em; text-indent: -2.6em; }
+  .res .ok { color: #d6d2e4; }
+  .diff { margin: 2px 0 7px 2.6em; border-radius: 6px; overflow: hidden; font-size: 16px; }
+  .diff div { background: var(--green-bg); color: #bbf7d0; padding: 1px 10px; white-space: pre; }
+  .diff .n { color: rgba(187,247,208,0.55); margin-right: 12px; }
+  .msgin { border-left: 3px solid var(--lav2); background: rgba(167,139,250,0.09); border-radius: 0 8px 8px 0; padding: 8px 14px 9px; }
+  .msgin .h { color: var(--lav); font-weight: 700; font-size: 15.5px; margin-bottom: 3px; }
+  .msgin .h .tag { color: var(--dim); font-weight: 500; }
+  .result { margin: 4px 0 8px 2.6em; border: 1px solid rgba(167,139,250,0.35); background: rgba(167,139,250,0.07); border-radius: 8px; padding: 8px 12px; color: #e4defa; }
+  .think { color: #e8a385; }
+  .think .k { display: inline-block; width: 1.3em; color: var(--orange); }
+  .cc-input { margin: 0 18px; border: 1px solid #4a4460; border-radius: 9px; padding: 10px 14px; font-family: var(--mono); font-size: 17.5px; color: #fff; white-space: pre; overflow: hidden; height: 47px; }
+  .cc-input .pfx { color: var(--dim); }
+  .cc-input .ph { color: var(--dim2); }
+  .cc-foot { display: flex; justify-content: space-between; align-items: center; margin: 8px 20px 14px; font-family: var(--mono); font-size: 14.5px; color: var(--dim); height: 26px; }
+  .cc-foot .mode { color: #b39ddb; }
+  .chip-task { display: inline-flex; align-items: center; gap: 7px; color: #e9d5ff; background: rgba(167,139,250,0.16); border: 1px solid rgba(167,139,250,0.4); border-radius: 999px; padding: 2px 10px; font-size: 14px; }
+  .chip-task .k { color: var(--lav); }
+  .caret { display: inline-block; width: 0.6em; height: 1.15em; vertical-align: -0.2em; background: #e9e6f2; margin-left: 1px; }
+
+  /* Codex */
+  .cx-head { border: 1px solid #3c3752; border-radius: 7px; padding: 10px 16px; display: inline-block; margin: 2px 0 12px; }
+  .cx-head .t1 { font-weight: 700; color: #fff; } .cx-head .row { color: var(--dim); } .cx-head .row b { color: #e9e6f2; font-weight: 500; }
+  .cx-user { background: rgba(255,255,255,0.055); margin-left: -22px; margin-right: -22px; padding: 8px 22px; }
+  .cx-user::before { content: "› "; color: var(--dim); }
+  .cx-user .tagline { color: var(--dim); font-size: 15.5px; }
+  .cx .dot { color: var(--green); } .cx .verb { font-weight: 700; color: #fff; }
+  .cx-sub { color: var(--dim); padding-left: 2.2em; text-indent: -2.2em; }
+  .cx-say .dot { color: #fff; }
+  .cx-status { margin: 0 22px 8px; font-family: var(--mono); font-size: 16px; color: #c9c3de; height: 24px; }
+  .cx-status .k { color: var(--teal); }
+  .cx-input { margin: 0 0 0 0; background: rgba(255,255,255,0.05); padding: 11px 22px; font-family: var(--mono); font-size: 17.5px; color: var(--dim2); height: 47px; white-space: pre; }
+  .cx-input .pfx { color: var(--dim); }
+  .cx-foot { margin: 8px 22px 14px; font-family: var(--mono); font-size: 14.5px; color: var(--dim); height: 22px; }
+
+  /* OpenCode card */
+  .oc .body { font-size: 16.5px; }
+  .oc-line { padding-left: 1.6em; text-indent: -1.6em; }
+  .oc-prompt { border-left: 3px solid var(--blue); padding: 4px 12px; color: #cfd8e6; background: rgba(125,211,252,0.06); }
+  .oc-status { margin: 0 20px 14px; font-family: var(--mono); font-size: 15px; color: #a9c6dd; height: 24px; }
+  .badge { display: inline-block; font-family: -apple-system, system-ui, sans-serif; font-size: 12.5px; font-weight: 700; letter-spacing: .04em; color: #dbeafe; background: rgba(96,165,250,0.18); border: 1px solid rgba(96,165,250,0.45); border-radius: 999px; padding: 2px 9px; position: absolute; right: 14px; top: 9px; }
+  .badge.purple { color: #ede9fe; background: rgba(167,139,250,0.18); border-color: rgba(167,139,250,0.5); }
+
+  /* zsh */
+  .sh .body { font-size: 17px; }
+  .sh .p { color: var(--green); }
+
+  /* device row */
+  .device { position: absolute; top: 132px; height: 40px; display: flex; align-items: center; gap: 10px; padding: 0 16px 0 12px; border-radius: 999px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.12); font-size: 18px; font-weight: 700; color: #f1edff; transform: translateX(-50%); }
+  .device svg { width: 24px; height: 24px; }
+  .linksvg { position: absolute; left: 0; top: 0; width: 1600px; height: 900px; pointer-events: none; }
+  .linklabel { position: absolute; top: 139px; left: 800px; transform: translateX(-50%); font-size: 14px; font-weight: 700; color: #cfc4ff; letter-spacing: .02em;
+    background: #1a1438; border: 1px solid rgba(167,139,250,0.35); padding: 4px 12px; border-radius: 999px; white-space: nowrap; }
+
+  /* callouts */
+  .callout { position: absolute; font-size: 17px; font-weight: 700; color: #1b1035; background: linear-gradient(90deg, #ddd6fe, #f5d0fe); padding: 8px 15px; border-radius: 999px;
+    box-shadow: 0 10px 30px rgba(167,139,250,0.35); white-space: nowrap; }
+
+  /* progress */
+  .prog { margin: 4px 0 8px 2.2em; height: 12px; width: 70%; background: rgba(255,255,255,0.08); border-radius: 6px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .prog i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--teal), #a7f3d0); }
+  .progn { color: var(--dim); margin-left: 12px; }
+
+  /* brand */
+  .brand { display: flex; align-items: center; justify-content: center; gap: 30px; }
+  .brand svg { width: 132px; height: 132px; filter: drop-shadow(0 16px 40px rgba(124,58,237,0.5)); }
+  .word { font-size: 140px; font-weight: 800; letter-spacing: -0.045em; line-height: 1; padding-bottom: 18px; margin-top: -10px;
+    background: linear-gradient(180deg, #fff, #ddd6fe); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .tagline { text-align: center; font-size: 46px; font-weight: 800; letter-spacing: -0.03em;
+    background: linear-gradient(90deg, #e9e5ff, var(--lav) 50%, var(--pink)); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .pill { display: inline-flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: 22px; color: #ede9fe; background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.14); padding: 12px 22px; border-radius: 14px; }
+  .pill .k { color: var(--lav2); }
+
+  /* ring */
+  .agent { position: absolute; transform: translate(-50%, -50%); display: flex; align-items: center; gap: 12px; padding: 14px 22px 14px 18px; border-radius: 16px;
+    background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.13); font-size: 23px; font-weight: 700; color: #f4f1ff; white-space: nowrap;
+    box-shadow: 0 14px 40px rgba(0,0,0,0.3); }
+  .agent i { width: 13px; height: 13px; border-radius: 50%; display: inline-block; }
+</style>
+</head>
+<body>
+<div id="stage">
+
+<!-- ============ 0 · intro ============ -->
+<section class="scene" data-len="3.2">
+  <div class="abs" style="left:0;right:0;top:330px">
+    <div class="brand">
+      <svg viewBox="0 0 512 512" data-at="0.1" data-anim="pop" data-fade="0.5"><use href="#logo"/></svg>
+      <div class="word" data-at="0.3" data-anim="up" data-fade="0.5">telepathy</div>
+    </div>
+    <div class="tagline" data-at="0.9" data-fade="0.6" style="margin-top:26px">Your coding agents can talk to each other.</div>
+  </div>
+</section>
+
+<!-- ============ 1 · messages ============ -->
+<section class="scene" data-len="16.5">
+  <div class="cap" data-at="0.15"><h1>Your agents message each other</h1><p>Any session can reach any other, and a message wakes an idle agent up.</p></div>
+
+  <div class="win" style="left:40px; top:150px; width:750px; height:720px" data-at="0.3" data-anim="pop" data-glow="11.6">
+    <div class="bar"><i></i><i></i><i></i><div class="title">shop-api — claude</div></div>
+    <div class="body"><div class="content">
+      <div class="cc-head"><div class="cc-logo">✻</div><div><div class="t1">Claude Code</div><div class="t2">~/code/shop-api</div></div></div>
+      <div class="ln u" data-at="3.0" data-fade="0">add rate limiting to /login, then ask the codex session to review it</div>
+      <div class="ln think" data-at="3.2" data-until="4.0" data-fade="0"><span class="k" data-spin="✢✳✶✻✽✻✶✳">✻</span>Thinking…</div>
+      <div class="ln tool" data-at="4.0"><span class="dot">⏺ </span><span class="name">Update</span><span class="args">(src/routes/login.ts)</span></div>
+      <div class="ln res" data-at="4.2">  ⎿  <span class="ok">Updated src/routes/login.ts with 2 additions</span></div>
+      <div class="diff" data-at="4.3"><div><span class="n">3</span>+ import rateLimit from 'express-rate-limit'</div><div><span class="n">9</span>+ router.use(rateLimit({ windowMs: 60_000, max: 5 }))</div></div>
+      <div class="ln tool" data-at="5.4"><span class="dot">⏺ </span><span class="name">telepathy - send_message</span><span class="args">(to: "codex:shop-api-c3f", message: "Added rate limiting to /login…")</span></div>
+      <div class="ln res" data-at="6.3">  ⎿  <span class="ok">Message delivered to codex:shop-api-c3f.</span></div>
+      <div class="ln say" data-at="6.7"><span class="dot">⏺ </span>Sent the change to Codex for review.</div>
+      <div class="msgin" data-at="11.6"><div class="h">✉ Message from Codex <span class="tag">· codex:shop-api-c3f</span></div><div class="ln">The limiter keys on req.ip, but app.ts never sets trust proxy. Behind nginx every client shares one IP, so 5 failed logins lock everyone out.</div></div>
+      <div class="ln tool" data-at="12.8"><span class="dot">⏺ </span><span class="name">Update</span><span class="args">(src/app.ts)</span></div>
+      <div class="diff" data-at="13.0"><div><span class="n">7</span>+ app.set('trust proxy', 1)</div></div>
+      <div class="ln say" data-at="13.9"><span class="dot">⏺ </span>Good catch from Codex. With trust proxy set, the limit applies per client.</div>
+    </div></div>
+    <div class="cc-input"><span class="pfx">&gt; </span><span class="ph" data-until="0.9" data-fade="0">Try "refactor auth.ts"</span><span data-at="0.9" data-until="3.0" data-fade="0" data-type="0.9" data-cps="34">add rate limiting to /login, then ask the codex session to review it</span><span class="caret" data-blink></span></div>
+    <div class="cc-foot"><span class="mode">⏵⏵ accept edits on</span><span></span></div>
+  </div>
+
+  <div class="win" style="left:810px; top:150px; width:750px; height:720px" data-at="0.45" data-anim="pop" data-glow="6.6">
+    <div class="bar"><i></i><i></i><i></i><div class="title">shop-api — codex</div></div>
+    <div class="body"><div class="content">
+      <div class="cx-head"><div class="t1">&gt;_ OpenAI Codex <span class="dim" style="font-weight:400">(v0.16)</span></div><div class="row">model:     <b>gpt-5.5 high</b></div><div class="row">directory: <b>~/code/shop-api</b></div></div>
+      <div class="ln cx-user" data-at="6.6"><span class="tagline">&lt;telepathy-peer-message from="claude:shop-api-a1"&gt;</span><br>  Added rate limiting to /login in src/routes/login.ts. Can you review it?</div>
+      <div class="ln cx" data-at="7.6"><span class="dot">• </span><span class="verb">Explored</span></div>
+      <div class="ln cx-sub" data-at="7.7">  └ Read login.ts, app.ts</div>
+      <div class="ln cx" data-at="8.6"><span class="dot">• </span><span class="verb">Ran</span> rg "trust proxy" src</div>
+      <div class="ln cx-sub" data-at="8.8">  └ (no output)</div>
+      <div class="ln cx-say" data-at="9.6"><span class="dot">• </span>The limiter keys on req.ip, but trust proxy is never set. Behind nginx every client shares one IP.</div>
+      <div class="ln cx" data-at="10.6"><span class="dot">• </span><span class="verb">Called</span> telepathy.send_message({"to":"claude:shop-api-a1", …})</div>
+      <div class="ln cx-sub" data-at="11.4">  └ Message delivered to claude:shop-api-a1.</div>
+    </div></div>
+    <div class="cx-status"><span data-at="6.9" data-until="11.5" data-fade="0"><span class="k" data-spin="◐◓◑◒">◐</span> Working (<span data-timer="6.9">0s</span> • esc to interrupt)</span></div>
+    <div class="cx-input"><span class="pfx">› </span>Ask Codex to do anything</div>
+    <div class="cx-foot">gpt-5.5 high · ~/code/shop-api</div>
+  </div>
+
+  <div class="callout" style="left:1372px; top:236px; transform:translateX(-50%)" data-at="6.9" data-until="10.2" data-anim="pop">Codex woke up on its own</div>
+</section>
+
+<!-- ============ 2 · subagents ============ -->
+<section class="scene" data-len="12.5">
+  <div class="cap" data-at="0.15"><h1>Hand work to any agent</h1><p>Claude starts OpenCode as a subagent. Its report comes back by itself, with no model in between.</p></div>
+
+  <div class="win" style="left:40px; top:150px; width:960px; height:720px" data-at="0.3" data-anim="pop" data-glow="8.2">
+    <div class="bar"><i></i><i></i><i></i><div class="title">shop-api — claude</div></div>
+    <div class="body"><div class="content">
+      <div class="cc-head"><div class="cc-logo">✻</div><div><div class="t1">Claude Code</div><div class="t2">~/code/shop-api</div></div></div>
+      <div class="ln u" data-at="2.7" data-fade="0">have opencode write the migration for the sessions table while you build the API</div>
+      <div class="ln tool" data-at="3.1"><span class="dot">⏺ </span><span class="name">telepathy - start_agent</span><span class="args">(harness: "opencode", description: "Write the migration", prompt: "Add a sessions table…")</span></div>
+      <div class="ln res" data-at="3.6">  ⎿  <span class="ok">started server-side task opencode:write-the-migration</span></div>
+      <div class="ln tool" data-at="4.5"><span class="dot">⏺ </span><span class="name">Write</span><span class="args">(src/routes/sessions.ts)</span></div>
+      <div class="ln res" data-at="4.7">  ⎿  <span class="ok">Wrote 41 lines to src/routes/sessions.ts</span></div>
+      <div class="ln tool" data-at="5.7"><span class="dot">⏺ </span><span class="name">Update</span><span class="args">(src/app.ts)</span></div>
+      <div class="diff" data-at="5.9"><div><span class="n">14</span>+ app.use('/sessions', sessions)</div></div>
+      <div class="ln" data-at="8.2"><span class="taskdot">⏺ </span><span class="b">MCP task opencode:write-the-migration</span> <span class="dim">(plugin:telepathy:bridge/start_agent)</span> completed.</div>
+      <div class="result ln" data-at="8.4">Added db/migrations/0042_sessions.sql: the sessions table, with an index on user_id. npm run migrate:test: 12 passed.</div>
+      <div class="ln say" data-at="9.6"><span class="dot">⏺ </span>The API and OpenCode's migration are both in, and the migration passes its 12 tests.</div>
+    </div></div>
+    <div class="cc-input"><span class="pfx">&gt; </span><span class="ph" data-until="0.9" data-fade="0">Try "refactor auth.ts"</span><span data-at="0.9" data-until="2.7" data-fade="0" data-type="0.9" data-cps="48">have opencode write the migration for the sessions table while you build the API</span><span class="caret" data-blink></span></div>
+    <div class="cc-foot"><span class="mode">⏵⏵ accept edits on</span><span class="chip-task" data-at="3.6" data-until="8.2" data-anim="pop"><span class="k" data-spin="◐◓◑◒">◐</span>1 MCP task</span></div>
+  </div>
+
+  <div class="win oc" style="left:1040px; top:250px; width:520px; height:470px" data-at="3.8" data-anim="pop" data-glow="3.8">
+    <div class="bar"><i></i><i></i><i></i><div class="title" style="left:-60px">opencode — write-the-migration</div><span class="badge">BACKGROUND</span></div>
+    <div class="body"><div class="content">
+      <div class="ln oc-prompt" data-at="4.0">Add a sessions table (id, user_id, expires_at) with a migration and a test.</div>
+      <div class="ln oc-line" data-at="4.6"><span class="blue">→ </span>Read db/schema.sql</div>
+      <div class="ln oc-line" data-at="5.3"><span class="blue">← </span>Write db/migrations/0042_sessions.sql</div>
+      <div class="ln oc-line" data-at="6.1"><span class="blue">$ </span>npm run migrate:test</div>
+      <div class="ln oc-line" data-at="7.0"><span class="green">✓ </span>12 passed</div>
+      <div class="ln" data-at="7.6"><span class="dim">Added the sessions table, with an index on user_id.</span></div>
+    </div></div>
+    <div class="oc-status"><span data-at="4.0" data-until="8.0" data-fade="0"><span data-spin="⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏">⠋</span> working…</span><span data-at="8.0" data-fade="0.2"><span class="green">✓</span> reported to Claude Code</span></div>
+  </div>
+
+  <div class="callout" style="left:1300px; top:752px; transform:translateX(-50%)" data-at="8.2" data-until="11.8" data-anim="pop">The report is the task's result</div>
+</section>
+
+<!-- ============ 3 · devices ============ -->
+<section class="scene" data-len="13">
+  <div class="cap" data-at="0.15"><h1>Across all your devices</h1><p>Sessions on your other machines join in, over Tailscale or the local network.</p></div>
+
+  <svg class="linksvg" viewBox="0 0 1600 900" data-at="0.5">
+    <path id="link3" d="M 486 152 L 1106 152" stroke="#a78bfa" stroke-opacity=".55" stroke-width="2.5" stroke-dasharray="7 9" data-dash fill="none"/>
+    <circle r="7" fill="#f0abfc" data-path="#link3" data-move="3.7,4.4"/>
+    <circle r="7" fill="#5eead4" data-path="#link3" data-move="7.0,7.7,rev"/>
+  </svg>
+  <div class="device" style="left:415px" data-at="0.4" data-anim="pop"><svg viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>laptop</div>
+  <div class="device" style="left:1185px" data-at="0.5" data-anim="pop"><svg viewBox="0 0 24 24" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16v4"/></svg>desktop</div>
+  <div class="linklabel" data-at="0.7">telepathy bridge · Tailscale</div>
+
+  <div class="win" style="left:40px; top:190px; width:750px; height:680px" data-at="0.3" data-anim="pop" data-glow="7.7">
+    <div class="bar"><i></i><i></i><i></i><div class="title">web — claude</div></div>
+    <div class="body"><div class="content">
+      <div class="cc-head"><div class="cc-logo">✻</div><div><div class="t1">Claude Code</div><div class="t2">~/code/web</div></div></div>
+      <div class="ln u" data-at="2.3" data-fade="0">ask the codex on my desktop whether the training run finished</div>
+      <div class="ln tool" data-at="2.7"><span class="dot">⏺ </span><span class="name">ListAgents</span></div>
+      <div class="ln res" data-at="2.9">  ⎿  <span class="ok">Other agents' sessions (2)</span><br>     codex:ml-c3f@desktop      <span class="dim">· idle · 3h ago</span><br>     opencode:web-o1a@desktop  <span class="dim">· busy · 1h ago</span></div>
+      <div class="ln tool" data-at="3.6"><span class="dot">⏺ </span><span class="name">telepathy - send_message</span><span class="args">(to: "codex:ml-c3f@desktop", message: "Did the training run finish?")</span></div>
+      <div class="ln res" data-at="4.5">  ⎿  <span class="ok">Message delivered to codex:ml-c3f@desktop.</span></div>
+      <div class="msgin" data-at="7.7"><div class="h">✉ Message from Codex <span class="tag">· codex:ml-c3f@desktop</span></div><div class="ln">Yes, 12 minutes ago: epoch 40/40, val_loss 0.183. The checkpoint is checkpoints/final.pt.</div></div>
+      <div class="ln say" data-at="9.0"><span class="dot">⏺ </span>The run on your desktop finished: 40 epochs, val_loss 0.183, saved to checkpoints/final.pt.</div>
+    </div></div>
+    <div class="cc-input"><span class="pfx">&gt; </span><span class="ph" data-until="0.9" data-fade="0">Try "refactor auth.ts"</span><span data-at="0.9" data-until="2.3" data-fade="0" data-type="0.9" data-cps="46">ask the codex on my desktop whether the training run finished</span><span class="caret" data-blink></span></div>
+    <div class="cc-foot"><span class="mode">⏵⏵ accept edits on</span><span></span></div>
+  </div>
+
+  <div class="win" style="left:810px; top:190px; width:750px; height:680px" data-at="0.45" data-anim="pop" data-glow="4.4">
+    <div class="bar"><i></i><i></i><i></i><div class="title">ml — codex</div></div>
+    <div class="body"><div class="content">
+      <div class="cx-head"><div class="t1">&gt;_ OpenAI Codex <span class="dim" style="font-weight:400">(v0.16)</span></div><div class="row">model:     <b>gpt-5.5 high</b></div><div class="row">directory: <b>~/ml</b></div></div>
+      <div class="ln cx-user" data-at="4.4"><span class="tagline">&lt;telepathy-peer-message from="claude:web-a1@laptop"&gt;</span><br>  Did the training run finish?</div>
+      <div class="ln cx" data-at="5.2"><span class="dot">• </span><span class="verb">Ran</span> tail -n 2 runs/latest/train.log</div>
+      <div class="ln cx-sub" data-at="5.4">  └ epoch 40/40  val_loss 0.183<br>    saved checkpoints/final.pt</div>
+      <div class="ln cx" data-at="6.3"><span class="dot">• </span><span class="verb">Called</span> telepathy.send_message({"to":"claude:web-a1@laptop", …})</div>
+      <div class="ln cx-sub" data-at="7.0">  └ Message delivered to claude:web-a1@laptop.</div>
+    </div></div>
+    <div class="cx-status"><span data-at="4.6" data-until="7.1" data-fade="0"><span class="k" data-spin="◐◓◑◒">◐</span> Working (<span data-timer="4.6">0s</span> • esc to interrupt)</span></div>
+    <div class="cx-input"><span class="pfx">› </span>Ask Codex to do anything</div>
+    <div class="cx-foot">gpt-5.5 high · ~/ml</div>
+  </div>
+</section>
+
+<!-- ============ 4 · agents on another device ============ -->
+<section class="scene" data-len="14">
+  <div class="cap" data-at="0.15"><h1><span class="new">NEW</span>Start agents on your other machines</h1><p>From your laptop, run the GPU tests on your desktop. Only devices you allow can do it.</p></div>
+
+  <svg class="linksvg" viewBox="0 0 1600 900" data-at="0.5">
+    <path id="link4" d="M 486 152 L 1106 152" stroke="#a78bfa" stroke-opacity=".55" stroke-width="2.5" stroke-dasharray="7 9" data-dash fill="none"/>
+    <circle r="7" fill="#f0abfc" data-path="#link4" data-move="4.4,5.1"/>
+    <circle r="7" fill="#5eead4" data-path="#link4" data-move="10.2,10.9,rev"/>
+  </svg>
+  <div class="device" style="left:415px" data-at="0.4" data-anim="pop"><svg viewBox="0 0 24 24" fill="none" stroke="#c4b5fd" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="11" rx="1.5"/><path d="M2 19h20"/></svg>laptop</div>
+  <div class="device" style="left:1185px" data-at="0.5" data-anim="pop"><svg viewBox="0 0 24 24" fill="none" stroke="#5eead4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M9 20h6M12 16v4"/></svg>desktop</div>
+  <div class="linklabel" data-at="0.7">telepathy bridge · Tailscale</div>
+
+  <div class="win" style="left:40px; top:190px; width:750px; height:680px" data-at="0.3" data-anim="pop" data-glow="10.9">
+    <div class="bar"><i></i><i></i><i></i><div class="title">ml — claude</div></div>
+    <div class="body"><div class="content">
+      <div class="cc-head"><div class="cc-logo">✻</div><div><div class="t1">Claude Code</div><div class="t2">~/code/ml</div></div></div>
+      <div class="ln u" data-at="3.6" data-fade="0">run the gpu tests on my desktop with codex</div>
+      <div class="ln tool" data-at="4.0"><span class="dot">⏺ </span><span class="name">telepathy - start_agent</span><span class="args">(harness: "codex", device: "desktop", description: "Run the GPU tests", cwd: "~/ml")</span></div>
+      <div class="ln res" data-at="5.1">  ⎿  <span class="ok">started server-side task codex:run-the-gpu-tests@desktop</span></div>
+      <div class="ln" data-at="10.9"><span class="taskdot">⏺ </span><span class="b">MCP task codex:run-the-gpu-tests@desktop</span> <span class="dim">(plugin:telepathy:bridge/start_agent)</span> completed.</div>
+      <div class="result ln" data-at="11.1">214 passed in 3m 12s on desktop. No failures.</div>
+      <div class="ln say" data-at="12.0"><span class="dot">⏺ </span>All 214 GPU tests pass on your desktop.</div>
+    </div></div>
+    <div class="cc-input"><span class="pfx">&gt; </span><span class="ph" data-until="2.6" data-fade="0">Try "refactor auth.ts"</span><span data-at="2.6" data-until="3.6" data-fade="0" data-type="2.6" data-cps="46">run the gpu tests on my desktop with codex</span><span class="caret" data-blink></span></div>
+    <div class="cc-foot"><span class="mode">⏵⏵ accept edits on</span><span class="chip-task" data-at="5.1" data-until="10.9" data-anim="pop"><span class="k" data-spin="◐◓◑◒">◐</span>1 MCP task</span></div>
+  </div>
+
+  <div class="win sh" style="left:810px; top:190px; width:750px; height:170px" data-at="0.45" data-anim="pop">
+    <div class="bar"><i></i><i></i><i></i><div class="title">~ — zsh</div></div>
+    <div class="body"><div class="content">
+      <div class="ln"><span class="p">desktop ~ %</span> <span data-type="0.8" data-cps="40">telepathy bridge allow-agents laptop</span></div>
+      <div class="ln dim" data-at="2.0">Sessions on laptop can now start agents on this device with start_agent.</div>
+    </div></div>
+  </div>
+
+  <div class="win" style="left:810px; top:380px; width:750px; height:490px" data-at="5.1" data-anim="pop" data-glow="5.1">
+    <div class="bar"><i></i><i></i><i></i><div class="title" style="left:-40px">ml — codex · started from laptop</div><span class="badge purple">AGENT</span></div>
+    <div class="body"><div class="content">
+      <div class="ln cx-user" data-at="5.3">  Run the GPU tests with pytest -m gpu and report the result.</div>
+      <div class="ln cx" data-at="6.0"><span class="dot">• </span><span class="verb">Ran</span> pytest -m gpu -q</div>
+      <div class="ln" data-at="6.2"><span class="prog"><i data-progress="6.2,9.4"></i></span><span class="progn" data-count="6.2,9.4,0,214">0</span><span class="dim">/214</span></div>
+      <div class="ln cx-sub" data-at="9.5">  └ 214 passed in 3m 12s</div>
+      <div class="ln cx-say" data-at="10.0"><span class="dot">• </span>All 214 GPU tests pass on this machine.</div>
+    </div></div>
+    <div class="cx-status"><span data-at="5.8" data-until="10.1" data-fade="0"><span class="k" data-spin="◐◓◑◒">◐</span> Working (<span data-timer="5.8">0s</span> • esc to interrupt)</span></div>
+    <div class="cx-input"><span class="pfx">› </span>Ask Codex to do anything</div>
+  </div>
+</section>
+
+<!-- ============ 5 · agents ring ============ -->
+<section class="scene" data-len="6" id="ring">
+  <div class="cap" data-at="0.15"><h1>Works with 11 coding agents</h1><p>Claude Code, Codex, OpenCode, Copilot, Cursor, Grok and more, all on one network.</p></div>
+  <svg class="linksvg" viewBox="0 0 1600 900" id="ringsvg" data-at="1.2" data-fade="0.6"></svg>
+  <div class="abs" style="left:800px; top:520px; transform:translate(-50%,-50%)" data-at="0.3" data-anim="pop">
+    <svg viewBox="0 0 512 512" style="width:130px;height:130px;filter:drop-shadow(0 16px 40px rgba(124,58,237,0.55))"><use href="#logo"/></svg>
+  </div>
+</section>
+
+<!-- ============ 6 · setup ============ -->
+<section class="scene" data-len="7">
+  <div class="cap" data-at="0.15"><h1>One command sets it all up</h1><p>telepathy setup finds every agent CLI on your machine, installs telepathy in each, and keeps them updated.</p></div>
+  <div class="win sh" style="left:220px; top:200px; width:1160px; height:470px" data-at="0.3" data-anim="pop">
+    <div class="bar"><i></i><i></i><i></i><div class="title">~ — zsh</div></div>
+    <div class="body" style="font-size:19px; padding-top:22px"><div class="content">
+      <div class="ln"><span class="p">~ %</span> <span data-type="0.7" data-cps="38">npm install -g telepathy-cli &amp;&amp; telepathy setup</span><span class="caret" data-at="0" data-until="2.3" data-fade="0" data-blink></span></div>
+      <div class="ln dim" data-at="2.4">added 1 package in 2s</div>
+      <div class="ln" data-at="2.8">Set up telepathy 0.13.0 in Claude Code, Codex, OpenCode, Copilot CLI, Cursor, Devin CLI.</div>
+      <div class="ln" data-at="3.1"><span class="green">-</span> Claude Code: <span class="green">installed</span><span class="dim">; installed claude-agent-acp</span></div>
+      <div class="ln" data-at="3.35"><span class="green">-</span> Codex: <span class="green">installed</span><span class="dim">; approved 4 hooks; installed codex-acp</span></div>
+      <div class="ln" data-at="3.6"><span class="green">-</span> OpenCode: <span class="green">installed</span></div>
+      <div class="ln" data-at="3.85"><span class="green">-</span> Copilot CLI: <span class="green">installed</span></div>
+      <div class="ln" data-at="4.1"><span class="green">-</span> Cursor: <span class="dim">loads Claude Code's copy</span></div>
+      <div class="ln" data-at="4.35"><span class="green">-</span> Devin CLI: <span class="green">installed</span></div>
+      <div class="ln" data-at="4.6">telepathy CLI: 0.13.0, current</div>
+      <div class="ln" data-at="4.9"><span class="p">~ %</span> <span class="caret" data-blink></span></div>
+    </div></div>
+  </div>
+</section>
+
+<!-- ============ 7 · outro ============ -->
+<section class="scene" data-len="5">
+  <div class="abs" style="left:0;right:0;top:250px">
+    <div class="brand" data-at="0.1" data-anim="pop" data-fade="0.5">
+      <svg viewBox="0 0 512 512"><use href="#logo"/></svg>
+      <div class="word">telepathy</div>
+    </div>
+    <div class="tagline" data-at="0.5" data-fade="0.5" style="margin-top:22px">Your coding agents can talk to each other.</div>
+    <div style="display:flex; justify-content:center; gap:22px; margin-top:44px" data-at="1.0" data-fade="0.5">
+      <div class="pill"><span class="k">$</span>npm install -g telepathy-cli</div>
+      <div class="pill"><span class="k">★</span>github.com/Winterrks/telepathy</div>
+    </div>
+  </div>
+</section>
+
+</div>
+
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4338ca"/><stop offset="1" stop-color="#8b5cf6"/></linearGradient>
+    <g id="logo">
+      <rect width="512" height="512" rx="112" fill="url(#lg)"/>
+      <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" transform="translate(18 0)">
+        <path d="M120 176 L200 256 L120 336" stroke-width="40"/>
+        <path d="M268.9 198.1 A90 90 0 0 1 268.9 313.9" stroke-width="30"/>
+        <path d="M314.9 159.6 A150 150 0 0 1 314.9 352.4" stroke-width="30" stroke-opacity=".72"/>
+        <path d="M360.9 121 A210 210 0 0 1 360.9 391" stroke-width="30" stroke-opacity=".45"/>
+      </g>
+    </g>
+  </defs>
+</svg>
+
+<script>
+(() => {
+  const clamp = (x, a = 0, b = 1) => Math.min(b, Math.max(a, x));
+  const ease = (x) => 1 - Math.pow(1 - clamp(x), 3);
+  const nums = (s) => String(s).split(',').map((v) => v.trim());
+
+  // ---- the agents ring (scene 5) ----
+  const ring = document.getElementById('ring');
+  const agents = [
+    ['Claude Code', '#d97757'], ['Codex', '#5eead4'], ['OpenCode', '#60a5fa'], ['Copilot CLI', '#a78bfa'],
+    ['Cursor', '#e5e7eb'], ['Grok', '#f472b6'], ['Devin', '#34d399'], ['Antigravity', '#fbbf24'],
+    ['Kimi Code', '#22d3ee'], ['Qwen Code', '#818cf8'], ['Kilo Code', '#facc15'],
+  ];
+  const cx = 800, cy = 520, rx = 590, ry = 268;
+  const pts = agents.map((_, i) => {
+    const a = -Math.PI / 2 + (i * 2 * Math.PI) / agents.length;
+    return [cx + rx * Math.cos(a), cy + ry * Math.sin(a)];
+  });
+  agents.forEach(([name, color], i) => {
+    const d = document.createElement('div');
+    d.className = 'agent';
+    d.style.left = pts[i][0] + 'px';
+    d.style.top = pts[i][1] + 'px';
+    d.dataset.at = String(0.45 + i * 0.11);
+    d.dataset.anim = 'pop';
+    d.innerHTML = `<i style="background:${color}; box-shadow:0 0 14px ${color}"></i>${name}`;
+    ring.appendChild(d);
+  });
+  const svg = document.getElementById('ringsvg');
+  const NS = 'http://www.w3.org/2000/svg';
+  const chords = [[0, 2], [1, 5], [3, 7], [4, 8], [6, 9], [10, 1], [8, 0], [2, 6], [5, 10], [9, 3]];
+  chords.forEach(([a, b], k) => {
+    const p = document.createElementNS(NS, 'path');
+    const [x1, y1] = pts[a], [x2, y2] = pts[b];
+    const mx = (x1 + x2) / 2 + (cx - (x1 + x2) / 2) * 0.55, my = (y1 + y2) / 2 + (cy - (y1 + y2) / 2) * 0.55;
+    p.setAttribute('d', `M ${x1} ${y1} Q ${mx} ${my} ${x2} ${y2}`);
+    p.setAttribute('id', `chord${k}`);
+    p.setAttribute('fill', 'none');
+    p.setAttribute('stroke', '#a78bfa');
+    p.setAttribute('stroke-opacity', '0.2');
+    p.setAttribute('stroke-width', '1.6');
+    svg.appendChild(p);
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('r', '5');
+    c.setAttribute('fill', k % 2 ? '#5eead4' : '#f0abfc');
+    const s = 1.5 + k * 0.36;
+    c.dataset.path = `#chord${k}`;
+    c.dataset.move = `${s},${s + 0.9}${k % 3 === 0 ? ',rev' : ''}`;
+    svg.appendChild(c);
+  });
+
+  // ---- timeline ----
+  const scenes = [...document.querySelectorAll('section.scene')];
+  let t0 = 0;
+  for (const s of scenes) {
+    s._start = t0;
+    s._end = t0 + Number(s.dataset.len);
+    t0 = s._end;
+  }
+  const TOTAL = t0;
+  const sceneOf = (el) => el.closest('section.scene');
+
+  // ?cuts=1: quick cuts and no glow, for the animated WebP, whose lossy encoder leaves stale blocks behind slow dark fades
+  const CUTS = new URLSearchParams(location.search).get('cuts') === '1';
+  const items = [];
+  for (const el of document.querySelectorAll('[data-at], [data-until], section.scene')) {
+    const s = sceneOf(el);
+    const isScene = el.tagName === 'SECTION';
+    const start = isScene ? s._start : s._start + Number(el.dataset.at ?? 0);
+    const end = isScene ? s._end : el.dataset.until != null ? s._start + Number(el.dataset.until) : s._end;
+    items.push({ el, start, end, isScene, anim: el.dataset.anim || (isScene ? 'none' : 'up'),
+      fade: CUTS && (isScene || el.classList.contains('win') || el.classList.contains('cap') || el.classList.contains('device') || el.classList.contains('agent') || el.classList.contains('linklabel') || el.classList.contains('linksvg')) ? 0.07
+        : el.dataset.fade != null ? Number(el.dataset.fade) : isScene ? 0.4 : 0.28,
+      display: getComputedStyle(el).display });
+  }
+  const typed = [...document.querySelectorAll('[data-type]')].map((el) => ({ el, full: el.textContent,
+    start: sceneOf(el)._start + Number(el.dataset.type), cps: Number(el.dataset.cps || 40) }));
+  const spins = [...document.querySelectorAll('[data-spin]')].map((el) => ({ el, chars: [...el.dataset.spin] }));
+  const timers = [...document.querySelectorAll('[data-timer]')].map((el) => ({ el, start: sceneOf(el)._start + Number(el.dataset.timer) }));
+  const progs = [...document.querySelectorAll('[data-progress]')].map((el) => { const [a, b] = nums(el.dataset.progress).map(Number); const s = sceneOf(el)._start; return { el, a: s + a, b: s + b }; });
+  const counts = [...document.querySelectorAll('[data-count]')].map((el) => { const [a, b, f, to] = nums(el.dataset.count).map(Number); const s = sceneOf(el)._start; return { el, a: s + a, b: s + b, f, to }; });
+  const glows = [...document.querySelectorAll('[data-glow]')].map((el) => ({ el, at: nums(el.dataset.glow).map((v) => sceneOf(el)._start + Number(v)) }));
+  const dashes = [...document.querySelectorAll('[data-dash]')];
+  const movers = [...document.querySelectorAll('[data-move]')].map((el) => {
+    const [a, b, dir] = nums(el.dataset.move); const s = sceneOf(el)._start;
+    return { el, a: s + Number(a), b: s + Number(b), rev: dir === 'rev', path: document.querySelector(el.dataset.path) };
+  });
+  const blinks = [...document.querySelectorAll('[data-blink]')];
+  const bodies = [...document.querySelectorAll('.win .body')];
+
+  window.TOTAL = TOTAL;
+  window.render = (t) => {
+    for (const it of items) {
+      const { el, start, end, fade, anim } = it;
+      if (t < start || t >= end) { el.style.display = 'none'; continue; }
+      el.style.display = it.display === 'none' ? 'block' : it.display;
+      let p = fade > 0 ? ease((t - start) / fade) : 1;
+      let o = p;
+      if (it.isScene || el.dataset.until != null || el.dataset.fadeout) {
+        const fo = it.isScene ? (CUTS ? 0.07 : 0.4) : 0.2;
+        o *= clamp((end - t) / fo);
+      }
+      el.style.opacity = String(o);
+      if (anim === 'up') el.style.translate = `0 ${(1 - p) * 8}px`;
+      else if (anim === 'pop') el.style.scale = String(0.94 + 0.06 * p);
+    }
+    for (const it of typed) {
+      const n = clamp(Math.floor((t - it.start) * it.cps), 0, it.full.length);
+      it.el.textContent = it.full.slice(0, n);
+    }
+    for (const it of spins) it.el.textContent = it.chars[Math.floor(t * 9) % it.chars.length];
+    for (const it of timers) it.el.textContent = `${Math.max(0, Math.floor(t - it.start))}s`;
+    for (const it of progs) it.el.style.width = `${ease((t - it.a) / (it.b - it.a)) * 100}%`;
+    for (const it of counts) it.el.textContent = String(Math.round(it.f + (it.to - it.f) * ease((t - it.a) / (it.b - it.a))));
+    for (const it of glows) {
+      if (CUTS) continue;
+      let g = 0;
+      for (const a of it.at) { const d = t - a; if (d >= -0.1 && d < 1.6) g = Math.max(g, d < 0.25 ? clamp((d + 0.1) / 0.35) : clamp(1 - (d - 0.25) / 1.35)); }
+      it.el.style.boxShadow = `0 30px 80px rgba(0,0,0,0.45), 0 0 0 ${1 + g * 1.5}px rgba(167,139,250,${0.15 + g * 0.75}), 0 0 ${g * 60}px rgba(167,139,250,${g * 0.45})`;
+    }
+    for (const d of dashes) d.style.strokeDashoffset = String(-t * 34);
+    for (const m of movers) {
+      const L = m.path.getTotalLength();
+      const p = (t - m.a) / (m.b - m.a);
+      if (p < 0 || p > 1) { m.el.style.opacity = '0'; continue; }
+      const q = ease(p);
+      const pt = m.path.getPointAtLength((m.rev ? 1 - q : q) * L);
+      m.el.setAttribute('cx', pt.x); m.el.setAttribute('cy', pt.y);
+      m.el.style.opacity = String(Math.min(1, p * 6, (1 - p) * 6));
+      m.el.style.filter = 'drop-shadow(0 0 8px currentColor)';
+    }
+    for (const b of blinks) b.style.opacity = Math.floor(t * 1.7) % 2 === 0 ? '1' : '0.15';
+    // keep the newest lines of a window in view
+    for (const b of bodies) {
+      const c = b.firstElementChild;
+      const over = c.scrollHeight - (b.clientHeight - 14);
+      c.style.transform = over > 0 ? `translateY(${-over}px)` : '';
+    }
+  };
+  window.render(0);
+})();
+</script>
+</body>
+</html>

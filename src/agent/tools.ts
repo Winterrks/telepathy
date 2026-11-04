@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { ensureAgyApiKey } from '../cli/agy-auth.ts';
 import { canonicalRunAgent, harnessByAgent, harnesses, resolvedAcpBin } from '../cli/harnesses.ts';
 import { type Agent, agentLabel } from '../core/agents.ts';
-import { partyOf } from '../core/messages.ts';
+import { type Party, partyOf } from '../core/messages.ts';
 import { ensureDir, envDurationMs, readJson, stateDir, writeJsonAtomic } from '../core/paths.ts';
 import { listPeers, type Peer, slugify } from '../core/peers.ts';
 import { isAlive } from '../core/proc.ts';
@@ -138,6 +138,16 @@ function makeWorktree(cwd: string, harness: string, slug: string): Worktree & { 
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith('..') ? path.join(tree, inside) : tree };
 }
 
+/** Who an agent is started for: a session here, or one on another device through this device's bridge. */
+export interface AgentParent {
+  party: Party;
+  /** Its folder, where the agent works unless the call names another. */
+  cwd?: string;
+  remote?: AgentSpec['remote'];
+}
+
+export const parentOf = (self: Peer): AgentParent => ({ party: partyOf(self), cwd: self.cwd });
+
 export type Launched =
   | { ok: true; dir: string; spec: AgentSpec; address: string; child: ChildProcess; spawnError: () => string | undefined }
   | { ok: false; text: string };
@@ -146,7 +156,7 @@ export type Launched =
  * Checks the request, reserves the name, makes the worktree, and spawns the detached host, without waiting for
  * it to get ready. start_agent waits for it; as an MCP task, the task follows it instead.
  */
-export function launchAgent(self: Peer, args: StartArgs): Launched {
+export function launchAgent(parent: AgentParent, args: StartArgs): Launched {
   const fail = (text: string): Launched => ({ ok: false, text });
   const harness = canonicalRunAgent(args.harness);
   const known = harness ? harnessByAgent(harness) : undefined;
@@ -165,7 +175,7 @@ export function launchAgent(self: Peer, args: StartArgs): Launched {
   }
   if (!args.prompt.trim()) return fail('Not started: the prompt is empty.');
 
-  let cwd = path.resolve(args.cwd ?? self.cwd ?? process.cwd());
+  let cwd = path.resolve(args.cwd ?? parent.cwd ?? process.cwd());
   let isDir = false;
   try {
     isDir = fs.statSync(cwd).isDirectory();
@@ -202,7 +212,8 @@ export function launchAgent(self: Peer, args: StartArgs): Launched {
     cwd,
     isolation: args.isolation,
     worktree,
-    parent: partyOf(self),
+    parent: parent.party,
+    ...(parent.remote ? { remote: parent.remote } : {}),
     createdAt: new Date().toISOString(),
   };
   writeSpec(dir, spec);
@@ -217,31 +228,38 @@ export function launchAgent(self: Peer, args: StartArgs): Launched {
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
 }
 
+/** What start_agent says once the agent is ready. `address` is how the caller reaches it. */
+export function startedText(
+  spec: Pick<AgentSpec, 'harness' | 'cwd' | 'worktree'>,
+  state: AgentState,
+  where: { address: string; ref: string; transcript: string; on?: string },
+): string {
+  const settings = state.settings?.length ? state.settings.join(', ') : 'its default settings';
+  return [
+    `Started ${where.address} [${where.ref}], ${agentLabel(spec.harness)} in ${spec.cwd}${where.on ? ` on ${where.on}` : ''}, with ${settings}.`,
+    `Transcript: ${where.transcript}`,
+    spec.worktree ? `It works in its own worktree on branch ${spec.worktree.branch}; an unchanged worktree is removed when it stops.` : '',
+    `It works in the background. When its turn ends, its final message arrives here as a message from it ` +
+      `(kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to ` +
+      `"${where.address}"; stop it with stop_agent when you no longer need it.`,
+    ...(state.notes ?? []),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 export async function startAgentTool(self: Peer, args: StartArgs): Promise<ToolResult> {
-  const launched = launchAgent(self, args);
+  const launched = launchAgent(parentOf(self), args);
   if (!launched.ok) return failed(launched.text);
   const { dir, spec, child } = launched;
-  const { harness, worktree, cwd } = spec;
+  const { harness } = spec;
 
   const deadline = Date.now() + startWaitMs();
   while (Date.now() < deadline) {
     const state = readState(dir);
     if (state?.status === 'failed') return failed(`Not started: ${agentLabel(harness)} ${state.error ?? 'failed to start'}.`.replace(/\.\.$/, '.'));
     if (state?.status === 'ready' && state.address && state.peerId) {
-      const settings = state.settings?.length ? state.settings.join(', ') : 'its default settings';
-      return {
-        text: [
-          `Started ${state.address} [${state.peerId}], ${agentLabel(harness)} in ${cwd}, with ${settings}.`,
-          `Transcript: ${transcriptFile(dir)}`,
-          worktree ? `It works in its own worktree on branch ${worktree.branch}; an unchanged worktree is removed when it stops.` : '',
-          `It works in the background. When its turn ends, its final message arrives here as a message from it ` +
-            `(kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to ` +
-            `"${state.address}"; stop it with stop_agent when you no longer need it.`,
-          ...(state.notes ?? []),
-        ]
-          .filter(Boolean)
-          .join('\n'),
-      };
+      return { text: startedText(spec, state, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }) };
     }
     const spawnError = launched.spawnError();
     if (spawnError) {
@@ -295,7 +313,7 @@ export async function stopAgentEntry(entry: AgentEntry, waitMs = 15_000): Promis
   return readState(entry.dir);
 }
 
-const keptNote = (entry: AgentEntry, state: AgentState | undefined) =>
+export const keptNote = (entry: AgentEntry, state: AgentState | undefined) =>
   state?.worktreeKept && entry.spec.worktree
     ? ` Its worktree ${entry.spec.worktree.path} (branch ${entry.spec.worktree.branch}) has changes and was kept.`
     : '';

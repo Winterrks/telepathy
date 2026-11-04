@@ -634,7 +634,7 @@ var LineRpc = class {
 };
 
 // src/core/version.ts
-var VERSION = true ? "0.12.0" : "0.0.0-dev";
+var VERSION = true ? "0.13.0" : "0.0.0-dev";
 
 // src/core/codex-hooks.ts
 var timeoutMs = () => {

@@ -1,5 +1,5 @@
 {
   "$schema": "https://antigravity.google/schemas/v1/plugin.json",
   "name": "telepathy",
-  "description": "Telepathy for the Antigravity App, CLI, and IDE: sessions on this machine message each other."
+  "description": "Telepathy for the Antigravity App, CLI, and IDE: sessions on this machine and your other devices message each other."
 }

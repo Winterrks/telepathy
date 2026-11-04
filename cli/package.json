@@ -1,7 +1,7 @@
 {
   "name": "telepathy-cli",
-  "version": "0.12.0",
-  "description": "CLI for telepathy. Install it into the coding agents on this machine, keep those copies current, and run or host a session that can message the others.",
+  "version": "0.13.0",
+  "description": "CLI for telepathy. Install it into the coding agents on this machine, keep those copies current, run or host a session that can message the others, and join your other devices with the bridge.",
   "type": "module",
   "bin": {
     "telepathy": "dist/telepathy.mjs"

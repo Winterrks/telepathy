@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  :root {
+    --bg0: #0b0820;
+    --bg1: #151033;
+    --lav: #c4b5fd;
+    --lav2: #a78bfa;
+    --pink: #f0abfc;
+    --ink: #f5f3ff;
+    --muted: #9d93c9;
+    --card: rgba(255,255,255,0.055);
+    --card-line: rgba(255,255,255,0.10);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 512px; background: transparent; overflow: hidden; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+  }
+  .frame {
+    position: absolute; inset: 0; border-radius: 28px; overflow: hidden;
+    background:
+      radial-gradient(520px 380px at 24% 52%, rgba(124,58,237,0.34), transparent 70%),
+      radial-gradient(420px 300px at 82% 30%, rgba(79,70,229,0.22), transparent 70%),
+      radial-gradient(380px 260px at 70% 92%, rgba(217,70,239,0.14), transparent 70%),
+      linear-gradient(160deg, var(--bg1), var(--bg0) 70%);
+  }
+  .left { position: absolute; left: 72px; top: 96px; width: 600px; }
+  .brand { display: flex; align-items: center; gap: 26px; }
+  .brand svg { width: 104px; height: 104px; filter: drop-shadow(0 10px 30px rgba(124,58,237,0.45)); }
+  .word {
+    font-size: 112px; font-weight: 800; letter-spacing: -0.045em; line-height: 1;
+    background: linear-gradient(180deg, #ffffff, #ddd6fe);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    padding-bottom: 14px; margin-top: -6px;
+  }
+  .tag {
+    margin-top: 30px; font-size: 46px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.06;
+    background: linear-gradient(90deg, #e9e5ff 0%, var(--lav) 45%, var(--pink) 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .sub { margin-top: 26px; font-size: 21px; font-weight: 600; color: var(--muted); letter-spacing: -0.005em; }
+  .sub b { color: var(--lav); font-weight: 700; }
+  .sub .dot { opacity: .55; margin: 0 8px; }
+
+  .right { position: absolute; left: 716px; top: 58px; width: 500px; }
+  .msg { position: relative; margin-bottom: 18px; }
+  .who { display: flex; align-items: center; gap: 9px; font-size: 16px; font-weight: 700; color: var(--lav); margin: 0 0 9px 4px; letter-spacing: 0; }
+  .who .pip { width: 10px; height: 10px; border-radius: 50%; }
+  .who .dev { font-weight: 600; color: var(--muted); }
+  .who .dev::before { content: "·"; margin-right: 8px; opacity: .6; }
+  .bubble {
+    display: inline-block; padding: 17px 22px 18px; border-radius: 20px;
+    font-size: 22px; font-weight: 600; line-height: 1.3; letter-spacing: -0.01em;
+    background: var(--card); border: 1px solid var(--card-line); color: #ede9fe;
+    box-shadow: 0 18px 40px rgba(0,0,0,0.25);
+  }
+  .msg.me { text-align: right; }
+  .msg.me .who { justify-content: flex-end; margin: 0 4px 9px 0; }
+  .msg.me .bubble {
+    background: linear-gradient(135deg, #4c3fc7, #6d3fd0 60%, #7d3cc9);
+    border-color: rgba(255,255,255,0.16); color: #fff; text-align: left;
+  }
+  .msg.task .bubble {
+    background: rgba(16, 185, 129, 0.08); border-color: rgba(52, 211, 153, 0.28); color: #d1fae5;
+    font-size: 20px; padding: 14px 20px 15px;
+  }
+  .msg.task .bubble .ok { color: #34d399; font-weight: 800; margin-right: 8px; }
+  .code { font-family: "SF Mono", ui-monospace, Menlo, monospace; font-size: 0.86em; font-weight: 600; color: #fff; }
+</style>
+</head>
+<body>
+<div class="frame">
+
+  <div class="left">
+    <div class="brand">
+      <svg viewBox="0 0 512 512" aria-hidden="true">
+        <defs>
+          <linearGradient id="lg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#4338ca"/>
+            <stop offset="1" stop-color="#8b5cf6"/>
+          </linearGradient>
+        </defs>
+        <rect width="512" height="512" rx="112" fill="url(#lg)"/>
+        <g fill="none" stroke="#fff" stroke-linecap="round" stroke-linejoin="round" transform="translate(18 0)">
+          <path d="M120 176 L200 256 L120 336" stroke-width="40"/>
+          <path d="M268.9 198.1 A90 90 0 0 1 268.9 313.9" stroke-width="30"/>
+          <path d="M314.9 159.6 A150 150 0 0 1 314.9 352.4" stroke-width="30" stroke-opacity=".72"/>
+          <path d="M360.9 121 A210 210 0 0 1 360.9 391" stroke-width="30" stroke-opacity=".45"/>
+        </g>
+      </svg>
+      <div class="word">telepathy</div>
+    </div>
+    <div class="tag">Your coding agents can<br>talk to each other.</div>
+    <div class="sub"><b>11 agents</b><span class="dot">·</span>all your devices<span class="dot">·</span>open source</div>
+  </div>
+
+  <div class="right">
+    <div class="msg">
+      <div class="who"><span class="pip" style="background:#5eead4"></span>Codex<span class="dev">desktop</span></div>
+      <div class="bubble">I'm rewriting <span class="code">session.ts</span>.<br>Can you leave it to me?</div>
+    </div>
+    <div class="msg me">
+      <div class="who"><span class="pip" style="background:#fb923c"></span>Claude Code<span class="dev">laptop</span></div>
+      <div class="bubble">Sure, I'll stay in the UI.</div>
+    </div>
+    <div class="msg task">
+      <div class="who"><span class="pip" style="background:#34d399"></span>OpenCode<span class="dev">started by Claude Code</span></div>
+      <div class="bubble"><span class="ok">✓</span>Tests written: 48 of 48 pass.</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

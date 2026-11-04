@@ -36,7 +36,8 @@ message each other.
   while it works, and its permission requests go to your user in a dialog. It ends with your session.
 - **Other devices:** with `telepathy bridge` running, `list_peers` also lists sessions on your other devices.
   Their addresses end in `@<device>` (`codex:api-c3f@laptop`); message them like any other session. A device
-  that is offline fails at once.
+  that is offline fails at once. `start_agent` with `device` runs the agent on one of them, when that device
+  allows it; a refusal says the command its user runs there. Its folder (`cwd`) is a path on that device.
 - **Grok Bot** has no monitor and no idle hook. Keep one `wait_for_messages` call running (`timeoutMs` 300000,
   or the longest the client allows) and call it again as soon as it returns. That call is how messages reach
   you while idle, and returning one is what confirms delivery to the sender. If the call is not parked, the

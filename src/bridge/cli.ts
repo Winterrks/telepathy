@@ -7,11 +7,12 @@ import { beginToolCall, confirmAbortMs, confirmGraceMs } from '../core/confirm.t
 import { deliverLocal } from '../core/deliver.ts';
 import { isNewer } from '../core/installs.ts';
 import { formatAgo } from '../core/listing.ts';
-import type { Party } from '../core/messages.ts';
+import type { Message, Party } from '../core/messages.ts';
 import { ensureDir, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { listPeers, peerRef } from '../core/peers.ts';
 import { peerStatus, statusText } from '../core/status.ts';
 import { VERSION } from '../core/version.ts';
+import { agentsAllowed, setAgentsAllowed } from './agents.ts';
 import { hello, pairCall } from './client.ts';
 import { commitment, confirmMac, macEqual, newKeyPair, pairKey, randomNonce, shortCode, type PairTranscript } from './crypto.ts';
 import { type DaemonRecord, readDaemon, readSettings, runDaemon, writeSettings } from './daemon.ts';
@@ -45,6 +46,8 @@ export const BRIDGE_HELP = `telepathy bridge: reach agent sessions on your other
   telepathy bridge forget <device>
   telepathy bridge add <host[:port]> / remove <host[:port]>
   telepathy bridge name <name>       what other devices call this one
+  telepathy bridge allow-agents <device>   let that device's sessions start agents here (start_agent)
+  telepathy bridge deny-agents <device>
 
 Devices of your own Tailscale user are trusted as soon as both run the bridge. Other devices, such as one on
 the same Wi-Fi, are paired once: both screens show the same 6-digit code and you confirm it on each.
@@ -78,6 +81,9 @@ export async function bridgeCommand(argv: string[]): Promise<number> {
       return 0;
     case 'deliver':
       return deliverFromStdin();
+    case 'allow-agents':
+    case 'deny-agents':
+      return agentsAllowance(sub === 'allow-agents', rest[0]);
     case '--help':
     case 'help':
       console.log(BRIDGE_HELP);
@@ -149,7 +155,34 @@ function forget(name: string | undefined): number {
     console.error(`No paired device named "${name}".`);
     return 1;
   }
+  // Pairing again later is a new trust; letting it start agents is asked again too.
+  setAgentsAllowed(device.id, device.name, false);
   console.log(`Forgot ${device.name}. It can no longer reach this device unless it is on your tailnet.`);
+  return 0;
+}
+
+/**
+ * Whether a device's sessions may start agents here. Trust alone lets a device put messages into sessions that
+ * already run; starting a program on this machine is a separate yes.
+ */
+function agentsAllowance(allow: boolean, name: string | undefined): number {
+  if (!name) return usage();
+  const q = name.toLowerCase();
+  const allowed = agentsAllowed();
+  const device =
+    readRemoteState()?.devices.find((d) => d.trusted && (d.slug === q || d.name.toLowerCase() === q || d.id === q)) ??
+    Object.values(trustedDevices()).find((d) => d.name.toLowerCase() === q || d.id === q) ??
+    (allow ? undefined : Object.entries(allowed).map(([id, a]) => ({ id, name: a.name })).find((d) => d.name.toLowerCase() === q || d.id === q));
+  if (!device) {
+    console.error(`No trusted device named "${name}". \`telepathy bridge status\` lists them.`);
+    return 1;
+  }
+  setAgentsAllowed(device.id, device.name, allow);
+  console.log(
+    allow
+      ? `Sessions on ${device.name} can now start agents on this device with start_agent. They run here in their harness's auto mode, as if you had started them. Undo with \`telepathy bridge deny-agents ${name}\`.`
+      : `Sessions on ${device.name} can no longer start agents here. Agents it started keep running until they stop.`,
+  );
   return 0;
 }
 
@@ -295,10 +328,20 @@ async function pairWith(target: string): Promise<number> {
 async function deliverFromStdin(): Promise<number> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { from: Party; to: string; body: string; budgetMs: number };
+  const input = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+    from: Party;
+    to: string;
+    body: string;
+    budgetMs: number;
+    kind?: Message['kind'];
+    transcript?: string;
+  };
   // The confirm clock ends at the sender's deadline less the network margin, not 110s from now.
   beginToolCall(Date.now() + input.budgetMs - (confirmAbortMs() + confirmGraceMs()));
-  const result = await deliverLocal(input.from, input.to, input.body);
+  const result = await deliverLocal(input.from, input.to, input.body, undefined, {
+    ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.transcript ? { transcript: input.transcript } : {}),
+  });
   const out = result.ok
     ? {
         ok: true,
@@ -435,8 +478,9 @@ function render(withMessages: boolean, now = Date.now()): string {
       continue;
     }
     const over = device.reach === 'reverse' ? ` · over its own connection (${device.slug} does not accept connections)` : '';
+    const starts = Object.hasOwn(agentsAllowed(), device.id) ? ' · may start agents here' : '';
     lines.push(
-      `  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}${over}${versionNote(device, ours)}`,
+      `  ${device.slug} · ${trust} · ${device.addr} · ${device.peers.length} session${device.peers.length === 1 ? '' : 's'}${over}${starts}${versionNote(device, ours)}`,
     );
     if (device.reachesUs === 'reverse') {
       blocked = true;

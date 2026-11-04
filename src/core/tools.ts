@@ -70,7 +70,7 @@ export const TOOLS = {
   start_agent: {
     title: 'Start an agent session',
     description:
-      "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot…) on this machine as your subagent, in its harness's ACP mode. " +
+      "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot…) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. " +
       "It works in the background with telepathy's tools and returns at once with its address and transcript path. " +
       'Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. ' +
       'Continue it with send_message to its address; stop it with stop_agent when you no longer need it. ' +
@@ -83,7 +83,11 @@ export const TOOLS = {
       name: z.string().optional().describe('Its address name, as in "codex:<name>". Defaults to the description'),
       model: z.string().optional().describe('A model the harness offers, by id or a unique part of it (e.g. "opus", "gpt-5.5")'),
       effort: z.string().optional().describe('Reasoning effort, as the harness names it (low, medium, high, xhigh, max)'),
-      cwd: z.string().optional().describe('Folder to work in. Defaults to yours'),
+      cwd: z.string().optional().describe('Folder to work in. Defaults to yours (on another device, yours when that folder exists there too)'),
+      device: z
+        .string()
+        .optional()
+        .describe('Run it on another of your devices (as in "@<device>" addresses) instead of this one. That device must allow it: `telepathy bridge allow-agents <this device>` there'),
       isolation: z.enum(['worktree']).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops'),
     },
   },

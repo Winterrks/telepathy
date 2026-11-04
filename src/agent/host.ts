@@ -6,6 +6,8 @@ import { harnessByAgent, resolvedAcpBin } from '../cli/harnesses.ts';
 import { launchEnv, pluginInstalled } from '../cli/launch.ts';
 import { type Agent, agentLabel, agentSpec, AGENT_IDS } from '../core/agents.ts';
 import { deliverLocal } from '../core/deliver.ts';
+import { sendRemote } from '../bridge/remote.ts';
+import { isOnline, knownDevices } from '../bridge/state.ts';
 import { formatAsUserTurn, type Message, newMessageId, type Party } from '../core/messages.ts';
 import { ensureDir, envDurationMs, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { isPeerAlive, readPeer } from '../core/peers.ts';
@@ -57,6 +59,18 @@ const span = (ms: number) => {
 };
 
 const now = () => new Date().toLocaleTimeString();
+
+/** How long an agent whose parent is on another device waits for that device to be reachable again. */
+const unreachableMs = () => envDurationMs('TELEPATHY_AGENT_UNREACHABLE_MS', 10 * 60_000);
+
+/** True while the parent session runs, false once it is gone, undefined when its device can't be reached to tell. */
+function parentPresent(spec: AgentSpec): boolean | undefined {
+  if (!spec.remote) return isPeerAlive(readPeer(spec.parent.id));
+  const { device: id, parentId } = spec.remote;
+  const device = knownDevices().find((d) => d.id === id);
+  if (!device || !isOnline(device)) return undefined;
+  return device.peers.some((peer) => peer.id === parentId);
+}
 
 /** The process `start_agent` spawns: one harness session in ACP mode, until it is stopped or its parent is gone. */
 /** A result the parent missed is sent again this many times, this far apart. */
@@ -135,7 +149,13 @@ export async function runAgent(dir: string): Promise<number> {
   let stopRequested = false;
   const deliver = async (from: Party, body: string, kind: Message['kind']) => {
     try {
-      const result = await deliverLocal(from, spec.parent.id, body, undefined, { kind, transcript });
+      // A parent on another device: the message goes to that device's bridge, which delivers it there.
+      const sender = spec.remote && peerId ? readPeer(peerId) : undefined;
+      const result = spec.remote
+        ? sender
+          ? await sendRemote(sender, { slug: spec.remote.device, query: spec.remote.parentId }, body, { kind, transcript }, { rate: false })
+          : { ok: false as const, error: 'this agent has no session record' }
+        : await deliverLocal(from, spec.parent.id, body, undefined, { kind, transcript });
       if (!result.ok) write(`\n\n> Not delivered to ${spec.parent.address}: ${result.error}\n`);
       return result.ok;
     } catch (err) {
@@ -319,17 +339,26 @@ export async function runAgent(dir: string): Promise<number> {
   write(`\n\n## Task from ${spec.parent.address} · ${now()}\n\n${taskText}`);
   void session.prompt(taskText);
 
-  // The parent session has ended (not just its MCP server, which a plugin reload restarts): stop with it.
+  // The parent session has ended (not just its MCP server, which a plugin reload restarts): stop with it. A parent
+  // on another device is looked for in that device's listing; while the device is out of reach, nobody can tell,
+  // so the agent waits longer before it stops.
   let goneSince: number | undefined;
   const orphan = orphanMs(spec.parent.agent);
+  const unreachable = Math.max(orphan, unreachableMs());
   const watch = setInterval(() => {
-    if (isPeerAlive(readPeer(spec.parent.id))) {
+    const present = parentPresent(spec);
+    if (present === true) {
       goneSince = undefined;
       return;
     }
     goneSince ??= Date.now();
-    if (Date.now() - goneSince > orphan) {
-      write(`\n\n— stopped: ${spec.parent.address} has been gone for ${span(orphan)}\n`);
+    const limit = present === undefined ? unreachable : orphan;
+    if (Date.now() - goneSince > limit) {
+      write(
+        present === undefined
+          ? `\n\n— stopped: the device ${spec.parent.address} is on has been out of reach for ${span(limit)}\n`
+          : `\n\n— stopped: ${spec.parent.address} has been gone for ${span(orphan)}\n`,
+      );
       stopRequested = true;
       session.close();
     }

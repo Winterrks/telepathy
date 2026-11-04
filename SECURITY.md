@@ -1,7 +1,8 @@
 # Security
 
-telepathy runs locally: it makes no network calls, sends no telemetry, and keeps its state in `~/.telepathy`.
-See [Privacy and security](README.md#privacy-and-security) for what it reads, writes and runs.
+telepathy runs on your own machines: it sends no telemetry and keeps its state in `~/.telepathy`. Without
+`telepathy bridge` or `telepathy grokbot`, its only network calls are version checks and updates.
+See [Privacy and security](docs/behaviour/privacy-and-security.md) for what it reads, writes and runs.
 
 ## Reporting a vulnerability
 

@@ -42,7 +42,8 @@ import {
   type ToolResult,
 } from './core/tools.ts';
 import { attachGrokDelivery } from './grok-delivery.ts';
-import { answerPermissionTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { answerPermissionTool, findChild, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { answerRemotePermission, findRemoteChild, startRemoteAgentTool, stopRemoteAgentTool } from './agent/remote.ts';
 import { installedTaskHarnesses } from './agent/task.ts';
 import { answerTaskRequest, clientTakesTasks, continueAgentTask, startAgentTask } from './agent/mcp-tasks.ts';
 import { VERSION } from './core/version.ts';
@@ -284,10 +285,11 @@ server.registerTool(
     const selfId = selfIdFor(ctx.mcpReq._meta);
     if (agent === 'claude' && clientTakesTasks(ctx)) {
       // Claude Code follows it as a background task of its own: see src/agent/task.ts.
-      const task = startAgentTask(selfPeer(agent, agentPid, selfId), args, ownProcStart);
+      const task = await startAgentTask(selfPeer(agent, agentPid, selfId), args, ownProcStart);
       return 'resultType' in task ? (task as unknown as ReturnType<typeof text>) : text(task);
     }
-    return text(await startAgentTool(selfPeer(agent, agentPid, selfId), args));
+    const self = selfPeer(agent, agentPid, selfId);
+    return text(args.device ? await startRemoteAgentTool(self, args.device, args) : await startAgentTool(self, args));
   },
 );
 
@@ -299,7 +301,12 @@ server.registerTool(
     inputSchema: z.object(TOOLS.stop_agent.args),
     annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: false },
   },
-  async ({ name }, ctx) => text(await stopAgentTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), name)),
+  async ({ name }, ctx) => {
+    const self = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+    // One this session started on another device, when none here goes by that name.
+    const elsewhere = 'error' in findChild(self, name) ? findRemoteChild(self, name) : undefined;
+    return text(elsewhere ? await stopRemoteAgentTool(self, elsewhere) : await stopAgentTool(self, name));
+  },
 );
 
 server.registerTool(
@@ -310,7 +317,11 @@ server.registerTool(
     inputSchema: z.object(TOOLS.answer_permission.args),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
   },
-  async (args, ctx) => text(answerPermissionTool(selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta)), args)),
+  async (args, ctx) => {
+    const self = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+    const elsewhere = 'error' in findChild(self, args.agent) ? findRemoteChild(self, args.agent) : undefined;
+    return text(elsewhere ? await answerRemotePermission(self, elsewhere, args.request, args.allow) : answerPermissionTool(self, args));
+  },
 );
 
 if (agent === 'grok') {

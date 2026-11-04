@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -123,6 +124,8 @@ interface OpenMarker {
   taskId: string;
   pid: number;
   procStart?: string;
+  /** A task a session on another device follows through this device's bridge: open until its polls stop renewing it. */
+  until?: number;
 }
 
 let openSeq = 0;
@@ -135,7 +138,18 @@ export function openTask(dir: string, taskId: string, procStart: string | undefi
   return () => fs.rmSync(file, { force: true });
 }
 
-/** A task is open on this agent in a server that is still running. */
+const leaseFile = (dir: string, taskId: string) =>
+  path.join(openDir(dir), `remote-${crypto.createHash('sha256').update(taskId).digest('hex').slice(0, 16)}.json`);
+
+/** The bridge opens, or renews, a task a session on another device follows. It lapses `ms` after the last renewal. */
+export function leaseTask(dir: string, taskId: string, procStart: string | undefined, ms: number): void {
+  ensureDir(openDir(dir));
+  writeJsonAtomic(leaseFile(dir, taskId), { taskId, pid: process.pid, procStart, until: Date.now() + ms } satisfies OpenMarker);
+}
+
+export const endLease = (dir: string, taskId: string) => fs.rmSync(leaseFile(dir, taskId), { force: true });
+
+/** A task is open on this agent in a server that is still running, or under a lease that has not lapsed. */
 export function taskOpen(dir: string): boolean {
   let names: string[];
   try {
@@ -145,6 +159,7 @@ export function taskOpen(dir: string): boolean {
   }
   return names.some((name) => {
     const marker = readJson<OpenMarker>(path.join(openDir(dir), name));
+    if (marker?.until !== undefined && marker.until < Date.now()) return false;
     return !!marker?.pid && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart);
   });
 }

@@ -10,6 +10,7 @@ import { deliveryHint } from '../core/listing.ts';
 import { ensureDir, envDurationMs, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { isAgent } from '../core/agents.ts';
 import { isNewer } from '../core/installs.ts';
+import type { Party } from '../core/messages.ts';
 import { listPeers } from '../core/peers.ts';
 import { procStart } from '../core/proc.ts';
 import { peerStatus, statusText } from '../core/status.ts';
@@ -26,6 +27,7 @@ import {
   type WireResponse,
 } from './client.ts';
 import { commitment, confirmMac, type KeyPair, macEqual, newKeyPair, open, pairKey, randomNonce, seal, shortCode, type PairTranscript } from './crypto.ts';
+import { type AgentRequest, serveAgentRequest } from './agents.ts';
 import { startMdns } from './mdns.ts';
 import {
   bridgeDir,
@@ -157,6 +159,15 @@ function cleanPeer(raw: RemotePeerWire): RemotePeerWire[] {
       startedAt: raw.startedAt ? clean(raw.startedAt, 40) : undefined,
     },
   ];
+}
+
+/** The session a request names as its sender, as its device names it; undefined when it is malformed. */
+function senderParty(from: { id?: unknown; agent?: unknown; name?: unknown; address?: unknown } | undefined): Party | undefined {
+  if (!from || typeof from !== 'object') return undefined;
+  const { id, agent, name, address } = from;
+  if (typeof id !== 'string' || !ADDRESS.test(id) || typeof address !== 'string' || !ADDRESS.test(address)) return undefined;
+  if (!isAgent(agent) || !name) return undefined;
+  return { id, agent, name: safeName(name, address).slice(0, 120), address };
 }
 
 const isPrivateV4 = (ip: string) =>
@@ -355,25 +366,28 @@ export async function runDaemon(): Promise<number> {
       const wire = raw as WireRequest;
       const auth = await authenticate(conn, wire, '/v1/send');
       if ('error' in auth) return { error: auth.error };
-      const input = (auth.body ?? {}) as { from?: { id?: string; agent?: string; name?: string; address?: string }; to?: unknown; body?: unknown; budgetMs?: unknown };
-      const from = input.from;
-      const valid =
-        typeof from?.id === 'string' && ADDRESS.test(from.id) && typeof from.address === 'string' && ADDRESS.test(from.address);
-      if (!valid || !isAgent(from?.agent) || !from?.name || typeof input.to !== 'string' || typeof input.body !== 'string') {
+      const input = (auth.body ?? {}) as {
+        from?: { id?: string; agent?: string; name?: string; address?: string };
+        to?: unknown;
+        body?: unknown;
+        budgetMs?: unknown;
+        kind?: unknown;
+        transcript?: unknown;
+      };
+      const from = senderParty(input.from);
+      if (!from || typeof input.to !== 'string' || typeof input.body !== 'string') {
         return reply(auth, wire, '/v1/send', { ok: false, error: 'Message failed: malformed request.' });
       }
       const slug = senderSlug(wire.device, safeName(wire.name));
-      const qualified = {
-        id: `${from.id}@${slug}`,
-        agent: from.agent,
-        name: safeName(from.name, from.address).slice(0, 120),
-        address: `${from.address}@${slug}`,
-      };
+      const qualified = { ...from, id: `${from.id}@${slug}`, address: `${from.address}@${slug}` };
       const budgetMs = Math.max(1000, Math.min(110_000, Number(input.budgetMs) || 0));
+      // A report or permission request from an agent a session here started on that device. Its transcript is there.
+      const kind = input.kind === 'agent-result' || input.kind === 'permission' ? input.kind : undefined;
+      const transcript = kind && typeof input.transcript === 'string' && input.transcript ? `${clean(input.transcript, 400)} on ${slug}` : undefined;
       busy++;
       let result: Record<string, unknown>;
       try {
-        result = await deliver({ from: qualified, to: input.to, body: input.body, budgetMs }, budgetMs);
+        result = await deliver({ from: qualified, to: input.to, body: input.body, budgetMs, kind, transcript }, budgetMs);
       } finally {
         busy--;
       }
@@ -388,6 +402,23 @@ export async function runDaemon(): Promise<number> {
         preview: preview(input.body),
       });
       return reply(auth, wire, '/v1/send', result);
+    },
+    // start_agent from a session there: see src/bridge/agents.ts. Only a device this device's user allowed.
+    '/v1/agents': async (conn, raw) => {
+      const wire = raw as WireRequest;
+      const auth = await authenticate(conn, wire, '/v1/agents');
+      if ('error' in auth) return { error: auth.error };
+      const input = (auth.body ?? {}) as { from?: unknown; op?: unknown };
+      const from = senderParty(input.from as Parameters<typeof senderParty>[0]);
+      if (!from || typeof input.op !== 'string') return reply(auth, wire, '/v1/agents', { ok: false, error: 'malformed request' });
+      const device = { id: wire.device, slug: senderSlug(wire.device, safeName(wire.name)), name: safeName(wire.name) };
+      busy++;
+      try {
+        const result = await serveAgentRequest(device, self.name, from, input as AgentRequest);
+        return reply(auth, wire, '/v1/agents', result);
+      } finally {
+        busy--;
+      }
     },
     '/v1/pair/start': async (conn, raw) => {
       const body = raw as { id?: string; name?: string; commit?: string };
