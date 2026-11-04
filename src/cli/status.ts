@@ -1,6 +1,7 @@
 import { agentLabel, type Agent } from '../core/agents.ts';
 import { ANTIGRAVITY_SIDECAR_ID, antigravitySidecarEnabled, leftoverGeminiExtension, LEFTOVER_GEMINI_NOTE } from '../core/antigravity.ts';
 import { describeHookState, telepathyCodexHooks } from '../core/codex-hooks.ts';
+import { gatekeeperHold, heldNote } from '../core/gatekeeper.ts';
 import { findInstalls, isNewer, type Install } from '../core/installs.ts';
 import { stateDir } from '../core/paths.ts';
 import { VERSION } from '../core/version.ts';
@@ -17,7 +18,8 @@ function freshness(version: string, latest: string | undefined): string {
 
 /**
  * Detected installs and whether each matches the version on GitHub main.
- * `doctor` adds the state directory, auto-update, and which harness CLIs are on PATH.
+ * `doctor` adds the state directory, auto-update, which harness CLIs are on PATH, and which of them macOS holds
+ * for an approval on the Mac's screen.
  */
 export async function statusReport(options: { doctor?: boolean } = {}): Promise<{ text: string; code: number }> {
   let latest: string | undefined = process.env.TELEPATHY_LATEST_VERSION?.trim() || cachedGithubVersion();
@@ -58,16 +60,24 @@ export async function statusReport(options: { doctor?: boolean } = {}): Promise<
     lines.push('');
     lines.push(`node ${process.version}`);
     lines.push('Harness CLIs on PATH:');
-    for (const harness of harnesses()) {
-      const bin = resolvedBin(harness);
-      lines.push(`- ${agentLabel(harness.agent)}: ${bin ?? 'not on PATH'}`);
-    }
+    const all = harnesses();
+    const bins = all.map((harness) => resolvedBin(harness));
+    const held = await Promise.all(bins.map((bin) => (bin ? gatekeeperHold(bin) : undefined)));
+    const holds = new Map<string, string>();
+    all.forEach((harness, i) => {
+      const bin = bins[i];
+      if (bin && held[i]) holds.set(bin, heldNote(bin, held[i]!));
+      lines.push(`- ${agentLabel(harness.agent)}: ${bin ?? 'not on PATH'}${held[i] ? ', held by macOS (see below)' : ''}`);
+    });
+    lines.push(...holds.values());
     const idle = detectedHarnesses().filter((harness) => !installs.some((install: Install) => install.agent === harness.agent));
     if (idle.length) lines.push(`On PATH with no copy of their own: ${idle.map((harness) => harness.agent).join(', ')}.`);
     lines.push(
       `Antigravity App sidecar (${ANTIGRAVITY_SIDECAR_ID}): ${antigravitySidecarEnabled() ? 'enabled' : 'not enabled in ~/.gemini/config/config.json'}`,
     );
-    if (installs.some((install) => install.agent === 'codex')) {
+    if (installs.some((install) => install.agent === 'codex') && (await gatekeeperHold('codex'))) {
+      lines.push('Codex hooks: not checked, because macOS is holding `codex` (see above).');
+    } else if (installs.some((install) => install.agent === 'codex')) {
       // Every telepathy update changes the plugin's hash, and Codex stops running the hooks until they are approved.
       const { hooks, error } = await telepathyCodexHooks();
       const state = error ? `could not ask Codex (${error})` : describeHookState(hooks);

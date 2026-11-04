@@ -18,6 +18,7 @@ Others, each described where it applies:
 | `TELEPATHY_BRIDGE_PORT` | The bridge's port, 47380 by default, the same on every device ([Devices](devices.md)) |
 | `TELEPATHY_BRIDGE_RESTART_WAIT_MS` | How long the bridge waits for your other devices before it restarts into an update. Default 10 minutes ([Devices](devices.md)) |
 | `TELEPATHY_AGENT_UNREACHABLE_MS` | How long an agent started from another device keeps running while that device is out of reach. Default 10 minutes ([On another device](subagents.md#on-another-device)) |
+| `TELEPATHY_GATEKEEPER_PROBE_MS` | How long `setup` and `update` wait for `--version` from a program that still has an unapproved quarantine flag before they treat it as held by macOS. Default 15 seconds ([Setup](telepathy-command.md#setup)) |
 | `TELEPATHY_GROKBOT_DEBOUNCE_MS` | How long a connected Grok Bot's host waits for more messages to share one run. Default 400, at most 1.5 seconds after the first ([A routine webhook](agents/grok.md#a-routine-webhook-telepathy-grokbot)) |
 | `ANTIGRAVITY_AGENTAPI_EXE` | When it points at `language_server`, the Antigravity App sidecar runs `<exe> agentapi send-message` ([Antigravity](agents/antigravity.md#the-app-sidecar)) |
 
@@ -27,6 +28,10 @@ Others, each described where it applies:
   `TELEPATHY_DEBUG=1`, the debug log shows whether its hooks and server started.
 - **Messages arrive late:** that agent can't be woken while idle (see [Supported agents](agents/README.md#supported-agents)); it sees
   messages at its next turn.
+- **An update says macOS is most likely holding a program:** that agent's CLI still has the quarantine flag it was
+  downloaded with and didn't answer `--version`, so it is waiting for an approval on that Mac's screen. Run it once in
+  Terminal on that Mac and click Open if macOS asks, or clear the flag with the `xattr -d com.apple.quarantine <file>`
+  command the message gives, then run `telepathy update` again (see [Setup](telepathy-command.md#setup)).
 
 A few best-effort lookups use files that aren't documented interfaces; if the files change, telepathy falls back
 gracefully: display names come from Claude's and Codex's session files, falling back to the folder name; a Codex

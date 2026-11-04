@@ -1,6 +1,6 @@
 # The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.13.0. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.13.1. Requires Node 20 or newer.
 
 Install it and set up every agent CLI it finds:
 
@@ -34,6 +34,17 @@ App sidecar. It prints one line per agent and then what is left for you: Cursor 
 `/plugin`; Grok and Cursor load Claude Code's copy; Hermes, OpenClaw and Pi have no plugin. `--only claude,codex`
 limits it, `--no-hooks` and `--no-adapters` skip those steps, and `--dry-run` only prints the plan. It exits 1 when
 something failed.
+
+On macOS, an agent CLI can still have the `com.apple.quarantine` flag it was downloaded with (Homebrew casks such as
+`claude-code` and `codex` arrive with it), and macOS may hold it at launch until someone approves it on the Mac's
+screen. Started from the background or over SSH, a held program waits until the step times out. Before `setup`,
+`update` and auto-update run a program whose flag nobody approved, they run `<program> --version`; when that hasn't
+answered within 15 seconds (`TELEPATHY_GATEKEEPER_PROBE_MS`), the step is skipped. The agent's line says why, with
+the two ways out (run it once in Terminal on that Mac and click Open if macOS asks, or
+`xattr -d com.apple.quarantine <file>`), and the summary lists it as not updated until macOS approves it. A
+quarantined program that answers runs as usual, and one whose flag has the user-approved bit, which clicking Open
+sets, is not checked. `telepathy doctor` marks a held program `held by macOS` and skips the Codex hook check while
+`codex` is held.
 
 ## Running an agent under telepathy's host
 

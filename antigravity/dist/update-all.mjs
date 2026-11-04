@@ -1,10 +1,10 @@
 import { createRequire as __umCreateRequire } from 'node:module'; const require = __umCreateRequire(import.meta.url);
 
 // src/update-all.ts
-import { spawn as spawn2 } from "node:child_process";
-import fs6 from "node:fs";
+import { spawn as spawn3 } from "node:child_process";
+import fs7 from "node:fs";
 import os5 from "node:os";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/cli-self-update.ts
 import { execFileSync } from "node:child_process";
@@ -31,6 +31,15 @@ function configuredEnv(name, env = process.env) {
   const value = env[name]?.trim();
   if (!value || UNEXPANDED.test(value)) return void 0;
   return value;
+}
+function envDurationMs(name, fallback, env = process.env) {
+  const raw = env[name];
+  if (typeof raw !== "string") return fallback;
+  const trimmed = raw.trim();
+  if (!trimmed) return fallback;
+  const n = Number(trimmed);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
 }
 function stateDir() {
   return configuredEnv("TELEPATHY_HOME") || path.join(os.homedir(), ".telepathy");
@@ -558,7 +567,7 @@ var agentLabel = (agent) => SPECS[agent].label;
 var AGENT_ALTERNATION = [...AGENT_IDS].sort((a, b) => b.length - a.length).join("|");
 
 // src/core/codex-hooks.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import os4 from "node:os";
 
 // src/acp/rpc.ts
@@ -633,8 +642,69 @@ var LineRpc = class {
   }
 };
 
+// src/core/gatekeeper.ts
+import { execFileSync as execFileSync2, spawn } from "node:child_process";
+import fs5 from "node:fs";
+import path5 from "node:path";
+var USER_APPROVED = 64;
+var probeMs = () => envDurationMs("TELEPATHY_GATEKEEPER_PROBE_MS", 15e3);
+function executablePath(cmd, env = process.env) {
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path5.delimiter).filter(Boolean).map((dir) => path5.join(dir, cmd));
+  for (const file of candidates) {
+    try {
+      fs5.accessSync(file, fs5.constants.X_OK);
+      if (fs5.statSync(file).isFile()) return fs5.realpathSync(file);
+    } catch {
+    }
+  }
+  return void 0;
+}
+function unapprovedDownload(cmd, env = process.env) {
+  if (process.platform !== "darwin") return void 0;
+  const file = executablePath(cmd, env);
+  if (!file) return void 0;
+  let value;
+  try {
+    value = execFileSync2("/usr/bin/xattr", ["-p", "com.apple.quarantine", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
+  } catch {
+    return void 0;
+  }
+  const flags = Number.parseInt(value.trim().split(";")[0] ?? "", 16);
+  return Number.isFinite(flags) && (flags & USER_APPROVED) === 0 ? file : void 0;
+}
+var probes = /* @__PURE__ */ new Map();
+function doesNotAnswer(file) {
+  let probe = probes.get(file);
+  if (!probe) {
+    probe = new Promise((resolve) => {
+      const child = spawn(file, ["--version"], { stdio: "ignore" });
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(true);
+      }, probeMs());
+      const done = () => {
+        clearTimeout(timer);
+        resolve(false);
+      };
+      child.on("exit", done);
+      child.on("error", done);
+    });
+    probes.set(file, probe);
+  }
+  return probe;
+}
+async function gatekeeperHold(cmd, env = process.env) {
+  const file = unapprovedDownload(cmd, env);
+  if (!file || !sandboxAllowsExecutable(file)) return void 0;
+  return await doesNotAnswer(file) ? file : void 0;
+}
+var shellWord = (file) => /^[\w@%+=:,./-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\''`)}'`;
+function heldNote(cmd, file) {
+  return `\`${cmd}\` didn't start within ${Math.max(1, Math.round(probeMs() / 1e3))}s, and ${file} still has the quarantine flag it was downloaded with, so macOS is most likely holding it for an approval on this Mac's screen. Run \`${cmd} --version\` in Terminal on this Mac and click Open if macOS asks, or clear the flag with \`xattr -d com.apple.quarantine ${shellWord(file)}\`.`;
+}
+
 // src/core/version.ts
-var VERSION = true ? "0.13.0" : "0.0.0-dev";
+var VERSION = true ? "0.13.1" : "0.0.0-dev";
 
 // src/core/codex-hooks.ts
 var timeoutMs = () => {
@@ -653,7 +723,9 @@ function codexBlocked() {
 async function withAppServer(fn) {
   const blocked = codexBlocked();
   if (blocked) throw new Error(blocked);
-  const child = spawn("codex", ["app-server"], { cwd: os4.homedir(), stdio: ["pipe", "pipe", "ignore"] });
+  const held = await gatekeeperHold("codex");
+  if (held) throw new Error(heldNote("codex", held));
+  const child = spawn2("codex", ["app-server"], { cwd: os4.homedir(), stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {
   });
   const rpc = new LineRpc(
@@ -724,9 +796,9 @@ async function trustTelepathyCodexHooks(statuses) {
 }
 
 // src/core/kimi-plugin.ts
-import { execFileSync as execFileSync2 } from "node:child_process";
-import fs5 from "node:fs";
-import path5 from "node:path";
+import { execFileSync as execFileSync3 } from "node:child_process";
+import fs6 from "node:fs";
+import path6 from "node:path";
 var ID = "telepathy";
 var DEFAULT_SOURCE = "https://github.com/Winterrks/telepathy";
 var githubWeb = () => (process.env.TELEPATHY_GITHUB_WEB || "https://github.com").replace(/\/$/, "");
@@ -767,18 +839,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version = JSON.parse(fs5.readFileSync(path5.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version = JSON.parse(fs6.readFileSync(path6.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path5.join(kimiHome(), "plugins");
-  fs5.mkdirSync(dir, { recursive: true });
-  const final = path5.join(dir, "installed.json");
-  fs5.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs5.renameSync(`${final}.tmp`, final);
+  const dir = path6.join(kimiHome(), "plugins");
+  fs6.mkdirSync(dir, { recursive: true });
+  const final = path6.join(dir, "installed.json");
+  fs6.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs6.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -795,15 +867,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path5.join(home2, "plugins", "managed", ID);
+    const managed = path6.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path5.dirname(managed);
-    fs5.mkdirSync(parent, { recursive: true });
-    const staging = fs5.mkdtempSync(path5.join(parent, `${ID}-`));
+    const parent = path6.dirname(managed);
+    fs6.mkdirSync(parent, { recursive: true });
+    const staging = fs6.mkdtempSync(path6.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -811,22 +883,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs5.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
-      execFileSync2("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
+      fs6.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      execFileSync3("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version = readManifestVersion(staging);
       if (!version) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs5.renameSync(managed, previous);
+        fs6.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs5.renameSync(staging, managed);
+      fs6.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs5.realpathSync(managed),
+        root: fs6.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -837,16 +909,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs5.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs6.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version} (${ref.value}, ${sha.slice(0, 12)})`, version, changed: true };
     } catch (err) {
-      fs5.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs5.renameSync(previous, managed);
+      fs6.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs6.renameSync(previous, managed);
       throw err;
     } finally {
-      fs5.rmSync(archive, { force: true });
-      fs5.rmSync(staging, { recursive: true, force: true });
+      fs6.rmSync(archive, { force: true });
+      fs6.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -854,9 +926,9 @@ async function installKimiPlugin(options = {}) {
 }
 
 // src/version-check.ts
-import path6 from "node:path";
+import path7 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path6.join(stateDir(), "github-version.json");
+var cacheFile = () => path7.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -904,18 +976,20 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os5.homedir()) {
+async function runHarnessCommand({ cmd, args }, cwd = os5.homedir()) {
   const blocked = sandboxSpawnBlock(cmd);
-  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (blocked) return { ok: false, output: blocked };
   if (cmd === "codex" && inTestSandbox()) {
     const home2 = configuredEnv("CODEX_HOME");
     if (!home2 || outsideIsolatedHome(home2)) {
-      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` });
+      return { ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` };
     }
   }
+  const held = await gatekeeperHold(cmd);
+  if (held) return { ok: false, output: heldNote(cmd, held), held: true };
   return new Promise((resolve) => {
     let output = "";
-    const child = spawn2(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn3(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
     const timer = setTimeout(() => child.kill("SIGKILL"), STEP_TIMEOUT_MS);
     child.stdout.on("data", (d) => output += d);
     child.stderr.on("data", (d) => output += d);
@@ -935,35 +1009,35 @@ function runHarnessCommand({ cmd, args }, cwd = os5.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path7.join(process.env.XDG_CACHE_HOME || path7.join(os5.homedir(), ".cache"), install.agent, "packages");
-  const relative = path7.relative(packages, install.dir).split(path7.sep);
-  const entry = path7.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path7.join(path7.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs6.renameSync(entry, aside);
+  const packages = path8.join(process.env.XDG_CACHE_HOME || path8.join(os5.homedir(), ".cache"), install.agent, "packages");
+  const relative = path8.relative(packages, install.dir).split(path8.sep);
+  const entry = path8.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path8.join(path8.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs7.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs6.rmSync(aside, { recursive: true, force: true });
+    fs7.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs6.rmSync(entry, { recursive: true, force: true });
-  fs6.renameSync(aside, entry);
+  fs7.rmSync(entry, { recursive: true, force: true });
+  fs7.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path7.join(process.env.XDG_CACHE_HOME || path7.join(os5.homedir(), ".cache"), "opencode");
-  const npm = path7.join(opencodeCache, "npm");
-  const entry = path7.join(npm, path7.relative(npm, install.dir).split(path7.sep)[0] ?? "");
-  const aside = path7.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs6.renameSync(entry, aside);
+  const opencodeCache = path8.join(process.env.XDG_CACHE_HOME || path8.join(os5.homedir(), ".cache"), "opencode");
+  const npm = path8.join(opencodeCache, "npm");
+  const entry = path8.join(npm, path8.relative(npm, install.dir).split(path8.sep)[0] ?? "");
+  const aside = path8.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs7.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs6.rmSync(aside, { recursive: true, force: true });
+    fs7.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs6.rmSync(entry, { recursive: true, force: true });
-  fs6.renameSync(aside, entry);
+  fs7.rmSync(entry, { recursive: true, force: true });
+  fs7.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -1031,6 +1105,7 @@ async function updateAll(options = {}) {
     return await cliStep() ? 0 : 1;
   }
   const failures = [];
+  const held = [];
   for (const install of before) {
     if (alreadyCurrent(install, latest)) {
       say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
@@ -1042,7 +1117,7 @@ async function updateAll(options = {}) {
     if (result.ok) say("done");
     else {
       say(`failed: ${lastLine(result.output)}`);
-      failures.push(agentLabel(install.agent));
+      (result.held ? held : failures).push(agentLabel(install.agent));
     }
   }
   const after = installsInScope();
@@ -1062,9 +1137,11 @@ async function updateAll(options = {}) {
   const codexAfter = after.find((i) => i.agent === "codex");
   if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
-  if (failures.length) {
-    say(`
+  if (failures.length || held.length) {
+    if (failures.length) say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
+    if (held.length) say(`
+Not updated: ${held.join(", ")}, until macOS approves ${held.length === 1 ? "its program" : "their programs"} on this Mac (see above).`);
     return 1;
   }
   return cliOk ? 0 : 1;

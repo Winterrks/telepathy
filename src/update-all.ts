@@ -5,6 +5,7 @@ import path from 'node:path';
 import { updateGlobalCli } from './cli-self-update.ts';
 import { agentLabel } from './core/agents.ts';
 import { trustTelepathyCodexHooks } from './core/codex-hooks.ts';
+import { gatekeeperHold, heldNote } from './core/gatekeeper.ts';
 import { installsInScope, isNewer, type Install, isOpencodeNpmInstall, outsideIsolatedHome } from './core/installs.ts';
 import { installKimiPlugin } from './core/kimi-plugin.ts';
 import { configuredEnv } from './core/paths.ts';
@@ -63,16 +64,22 @@ function stepsFor(install: Install): Plan {
   }
 }
 
-/** Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). */
-export function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string }> {
+/**
+ * Runs one step, answering "y" to any confirmation prompt (Qwen asks on every update). `held` is set when macOS
+ * would hold the program for an approval on the Mac's screen, so it was not started.
+ */
+export async function runHarnessCommand({ cmd, args }: Step, cwd = os.homedir()): Promise<{ ok: boolean; output: string; held?: boolean }> {
   const blocked = sandboxSpawnBlock(cmd);
-  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (blocked) return { ok: false, output: blocked };
   if (cmd === 'codex' && inTestSandbox()) {
     const home = configuredEnv('CODEX_HOME');
     if (!home || outsideIsolatedHome(home)) {
-      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home ?? 'CODEX_HOME unset'})` });
+      return { ok: false, output: `refusing to run codex outside the test sandbox (${home ?? 'CODEX_HOME unset'})` };
     }
   }
+  // Started from here, it would wait for that click until the step times out.
+  const held = await gatekeeperHold(cmd);
+  if (held) return { ok: false, output: heldNote(cmd, held), held: true };
   return new Promise((resolve) => {
     let output = '';
     const child = spawn(cmd, args, { cwd, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -136,12 +143,12 @@ async function refreshOpencodeNpm(install: Install): Promise<{ ok: boolean; outp
 }
 
 /** Updates one agent's copy with that agent's own mechanism. */
-export async function updateInstall(install: Install): Promise<{ ok: boolean; output: string }> {
+export async function updateInstall(install: Install): Promise<{ ok: boolean; output: string; held?: boolean }> {
   const steps = stepsFor(install);
   if (steps === 'cache') return refreshPackageCache(install);
   if (steps === 'opencode-npm') return refreshOpencodeNpm(install);
   if (steps === 'kimi') return installKimiPlugin();
-  let result = { ok: true, output: '' };
+  let result: { ok: boolean; output: string; held?: boolean } = { ok: true, output: '' };
   for (const step of steps) if ((result = await runHarnessCommand(step)).ok === false) break;
   return result;
 }
@@ -231,6 +238,7 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   }
 
   const failures: string[] = [];
+  const held: string[] = [];
   for (const install of before) {
     if (alreadyCurrent(install, latest)) {
       say(`Updating ${agentLabel(install.agent)}… already current`);
@@ -242,7 +250,7 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
     if (result.ok) say('done');
     else {
       say(`failed: ${lastLine(result.output)}`);
-      failures.push(agentLabel(install.agent));
+      (result.held ? held : failures).push(agentLabel(install.agent));
     }
   }
 
@@ -265,8 +273,9 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   const codexAfter = after.find((i) => i.agent === 'codex');
   if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
-  if (failures.length) {
-    say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
+  if (failures.length || held.length) {
+    if (failures.length) say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);
+    if (held.length) say(`\nNot updated: ${held.join(', ')}, until macOS approves ${held.length === 1 ? 'its program' : 'their programs'} on this Mac (see above).`);
     return 1;
   }
   return cliOk ? 0 : 1;

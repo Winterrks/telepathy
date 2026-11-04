@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import os from 'node:os';
 import { LineRpc } from '../acp/rpc.ts';
+import { gatekeeperHold, heldNote } from './gatekeeper.ts';
 import { outsideIsolatedHome } from './installs.ts';
 import { configuredEnv } from './paths.ts';
 import { inTestSandbox, sandboxSpawnBlock } from './sandbox-launch.ts';
@@ -52,6 +53,9 @@ function codexBlocked(): string | undefined {
 async function withAppServer<T>(fn: (rpc: LineRpc) => Promise<T>): Promise<T> {
   const blocked = codexBlocked();
   if (blocked) throw new Error(blocked);
+  // macOS would hold it for an approval on the Mac's screen, and the app-server would never answer.
+  const held = await gatekeeperHold('codex');
+  if (held) throw new Error(heldNote('codex', held));
   const child = spawn('codex', ['app-server'], { cwd: os.homedir(), stdio: ['pipe', 'pipe', 'ignore'] });
   child.stdin.on('error', () => {}); // Codex may exit before it reads
   const rpc = new LineRpc(

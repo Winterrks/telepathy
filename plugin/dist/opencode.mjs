@@ -20036,7 +20036,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.13.0" : "0.0.0-dev";
+var VERSION = true ? "0.13.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";

@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.13.0" : "0.0.0-dev";
+    VERSION = true ? "0.13.1" : "0.0.0-dev";
   }
 });
 
@@ -3348,28 +3348,28 @@ var init_state = __esm({
 });
 
 // src/bridge/client.ts
-async function call(target, path36, body, timeoutMs2, signal) {
+async function call(target, path37, body, timeoutMs2, signal) {
   const self2 = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire2 = { device: self2.id, name: self2.name };
-  if (key) wire2.sealed = seal(key, requestAad(path36, self2.id, target.id), body);
+  if (key) wire2.sealed = seal(key, requestAad(path37, self2.id, target.id), body);
   else wire2.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path36);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path37);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path36}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path37}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path36, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
+    body: JSON.stringify(reverse ? { device: target.id, route: path37, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire2.sealed) throw new Error("the answer was not sealed");
-    return open2(key, responseAad(path36, self2.id, target.id, wire2.sealed.n), reply.sealed);
+    return open2(key, responseAad(path37, self2.id, target.id, wire2.sealed.n), reply.sealed);
   }
   return reply.body;
 }
@@ -3380,8 +3380,8 @@ var init_client = __esm({
     init_crypto();
     init_state();
     UNREACHABLE = "TELEPATHY_UNREACHABLE";
-    requestAad = (path36, from, to) => `req ${path36} ${from}->${to}`;
-    responseAad = (path36, from, to, nonce) => `res ${path36} ${from}->${to} ${nonce}`;
+    requestAad = (path37, from, to) => `req ${path37} ${from}->${to}`;
+    responseAad = (path37, from, to, nonce) => `res ${path37} ${from}->${to} ${nonce}`;
     baseUrl = (addr) => `http://${addr}`;
     REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
   }
@@ -4029,8 +4029,8 @@ var init_harnesses = __esm({
 });
 
 // src/headless/peer.ts
-import fs29 from "node:fs";
-import path31 from "node:path";
+import fs30 from "node:fs";
+import path32 from "node:path";
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
 }
@@ -4038,14 +4038,14 @@ function writeHeadlessRecord(record2) {
   writeJsonAtomic(headlessRecordPath(record2.agent, record2.slug), record2);
 }
 function writeHosted(peerId2) {
-  writeJsonAtomic(path31.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path32.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid)
   });
 }
 function clearHosted(peerId2) {
   try {
-    fs29.rmSync(path31.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs30.rmSync(path32.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -4069,15 +4069,15 @@ var init_peer = __esm({
     init_paths();
     init_proc();
     init_peers();
-    headlessDir = () => path31.join(stateDir(), "headless");
-    headlessRecordPath = (agent, slug) => path31.join(headlessDir(), `${agent}-${slug}.json`);
-    headlessLogPath = (agent, slug) => path31.join(headlessDir(), `${agent}-${slug}.log`);
+    headlessDir = () => path32.join(stateDir(), "headless");
+    headlessRecordPath = (agent, slug) => path32.join(headlessDir(), `${agent}-${slug}.json`);
+    headlessLogPath = (agent, slug) => path32.join(headlessDir(), `${agent}-${slug}.log`);
   }
 });
 
 // src/grokbot/config.ts
-import fs30 from "node:fs";
-import path32 from "node:path";
+import fs31 from "node:fs";
+import path33 from "node:path";
 function urlProblem(raw) {
   let url2;
   try {
@@ -4099,7 +4099,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file2 = configPath(slug);
   try {
-    if ((fs30.statSync(file2).mode & 63) !== 0) return void 0;
+    if ((fs31.statSync(file2).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -4116,14 +4116,14 @@ function writeConfig(name, url2, key) {
 }
 function removeConfig(slug) {
   const file2 = configPath(slug);
-  if (!fs30.existsSync(file2)) return false;
-  fs30.rmSync(file2, { force: true });
+  if (!fs31.existsSync(file2)) return false;
+  fs31.rmSync(file2, { force: true });
   return true;
 }
 function listConfigs() {
   let names = [];
   try {
-    names = fs30.readdirSync(grokbotDir());
+    names = fs31.readdirSync(grokbotDir());
   } catch {
     return [];
   }
@@ -4132,14 +4132,14 @@ function listConfigs() {
 function looseConfigs() {
   let names = [];
   try {
-    names = fs30.readdirSync(grokbotDir());
+    names = fs31.readdirSync(grokbotDir());
   } catch {
     return [];
   }
   return names.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs30.statSync(path32.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs31.statSync(path33.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -4151,15 +4151,15 @@ var init_config = __esm({
     "use strict";
     init_paths();
     init_peers();
-    grokbotDir = () => path32.join(stateDir(), "grokbot");
-    configPath = (slug) => path32.join(grokbotDir(), `${slug}.json`);
+    grokbotDir = () => path33.join(stateDir(), "grokbot");
+    configPath = (slug) => path33.join(grokbotDir(), `${slug}.json`);
   }
 });
 
 // src/grokbot/host.ts
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import os12 from "node:os";
-import path33 from "node:path";
+import path34 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 async function postContext(config2, context) {
   const start = Date.now();
@@ -4193,21 +4193,21 @@ async function postContext(config2, context) {
   }
 }
 function grokbotArgv() {
-  const here = path33.dirname(fileURLToPath4(import.meta.url));
-  for (const file2 of [path33.join(here, "grokbot.mjs"), path33.join(here, "..", "grokbot-main.ts")]) {
-    if (fs31.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
+  const here = path34.dirname(fileURLToPath4(import.meta.url));
+  for (const file2 of [path34.join(here, "grokbot.mjs"), path34.join(here, "..", "grokbot-main.ts")]) {
+    if (fs32.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
 function takeLock(slug) {
-  const file2 = path33.join(ensureDir(grokbotDir()), `${slug}.lock`);
+  const file2 = path34.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs31.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs32.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs31.readFileSync(file2, "utf8"));
-          if (held.pid === process.pid) fs31.rmSync(file2, { force: true });
+          const held = JSON.parse(fs32.readFileSync(file2, "utf8"));
+          if (held.pid === process.pid) fs32.rmSync(file2, { force: true });
         } catch {
         }
       };
@@ -4215,12 +4215,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs31.readFileSync(file2, "utf8"));
+        held = JSON.parse(fs32.readFileSync(file2, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs31.rmSync(file2, { force: true });
+      fs32.rmSync(file2, { force: true });
     }
   }
   return void 0;
@@ -4242,8 +4242,8 @@ function contextFor(config2, messages, cli = cliCommand()) {
   return [note, ...turns].join("\n\n");
 }
 function appendTranscript(peerId2, text) {
-  const file2 = path33.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs31.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file2 = path34.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs32.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -4260,10 +4260,10 @@ async function runGrokbotHost(slug) {
     return 1;
   }
   const logFile2 = headlessLogPath("grok", slug);
-  ensureDir(path33.dirname(logFile2));
+  ensureDir(path34.dirname(logFile2));
   const log = (line) => {
     try {
-      fs31.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs32.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -4297,8 +4297,8 @@ async function runGrokbotHost(slug) {
         stop();
         return;
       }
-      const pendingFile = (msg) => path33.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs31.existsSync(pendingFile(msg)));
+      const pendingFile = (msg) => path34.join(inboxDir(hosted.peerId), `${msg.id}.json`);
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs32.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now = Date.now();
@@ -4311,7 +4311,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs31.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs32.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config2, live, cli);
       const result = await postContext(config2, context);
@@ -4324,9 +4324,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs31.existsSync(path33.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs32.existsSync(path34.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript(hosted.peerId, formatAsUserTurn(msg));
-        if (fs31.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs32.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -4385,10 +4385,10 @@ __export(cli_exports, {
   ensureGrokbotHosts: () => ensureGrokbotHosts,
   grokbotCommand: () => grokbotCommand
 });
-import { spawn as spawn7 } from "node:child_process";
-import fs32 from "node:fs";
+import { spawn as spawn8 } from "node:child_process";
+import fs33 from "node:fs";
 import os13 from "node:os";
-import path34 from "node:path";
+import path35 from "node:path";
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -4436,12 +4436,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile2 = headlessLogPath("grok", slug);
-  fs32.mkdirSync(path34.dirname(logFile2), { recursive: true, mode: 448 });
-  const out = fs32.openSync(logFile2, "a", 384);
+  fs33.mkdirSync(path35.dirname(logFile2), { recursive: true, mode: 448 });
+  const out = fs33.openSync(logFile2, "a", 384);
   const [cmd, ...args] = grokbotArgv();
   const home2 = os13.homedir();
-  const child = spawn7(cmd, [...args, "host", slug], {
-    cwd: fs32.existsSync(home2) ? home2 : stateDir(),
+  const child = spawn8(cmd, [...args, "host", slug], {
+    cwd: fs33.existsSync(home2) ? home2 : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -4449,7 +4449,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs32.closeSync(out);
+  fs33.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record2 = readHeadlessRecord("grok", slug);
@@ -4628,7 +4628,7 @@ machine. The key stays in ~/.telepathy/grokbot/<name>.json (mode 600) and is nev
 });
 
 // src/server.ts
-import path35 from "node:path";
+import path36 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -5504,10 +5504,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path36) {
-  if (!path36)
+function getElementAtPath(obj, path37) {
+  if (!path37)
     return obj;
-  return path36.reduce((acc, key) => acc?.[key], obj);
+  return path37.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -5847,11 +5847,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path36, issues) {
+function prefixIssues(path37, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path36);
+    iss.path.unshift(path37);
     return iss;
   });
 }
@@ -6301,16 +6301,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path36 = []) => {
+  const processError = (error63, path37 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path36, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path37, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
       } else {
-        const fullpath = [...path36, ...issue2.path];
+        const fullpath = [...path37, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -6349,17 +6349,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path36 = []) => {
+  const processError = (error63, path37 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path36, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path37, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path36, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
       } else {
-        const fullpath = [...path36, ...issue2.path];
+        const fullpath = [...path37, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -6398,8 +6398,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path36 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path36) {
+  const path37 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path37) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23501,13 +23501,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path36 = ref.slice(1).split("/").filter(Boolean);
-  if (path36.length === 0) {
+  const path37 = ref.slice(1).split("/").filter(Boolean);
+  if (path37.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path36[0] === defsKey) {
-    const key = path36[1] === void 0 ? void 0 : decodeJSONPointerSegment(path36[1]);
+  if (path37[0] === defsKey) {
+    const key = path37[1] === void 0 ? void 0 : decodeJSONPointerSegment(path37[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -27930,9 +27930,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path36 = issue2.path.map(String);
-      const key = path36.length > 0 ? path36.join(".") : "_meta";
-      if (path36.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path37 = issue2.path.map(String);
+      const key = path37.length > 0 ? path37.join(".") : "_meta";
+      if (path37.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -28253,29 +28253,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path36, reachable) => {
+  const visit2 = (node2, path37, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path36.length === 0) return `${pathName(path36)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path37.length === 0) return `${pathName(path37)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path36)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path36)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path37)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path37)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path36)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path37)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path36,
+        path: path37,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path36, key], reachable);
+      const fault$1 = visit2(child, [...path37, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -28283,7 +28283,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path36, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path37, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -28323,8 +28323,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path36) {
-  return path36.length === 0 ? "<root>" : path36.join(".");
+function pathName(path37) {
+  return path37.length === 0 ? "<root>" : path37.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -28613,7 +28613,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path36, vendor, unsupported) {
+function walkProperty(node2, path37, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -28621,8 +28621,8 @@ function walkProperty(node2, path36, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path36}.${key}`);
-  } else unsupported.push(`${path36}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path37}.${key}`);
+  } else unsupported.push(`${path37}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -28639,11 +28639,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path36 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path36}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path37 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path37}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path36 ? `${path36}.${key}` : key;
+    const childPath = path37 ? `${path37}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -34431,27 +34431,27 @@ init_version();
 init_installs();
 init_paths();
 init_proc();
-import { spawn as spawn6 } from "node:child_process";
-import fs28 from "node:fs";
-import path30 from "node:path";
+import { spawn as spawn7 } from "node:child_process";
+import fs29 from "node:fs";
+import path31 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli-self-update.ts
 init_installs();
 init_sandbox_launch();
-import { execFileSync as execFileSync8 } from "node:child_process";
-import fs27 from "node:fs";
-import path29 from "node:path";
+import { execFileSync as execFileSync9 } from "node:child_process";
+import fs28 from "node:fs";
+import path30 from "node:path";
 
 // src/update-all.ts
-import { spawn as spawn5 } from "node:child_process";
-import fs26 from "node:fs";
+import { spawn as spawn6 } from "node:child_process";
+import fs27 from "node:fs";
 import os11 from "node:os";
-import path28 from "node:path";
+import path29 from "node:path";
 init_agents();
 
 // src/core/codex-hooks.ts
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn5 } from "node:child_process";
 import os10 from "node:os";
 
 // src/acp/rpc.ts
@@ -34526,6 +34526,69 @@ var LineRpc = class {
   }
 };
 
+// src/core/gatekeeper.ts
+init_paths();
+init_sandbox_launch();
+import { execFileSync as execFileSync7, spawn as spawn4 } from "node:child_process";
+import fs25 from "node:fs";
+import path26 from "node:path";
+var USER_APPROVED = 64;
+var probeMs = () => envDurationMs("TELEPATHY_GATEKEEPER_PROBE_MS", 15e3);
+function executablePath(cmd, env = process.env) {
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path26.delimiter).filter(Boolean).map((dir) => path26.join(dir, cmd));
+  for (const file2 of candidates) {
+    try {
+      fs25.accessSync(file2, fs25.constants.X_OK);
+      if (fs25.statSync(file2).isFile()) return fs25.realpathSync(file2);
+    } catch {
+    }
+  }
+  return void 0;
+}
+function unapprovedDownload(cmd, env = process.env) {
+  if (process.platform !== "darwin") return void 0;
+  const file2 = executablePath(cmd, env);
+  if (!file2) return void 0;
+  let value;
+  try {
+    value = execFileSync7("/usr/bin/xattr", ["-p", "com.apple.quarantine", file2], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
+  } catch {
+    return void 0;
+  }
+  const flags = Number.parseInt(value.trim().split(";")[0] ?? "", 16);
+  return Number.isFinite(flags) && (flags & USER_APPROVED) === 0 ? file2 : void 0;
+}
+var probes = /* @__PURE__ */ new Map();
+function doesNotAnswer(file2) {
+  let probe = probes.get(file2);
+  if (!probe) {
+    probe = new Promise((resolve) => {
+      const child = spawn4(file2, ["--version"], { stdio: "ignore" });
+      const timer2 = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(true);
+      }, probeMs());
+      const done = () => {
+        clearTimeout(timer2);
+        resolve(false);
+      };
+      child.on("exit", done);
+      child.on("error", done);
+    });
+    probes.set(file2, probe);
+  }
+  return probe;
+}
+async function gatekeeperHold(cmd, env = process.env) {
+  const file2 = unapprovedDownload(cmd, env);
+  if (!file2 || !sandboxAllowsExecutable(file2)) return void 0;
+  return await doesNotAnswer(file2) ? file2 : void 0;
+}
+var shellWord = (file2) => /^[\w@%+=:,./-]+$/.test(file2) ? file2 : `'${file2.replace(/'/g, `'\\''`)}'`;
+function heldNote(cmd, file2) {
+  return `\`${cmd}\` didn't start within ${Math.max(1, Math.round(probeMs() / 1e3))}s, and ${file2} still has the quarantine flag it was downloaded with, so macOS is most likely holding it for an approval on this Mac's screen. Run \`${cmd} --version\` in Terminal on this Mac and click Open if macOS asks, or clear the flag with \`xattr -d com.apple.quarantine ${shellWord(file2)}\`.`;
+}
+
 // src/core/codex-hooks.ts
 init_installs();
 init_paths();
@@ -34547,7 +34610,9 @@ function codexBlocked() {
 async function withAppServer(fn) {
   const blocked = codexBlocked();
   if (blocked) throw new Error(blocked);
-  const child = spawn4("codex", ["app-server"], { cwd: os10.homedir(), stdio: ["pipe", "pipe", "ignore"] });
+  const held = await gatekeeperHold("codex");
+  if (held) throw new Error(heldNote("codex", held));
+  const child = spawn5("codex", ["app-server"], { cwd: os10.homedir(), stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {
   });
   const rpc = new LineRpc(
@@ -34622,9 +34687,9 @@ init_installs();
 
 // src/core/kimi-plugin.ts
 init_installs();
-import { execFileSync as execFileSync7 } from "node:child_process";
-import fs25 from "node:fs";
-import path26 from "node:path";
+import { execFileSync as execFileSync8 } from "node:child_process";
+import fs26 from "node:fs";
+import path27 from "node:path";
 var ID = "telepathy";
 var DEFAULT_SOURCE = "https://github.com/Winterrks/telepathy";
 var githubWeb = () => (process.env.TELEPATHY_GITHUB_WEB || "https://github.com").replace(/\/$/, "");
@@ -34665,18 +34730,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version2 = JSON.parse(fs25.readFileSync(path26.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version2 = JSON.parse(fs26.readFileSync(path27.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path26.join(kimiHome(), "plugins");
-  fs25.mkdirSync(dir, { recursive: true });
-  const final = path26.join(dir, "installed.json");
-  fs25.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs25.renameSync(`${final}.tmp`, final);
+  const dir = path27.join(kimiHome(), "plugins");
+  fs26.mkdirSync(dir, { recursive: true });
+  const final = path27.join(dir, "installed.json");
+  fs26.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs26.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -34693,15 +34758,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef2(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path26.join(home2, "plugins", "managed", ID);
+    const managed = path27.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path26.dirname(managed);
-    fs25.mkdirSync(parent, { recursive: true });
-    const staging = fs25.mkdtempSync(path26.join(parent, `${ID}-`));
+    const parent = path27.dirname(managed);
+    fs26.mkdirSync(parent, { recursive: true });
+    const staging = fs26.mkdtempSync(path27.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -34709,22 +34774,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs25.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
-      execFileSync7("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
+      fs26.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      execFileSync8("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version2 = readManifestVersion(staging);
       if (!version2) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs25.renameSync(managed, previous);
+        fs26.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs25.renameSync(staging, managed);
+      fs26.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs25.realpathSync(managed),
+        root: fs26.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -34735,16 +34800,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs25.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs26.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version2 ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version2} (${ref.value}, ${sha.slice(0, 12)})`, version: version2, changed: true };
     } catch (err) {
-      fs25.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs25.renameSync(previous, managed);
+      fs26.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs26.renameSync(previous, managed);
       throw err;
     } finally {
-      fs25.rmSync(archive, { force: true });
-      fs25.rmSync(staging, { recursive: true, force: true });
+      fs26.rmSync(archive, { force: true });
+      fs26.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -34757,9 +34822,9 @@ init_sandbox_launch();
 
 // src/version-check.ts
 init_paths();
-import path27 from "node:path";
+import path28 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path27.join(stateDir(), "github-version.json");
+var cacheFile = () => path28.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -34807,18 +34872,20 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
+async function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
   const blocked = sandboxSpawnBlock(cmd);
-  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (blocked) return { ok: false, output: blocked };
   if (cmd === "codex" && inTestSandbox()) {
     const home2 = configuredEnv("CODEX_HOME");
     if (!home2 || outsideIsolatedHome(home2)) {
-      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` });
+      return { ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` };
     }
   }
+  const held = await gatekeeperHold(cmd);
+  if (held) return { ok: false, output: heldNote(cmd, held), held: true };
   return new Promise((resolve) => {
     let output2 = "";
-    const child = spawn5(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn6(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
     const timer2 = setTimeout(() => child.kill("SIGKILL"), STEP_TIMEOUT_MS);
     child.stdout.on("data", (d) => output2 += d);
     child.stderr.on("data", (d) => output2 += d);
@@ -34838,35 +34905,35 @@ function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path28.join(process.env.XDG_CACHE_HOME || path28.join(os11.homedir(), ".cache"), install.agent, "packages");
-  const relative = path28.relative(packages, install.dir).split(path28.sep);
-  const entry = path28.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path28.join(path28.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs26.renameSync(entry, aside);
+  const packages = path29.join(process.env.XDG_CACHE_HOME || path29.join(os11.homedir(), ".cache"), install.agent, "packages");
+  const relative = path29.relative(packages, install.dir).split(path29.sep);
+  const entry = path29.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path29.join(path29.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs27.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs26.rmSync(aside, { recursive: true, force: true });
+    fs27.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs26.rmSync(entry, { recursive: true, force: true });
-  fs26.renameSync(aside, entry);
+  fs27.rmSync(entry, { recursive: true, force: true });
+  fs27.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path28.join(process.env.XDG_CACHE_HOME || path28.join(os11.homedir(), ".cache"), "opencode");
-  const npm = path28.join(opencodeCache, "npm");
-  const entry = path28.join(npm, path28.relative(npm, install.dir).split(path28.sep)[0] ?? "");
-  const aside = path28.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs26.renameSync(entry, aside);
+  const opencodeCache = path29.join(process.env.XDG_CACHE_HOME || path29.join(os11.homedir(), ".cache"), "opencode");
+  const npm = path29.join(opencodeCache, "npm");
+  const entry = path29.join(npm, path29.relative(npm, install.dir).split(path29.sep)[0] ?? "");
+  const aside = path29.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs27.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs26.rmSync(aside, { recursive: true, force: true });
+    fs27.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs26.rmSync(entry, { recursive: true, force: true });
-  fs26.renameSync(aside, entry);
+  fs27.rmSync(entry, { recursive: true, force: true });
+  fs27.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -34934,6 +35001,7 @@ async function updateAll(options = {}) {
     return await cliStep() ? 0 : 1;
   }
   const failures = [];
+  const held = [];
   for (const install of before) {
     if (alreadyCurrent(install, latest)) {
       say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
@@ -34945,7 +35013,7 @@ async function updateAll(options = {}) {
     if (result.ok) say("done");
     else {
       say(`failed: ${lastLine(result.output)}`);
-      failures.push(agentLabel(install.agent));
+      (result.held ? held : failures).push(agentLabel(install.agent));
     }
   }
   const after = installsInScope();
@@ -34965,9 +35033,11 @@ async function updateAll(options = {}) {
   const codexAfter = after.find((i) => i.agent === "codex");
   if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
-  if (failures.length) {
-    say(`
+  if (failures.length || held.length) {
+    if (failures.length) say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
+    if (held.length) say(`
+Not updated: ${held.join(", ")}, until macOS approves ${held.length === 1 ? "its program" : "their programs"} on this Mac (see above).`);
     return 1;
   }
   return cliOk ? 0 : 1;
@@ -34988,13 +35058,13 @@ function globalCliDir() {
   if (inTestSandbox()) return void 0;
   let root;
   try {
-    root = execFileSync8("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    root = execFileSync9("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return void 0;
   }
-  const dir = path29.join(root, PACKAGE);
+  const dir = path30.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs27.readFileSync(path29.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs28.readFileSync(path30.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -35002,7 +35072,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version2 = JSON.parse(fs27.readFileSync(path29.join(dir, "package.json"), "utf8")).version;
+    const version2 = JSON.parse(fs28.readFileSync(path30.join(dir, "package.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -35040,13 +35110,13 @@ function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path30.join(stateDir(), "config.json"));
+  const cfg = readJson(path31.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path30.join(stateDir(), "auto-update.json");
-var logFile = () => path30.join(stateDir(), "auto-update.log");
+var stampFile = () => path31.join(stateDir(), "auto-update.json");
+var logFile = () => path31.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -35057,7 +35127,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs28.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs29.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -35065,10 +35135,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path30.dirname(fileURLToPath3(import.meta.url));
+  const dir = path31.dirname(fileURLToPath3(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path30.join(dir, name);
-    if (fs28.existsSync(candidate)) return candidate;
+    const candidate = path31.join(dir, name);
+    if (fs29.existsSync(candidate)) return candidate;
   }
   return fileURLToPath3(import.meta.url);
 }
@@ -35077,7 +35147,7 @@ function scheduleAutoUpdate(reason, options = {}) {
     if (process.argv.includes("--telepathy-auto-update")) return;
     if (!autoUpdateEnabled()) return;
     if (!options.force && recentlyChecked()) return;
-    const child = spawn6(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
+    const child = spawn7(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env, TELEPATHY_HOME: stateDir(), ...options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: "1" } : {} }
@@ -35096,15 +35166,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path35.dirname(path35.dirname(fileURLToPath5(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path35.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path35.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path36.dirname(path36.dirname(fileURLToPath5(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path36.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path36.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path35.join(path35.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
+    const monitor = path36.join(path36.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {

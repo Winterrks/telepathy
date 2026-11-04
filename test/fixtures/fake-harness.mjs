@@ -50,7 +50,14 @@ function isAcp() {
   );
 }
 
-if (args.includes('--sleep')) {
+if (args[0] === '--version') {
+  // FAKE_VERSION_HANGS: what a program macOS holds for an approval does, which is nothing.
+  if (process.env.FAKE_VERSION_HANGS === '1') setInterval(() => {}, 1 << 30);
+  else {
+    console.log(`${name} 0.0.0-fake`);
+    process.exit(0);
+  }
+} else if (args.includes('--sleep')) {
   setInterval(() => {}, 1 << 30);
 } else if (name === 'codex' && args[0] === 'app-server') {
   const rl = readline.createInterface({ input: process.stdin });

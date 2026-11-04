@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="MIT license" src="https://img.shields.io/badge/license-MIT-6d28d9"></a>
-  <img alt="version 0.13.0" src="https://img.shields.io/badge/version-0.13.0-6d28d9">
+  <img alt="version 0.13.1" src="https://img.shields.io/badge/version-0.13.1-6d28d9">
   <img alt="11 agents" src="https://img.shields.io/badge/agents-11-6d28d9">
   <img alt="local, or your own devices with the bridge" src="https://img.shields.io/badge/network-local%20%2B%20your%20devices-6d28d9">
 </p>

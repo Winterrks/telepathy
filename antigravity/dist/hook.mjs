@@ -580,7 +580,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.13.0" : "0.0.0-dev";
+    VERSION = true ? "0.13.1" : "0.0.0-dev";
   }
 });
 
@@ -776,8 +776,77 @@ var init_rpc = __esm({
   }
 });
 
+// src/core/gatekeeper.ts
+import { execFileSync as execFileSync4, spawn as spawn3 } from "node:child_process";
+import fs16 from "node:fs";
+import path18 from "node:path";
+function executablePath(cmd, env = process.env) {
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path18.delimiter).filter(Boolean).map((dir) => path18.join(dir, cmd));
+  for (const file of candidates) {
+    try {
+      fs16.accessSync(file, fs16.constants.X_OK);
+      if (fs16.statSync(file).isFile()) return fs16.realpathSync(file);
+    } catch {
+    }
+  }
+  return void 0;
+}
+function unapprovedDownload(cmd, env = process.env) {
+  if (process.platform !== "darwin") return void 0;
+  const file = executablePath(cmd, env);
+  if (!file) return void 0;
+  let value;
+  try {
+    value = execFileSync4("/usr/bin/xattr", ["-p", "com.apple.quarantine", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
+  } catch {
+    return void 0;
+  }
+  const flags = Number.parseInt(value.trim().split(";")[0] ?? "", 16);
+  return Number.isFinite(flags) && (flags & USER_APPROVED) === 0 ? file : void 0;
+}
+function doesNotAnswer(file) {
+  let probe = probes.get(file);
+  if (!probe) {
+    probe = new Promise((resolve) => {
+      const child = spawn3(file, ["--version"], { stdio: "ignore" });
+      const timer2 = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve(true);
+      }, probeMs());
+      const done = () => {
+        clearTimeout(timer2);
+        resolve(false);
+      };
+      child.on("exit", done);
+      child.on("error", done);
+    });
+    probes.set(file, probe);
+  }
+  return probe;
+}
+async function gatekeeperHold(cmd, env = process.env) {
+  const file = unapprovedDownload(cmd, env);
+  if (!file || !sandboxAllowsExecutable(file)) return void 0;
+  return await doesNotAnswer(file) ? file : void 0;
+}
+function heldNote(cmd, file) {
+  return `\`${cmd}\` didn't start within ${Math.max(1, Math.round(probeMs() / 1e3))}s, and ${file} still has the quarantine flag it was downloaded with, so macOS is most likely holding it for an approval on this Mac's screen. Run \`${cmd} --version\` in Terminal on this Mac and click Open if macOS asks, or clear the flag with \`xattr -d com.apple.quarantine ${shellWord(file)}\`.`;
+}
+var USER_APPROVED, probeMs, probes, shellWord;
+var init_gatekeeper = __esm({
+  "src/core/gatekeeper.ts"() {
+    "use strict";
+    init_paths();
+    init_sandbox_launch();
+    USER_APPROVED = 64;
+    probeMs = () => envDurationMs("TELEPATHY_GATEKEEPER_PROBE_MS", 15e3);
+    probes = /* @__PURE__ */ new Map();
+    shellWord = (file) => /^[\w@%+=:,./-]+$/.test(file) ? file : `'${file.replace(/'/g, `'\\''`)}'`;
+  }
+});
+
 // src/core/codex-hooks.ts
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn4 } from "node:child_process";
 import os8 from "node:os";
 function codexBlocked() {
   const blocked = sandboxSpawnBlock("codex");
@@ -791,7 +860,9 @@ function codexBlocked() {
 async function withAppServer(fn) {
   const blocked = codexBlocked();
   if (blocked) throw new Error(blocked);
-  const child = spawn3("codex", ["app-server"], { cwd: os8.homedir(), stdio: ["pipe", "pipe", "ignore"] });
+  const held = await gatekeeperHold("codex");
+  if (held) throw new Error(heldNote("codex", held));
+  const child = spawn4("codex", ["app-server"], { cwd: os8.homedir(), stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {
   });
   const rpc = new LineRpc(
@@ -864,6 +935,7 @@ var init_codex_hooks = __esm({
   "src/core/codex-hooks.ts"() {
     "use strict";
     init_rpc();
+    init_gatekeeper();
     init_installs();
     init_paths();
     init_sandbox_launch();
@@ -877,9 +949,9 @@ var init_codex_hooks = __esm({
 });
 
 // src/core/kimi-plugin.ts
-import { execFileSync as execFileSync4 } from "node:child_process";
-import fs16 from "node:fs";
-import path18 from "node:path";
+import { execFileSync as execFileSync5 } from "node:child_process";
+import fs17 from "node:fs";
+import path19 from "node:path";
 function parseSource(source) {
   let url;
   try {
@@ -916,18 +988,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version = JSON.parse(fs16.readFileSync(path18.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version = JSON.parse(fs17.readFileSync(path19.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path18.join(kimiHome(), "plugins");
-  fs16.mkdirSync(dir, { recursive: true });
-  const final = path18.join(dir, "installed.json");
-  fs16.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs16.renameSync(`${final}.tmp`, final);
+  const dir = path19.join(kimiHome(), "plugins");
+  fs17.mkdirSync(dir, { recursive: true });
+  const final = path19.join(dir, "installed.json");
+  fs17.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs17.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -944,15 +1016,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path18.join(home2, "plugins", "managed", ID);
+    const managed = path19.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path18.dirname(managed);
-    fs16.mkdirSync(parent, { recursive: true });
-    const staging = fs16.mkdtempSync(path18.join(parent, `${ID}-`));
+    const parent = path19.dirname(managed);
+    fs17.mkdirSync(parent, { recursive: true });
+    const staging = fs17.mkdtempSync(path19.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -960,22 +1032,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs16.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
-      execFileSync4("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
+      fs17.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      execFileSync5("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version = readManifestVersion(staging);
       if (!version) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs16.renameSync(managed, previous);
+        fs17.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs16.renameSync(staging, managed);
+      fs17.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs16.realpathSync(managed),
+        root: fs17.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -986,16 +1058,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs16.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs17.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version} (${ref.value}, ${sha.slice(0, 12)})`, version, changed: true };
     } catch (err) {
-      fs16.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs16.renameSync(previous, managed);
+      fs17.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs17.renameSync(previous, managed);
       throw err;
     } finally {
-      fs16.rmSync(archive, { force: true });
-      fs16.rmSync(staging, { recursive: true, force: true });
+      fs17.rmSync(archive, { force: true });
+      fs17.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -1014,7 +1086,7 @@ var init_kimi_plugin = __esm({
 });
 
 // src/version-check.ts
-import path19 from "node:path";
+import path20 from "node:path";
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -1041,15 +1113,15 @@ var init_version_check = __esm({
     "use strict";
     init_paths();
     DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path19.join(stateDir(), "github-version.json");
+    cacheFile = () => path20.join(stateDir(), "github-version.json");
   }
 });
 
 // src/update-all.ts
-import { spawn as spawn4 } from "node:child_process";
-import fs17 from "node:fs";
+import { spawn as spawn5 } from "node:child_process";
+import fs18 from "node:fs";
 import os9 from "node:os";
-import path20 from "node:path";
+import path21 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -1076,18 +1148,20 @@ function stepsFor(install) {
       return "cache";
   }
 }
-function runHarnessCommand({ cmd, args }, cwd = os9.homedir()) {
+async function runHarnessCommand({ cmd, args }, cwd = os9.homedir()) {
   const blocked = sandboxSpawnBlock(cmd);
-  if (blocked) return Promise.resolve({ ok: false, output: blocked });
+  if (blocked) return { ok: false, output: blocked };
   if (cmd === "codex" && inTestSandbox()) {
     const home2 = configuredEnv("CODEX_HOME");
     if (!home2 || outsideIsolatedHome(home2)) {
-      return Promise.resolve({ ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` });
+      return { ok: false, output: `refusing to run codex outside the test sandbox (${home2 ?? "CODEX_HOME unset"})` };
     }
   }
+  const held = await gatekeeperHold(cmd);
+  if (held) return { ok: false, output: heldNote(cmd, held), held: true };
   return new Promise((resolve) => {
     let output = "";
-    const child = spawn4(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn5(cmd, args, { cwd, stdio: ["pipe", "pipe", "pipe"] });
     const timer2 = setTimeout(() => child.kill("SIGKILL"), STEP_TIMEOUT_MS);
     child.stdout.on("data", (d) => output += d);
     child.stderr.on("data", (d) => output += d);
@@ -1107,35 +1181,35 @@ function runHarnessCommand({ cmd, args }, cwd = os9.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path20.join(process.env.XDG_CACHE_HOME || path20.join(os9.homedir(), ".cache"), install.agent, "packages");
-  const relative = path20.relative(packages, install.dir).split(path20.sep);
-  const entry = path20.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path20.join(path20.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs17.renameSync(entry, aside);
+  const packages = path21.join(process.env.XDG_CACHE_HOME || path21.join(os9.homedir(), ".cache"), install.agent, "packages");
+  const relative = path21.relative(packages, install.dir).split(path21.sep);
+  const entry = path21.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path21.join(path21.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs18.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs17.rmSync(aside, { recursive: true, force: true });
+    fs18.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs17.rmSync(entry, { recursive: true, force: true });
-  fs17.renameSync(aside, entry);
+  fs18.rmSync(entry, { recursive: true, force: true });
+  fs18.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path20.join(process.env.XDG_CACHE_HOME || path20.join(os9.homedir(), ".cache"), "opencode");
-  const npm = path20.join(opencodeCache, "npm");
-  const entry = path20.join(npm, path20.relative(npm, install.dir).split(path20.sep)[0] ?? "");
-  const aside = path20.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs17.renameSync(entry, aside);
+  const opencodeCache = path21.join(process.env.XDG_CACHE_HOME || path21.join(os9.homedir(), ".cache"), "opencode");
+  const npm = path21.join(opencodeCache, "npm");
+  const entry = path21.join(npm, path21.relative(npm, install.dir).split(path21.sep)[0] ?? "");
+  const aside = path21.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs18.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs17.rmSync(aside, { recursive: true, force: true });
+    fs18.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs17.rmSync(entry, { recursive: true, force: true });
-  fs17.renameSync(aside, entry);
+  fs18.rmSync(entry, { recursive: true, force: true });
+  fs18.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -1201,6 +1275,7 @@ async function updateAll(options = {}) {
     return await cliStep() ? 0 : 1;
   }
   const failures = [];
+  const held = [];
   for (const install of before) {
     if (alreadyCurrent(install, latest)) {
       say(`Updating ${agentLabel(install.agent)}\u2026 already current`);
@@ -1212,7 +1287,7 @@ async function updateAll(options = {}) {
     if (result.ok) say("done");
     else {
       say(`failed: ${lastLine(result.output)}`);
-      failures.push(agentLabel(install.agent));
+      (result.held ? held : failures).push(agentLabel(install.agent));
     }
   }
   const after = installsInScope();
@@ -1232,9 +1307,11 @@ async function updateAll(options = {}) {
   const codexAfter = after.find((i) => i.agent === "codex");
   if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
-  if (failures.length) {
-    say(`
+  if (failures.length || held.length) {
+    if (failures.length) say(`
 Not updated: ${failures.join(", ")}. Run their own update command to see why.`);
+    if (held.length) say(`
+Not updated: ${held.join(", ")}, until macOS approves ${held.length === 1 ? "its program" : "their programs"} on this Mac (see above).`);
     return 1;
   }
   return cliOk ? 0 : 1;
@@ -1250,6 +1327,7 @@ var init_update_all = __esm({
     await init_cli_self_update();
     init_agents();
     init_codex_hooks();
+    init_gatekeeper();
     init_installs();
     init_kimi_plugin();
     init_paths();
@@ -1268,20 +1346,20 @@ var init_update_all = __esm({
 });
 
 // src/cli-self-update.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-import fs18 from "node:fs";
-import path21 from "node:path";
+import { execFileSync as execFileSync6 } from "node:child_process";
+import fs19 from "node:fs";
+import path22 from "node:path";
 function globalCliDir() {
   if (inTestSandbox()) return void 0;
   let root;
   try {
-    root = execFileSync5("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    root = execFileSync6("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return void 0;
   }
-  const dir = path21.join(root, PACKAGE);
+  const dir = path22.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs18.readFileSync(path21.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs19.readFileSync(path22.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -1289,7 +1367,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version = JSON.parse(fs18.readFileSync(path21.join(dir, "package.json"), "utf8")).version;
+    const version = JSON.parse(fs19.readFileSync(path22.join(dir, "package.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
@@ -1343,20 +1421,20 @@ __export(auto_update_exports, {
   scheduleAutoUpdate: () => scheduleAutoUpdate,
   setAutoUpdate: () => setAutoUpdate
 });
-import { spawn as spawn5 } from "node:child_process";
-import fs19 from "node:fs";
-import path22 from "node:path";
+import { spawn as spawn6 } from "node:child_process";
+import fs20 from "node:fs";
+import path23 from "node:path";
 import { fileURLToPath } from "node:url";
 function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path22.join(stateDir(), "config.json"));
+  const cfg = readJson(path23.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 function setAutoUpdate(on) {
-  const file = path22.join(stateDir(), "config.json");
+  const file = path23.join(stateDir(), "config.json");
   const cfg = readJson(file) ?? {};
   cfg.autoUpdate = on;
   writeJsonAtomic(file, cfg);
@@ -1371,7 +1449,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs19.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs20.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -1379,10 +1457,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path22.dirname(fileURLToPath(import.meta.url));
+  const dir = path23.dirname(fileURLToPath(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path22.join(dir, name);
-    if (fs19.existsSync(candidate)) return candidate;
+    const candidate = path23.join(dir, name);
+    if (fs20.existsSync(candidate)) return candidate;
   }
   return fileURLToPath(import.meta.url);
 }
@@ -1391,7 +1469,7 @@ function scheduleAutoUpdate(reason, options = {}) {
     if (process.argv.includes("--telepathy-auto-update")) return;
     if (!autoUpdateEnabled()) return;
     if (!options.force && recentlyChecked()) return;
-    const child = spawn5(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
+    const child = spawn6(process.execPath, [autoUpdateEntry(), "--telepathy-auto-update"], {
       detached: true,
       stdio: "ignore",
       env: { ...process.env, TELEPATHY_HOME: stateDir(), ...options.force ? { TELEPATHY_AUTO_UPDATE_FORCE: "1" } : {} }
@@ -1405,9 +1483,9 @@ function scheduleAutoUpdate(reason, options = {}) {
 function acquireLock() {
   ensureDir(stateDir());
   try {
-    const fd = fs19.openSync(lockFile(), "wx", 384);
-    fs19.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
-    fs19.closeSync(fd);
+    const fd = fs20.openSync(lockFile(), "wx", 384);
+    fs20.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs20.closeSync(fd);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") return false;
@@ -1416,7 +1494,7 @@ function acquireLock() {
     const alive = typeof info?.pid === "number" && isAlive(info.pid);
     if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
     try {
-      fs19.rmSync(lockFile(), { force: true });
+      fs20.rmSync(lockFile(), { force: true });
     } catch {
       return false;
     }
@@ -1425,7 +1503,7 @@ function acquireLock() {
 }
 function releaseLock() {
   const info = readJson(lockFile());
-  if (info?.pid === process.pid) fs19.rmSync(lockFile(), { force: true });
+  if (info?.pid === process.pid) fs20.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
   const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === "1";
@@ -1489,15 +1567,15 @@ var init_auto_update = __esm({
     await init_update_all();
     init_version_check();
     DAY_MS = 24 * 60 * 60 * 1e3;
-    stampFile = () => path22.join(stateDir(), "auto-update.json");
-    lockFile = () => path22.join(stateDir(), "auto-update.lock");
-    logFile = () => path22.join(stateDir(), "auto-update.log");
+    stampFile = () => path23.join(stateDir(), "auto-update.json");
+    lockFile = () => path23.join(stateDir(), "auto-update.lock");
+    logFile = () => path23.join(stateDir(), "auto-update.log");
   }
 });
 
 // src/hook.ts
-import fs21 from "node:fs";
-import path25 from "node:path";
+import fs22 from "node:fs";
+import path26 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/core/claude-socket.ts
@@ -4007,32 +4085,32 @@ var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
 var UNREACHABLE = "TELEPATHY_UNREACHABLE";
-var requestAad = (path26, from, to) => `req ${path26} ${from}->${to}`;
-var responseAad = (path26, from, to, nonce) => `res ${path26} ${from}->${to} ${nonce}`;
+var requestAad = (path27, from, to) => `req ${path27} ${from}->${to}`;
+var responseAad = (path27, from, to, nonce) => `res ${path27} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
 var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
-async function call(target, path26, body, timeoutMs2, signal) {
+async function call(target, path27, body, timeoutMs2, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire = { device: self.id, name: self.name };
-  if (key) wire.sealed = seal(key, requestAad(path26, self.id, target.id), body);
+  if (key) wire.sealed = seal(key, requestAad(path27, self.id, target.id), body);
   else wire.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path26);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path27);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path26}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path27}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path26, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
+    body: JSON.stringify(reverse ? { device: target.id, route: path27, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply2 = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply2.error) throw Object.assign(new Error(reply2.error), reverse && reply2.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply2.sealed || !wire.sealed) throw new Error("the answer was not sealed");
-    return open(key, responseAad(path26, self.id, target.id, wire.sealed.n), reply2.sealed);
+    return open(key, responseAad(path27, self.id, target.id, wire.sealed.n), reply2.sealed);
   }
   return reply2.body;
 }
@@ -4364,9 +4442,9 @@ function argvFlag(argv, name) {
 }
 
 // src/agent/task.ts
-import fs20 from "node:fs";
+import fs21 from "node:fs";
 import os10 from "node:os";
-import path23 from "node:path";
+import path24 from "node:path";
 
 // src/cli/harnesses.ts
 init_agents();
@@ -4544,13 +4622,13 @@ init_agents();
 init_paths();
 init_proc();
 var taskHarnesses = () => harnesses().filter((h) => h.acp && h.agent !== "claude").map((h) => h.agent);
-var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path23.join(os10.homedir(), ".claude");
+var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path24.join(os10.homedir(), ".claude");
 function claudeHasAgent(name, cwd) {
-  const files2 = [path23.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path23.join(cwd, ".claude", "agents", `${name}.md`)] : []];
-  if (files2.some((file) => fs20.existsSync(file))) return true;
+  const files2 = [path24.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path24.join(cwd, ".claude", "agents", `${name}.md`)] : []];
+  if (files2.some((file) => fs21.existsSync(file))) return true;
   const [plugin] = name.split(":");
   if (plugin === name) return false;
-  const installed = readJson(path23.join(claudeDir(), "plugins", "installed_plugins.json"));
+  const installed = readJson(path24.join(claudeDir(), "plugins", "installed_plugins.json"));
   return Object.keys(installed?.plugins ?? {}).some((key) => key.split("@")[0] === plugin);
 }
 function harnessAgentType(type, cwd) {
@@ -4571,7 +4649,7 @@ function harnessAgentType(type, cwd) {
 
 // src/core/antigravity.ts
 import os11 from "node:os";
-import path24 from "node:path";
+import path25 from "node:path";
 function antigravitySurface(transcriptPath) {
   if (!transcriptPath) return void 0;
   const norm = transcriptPath.replace(/\\/g, "/");
@@ -4582,7 +4660,7 @@ function antigravitySurface(transcriptPath) {
 }
 function expandHomePath(file) {
   if (file === "~") return os11.homedir();
-  if (file.startsWith("~/") || file.startsWith("~\\")) return path24.join(os11.homedir(), file.slice(2));
+  if (file.startsWith("~/") || file.startsWith("~\\")) return path25.join(os11.homedir(), file.slice(2));
   return file;
 }
 
@@ -4616,7 +4694,7 @@ async function readStdin() {
   return raw ? JSON.parse(raw) : {};
 }
 var print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-var HOST_PROMPT = (id) => path25.join(peerDir(id), "host-prompt.json");
+var HOST_PROMPT = (id) => path26.join(peerDir(id), "host-prompt.json");
 var MESSAGE_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/g;
 function promptMessageIds(input) {
   const ids = /* @__PURE__ */ new Set();
@@ -4631,7 +4709,7 @@ function takeHostPrompt(peerId2) {
   const file = HOST_PROMPT(peerId2);
   const ids = readJson(file)?.ids;
   try {
-    fs21.rmSync(file, { force: true });
+    fs22.rmSync(file, { force: true });
   } catch {
   }
   if (!Array.isArray(ids)) return void 0;
@@ -4726,7 +4804,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
-  const waiter = `node "${path25.join(path25.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path26.join(path26.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return noteTag(
     "wake",
     `This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`

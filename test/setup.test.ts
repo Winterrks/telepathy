@@ -167,6 +167,49 @@ test('update re-approves only Codex hooks the user had approved before', async (
   }
 });
 
+test('update and doctor name an agent program macOS is holding, and still run one that answers', { skip: process.platform !== 'darwin' }, async () => {
+  const w = world(['codex'], { FAKE_CODEX_HOOKS: HOOKS([]), FAKE_CODEX_UPGRADE_TO: '0.9.0', TELEPATHY_GATEKEEPER_PROBE_MS: '1500' });
+  plantCodex(w.sb, '0.8.0');
+  const codex = path.join(w.env.PATH!.split(path.delimiter)[0]!, 'codex');
+  const quarantine = (flags: string) => execFileSync('/usr/bin/xattr', ['-w', 'com.apple.quarantine', `${flags};00000000;Test;`, codex]);
+  const versionChecks = () => w.log().filter((entry) => entry.event === 'start' && entry.args?.[0] === '--version').length;
+  const ran = () => w.log().filter((entry) => entry.cmd === 'codex' && entry.event === 'start' && entry.args?.[0] !== '--version');
+  try {
+    // Quarantined and silent, the way Homebrew's casks wait until someone clicks Open.
+    quarantine('0381');
+    const silent = { ...w.env, FAKE_VERSION_HANGS: '1' };
+    const held = await cli(['update'], silent);
+    assert.equal(held.code, 1, held.stdout);
+    assert.match(
+      held.stdout,
+      /Updating Codex… failed: `codex` didn't start within 2s, and \S+\/codex still has the quarantine flag it was downloaded with, so macOS is most likely holding it for an approval on this Mac's screen\. Run `codex --version` in Terminal on this Mac and click Open if macOS asks, or clear the flag with `xattr -d com\.apple\.quarantine \S+\/codex`\./,
+    );
+    assert.match(held.stdout, /Not updated: Codex, until macOS approves its program on this Mac \(see above\)\./);
+    assert.doesNotMatch(held.stdout, /Run their own update command/);
+
+    const doctor = await cli(['doctor'], silent);
+    assert.equal(doctor.code, 0, doctor.stderr);
+    assert.match(doctor.stdout, /- Codex: codex, held by macOS \(see below\)\n/);
+    assert.match(doctor.stdout, /\n`codex` didn't start within 2s/);
+    assert.match(doctor.stdout, /Codex hooks: not checked, because macOS is holding `codex` \(see above\)\./);
+    assert.deepEqual(ran(), [], 'nothing but --version ran while macOS held it');
+
+    // Quarantined, but it answers: macOS already lets it run, so the update goes ahead.
+    const answers = await cli(['update'], w.env);
+    assert.equal(answers.code, 0, answers.stdout);
+    assert.match(answers.stdout, /Codex: 0\.8\.0 → 0\.9\.0/);
+
+    // Approved (clicking Open sets that bit): not even asked for --version.
+    quarantine('03c1');
+    const before = versionChecks();
+    const approved = await cli(['doctor'], w.env);
+    assert.match(approved.stdout, /- Codex: codex\n/);
+    assert.equal(versionChecks(), before);
+  } finally {
+    w.done();
+  }
+});
+
 test('doctor reports Codex hooks that need approval', async () => {
   const w = world(['codex'], { FAKE_CODEX_HOOKS: HOOKS(['modified', 'modified', 'modified', 'modified']) });
   plantCodex(w.sb);
