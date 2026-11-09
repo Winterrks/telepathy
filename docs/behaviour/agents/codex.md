@@ -86,3 +86,11 @@ hooks is shown only when no telepathy hook has fired for that session.
 
 The other setup notes are in [Messages](../messages.md#setup-notes). Codex's statuses (busy, idle, interrupted,
 waiting) are in [Statuses](../sessions.md#statuses).
+
+## As a subagent
+
+`start_agent(harness: "codex")` and `telepathy run codex` use `codex-acp` from `@agentclientprotocol/codex-acp`,
+which runs Codex's own app-server, so it reads `~/.codex/config.toml` as your Codex CLI does. The agent runs in
+Codex's "Auto review" mode (`agent`): Codex asks only about actions it finds unsafe, and those come to the parent.
+Zed's earlier `@zed-industries/codex-acp` bundled its own, older Codex, which could refuse to start on a setting the
+CLI reads (an `[agents]` table, for one). `telepathy setup` and `telepathy update` replace it.

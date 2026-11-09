@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isAgentProcess, type Agent } from '../core/agents.ts';
 import { archiveSettled, formatAsUserTurn, pendingMessages } from '../core/messages.ts';
-import { ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, withdrawnDir, writeJsonAtomic } from '../core/paths.ts';
+import { archiveDir, ensureDir, inboxDir, peerDir, peersDir, readJson, stateDir, withdrawnDir, writeJsonAtomic } from '../core/paths.ts';
 import { clearProcessListCache, commandLines, descendantPids, isAlive, procStart, processTable, resolveCopilotPid } from '../core/proc.ts';
 import {
   copilotEventsFile,
@@ -269,7 +269,7 @@ export function pluginInboxPeerId(agent: Agent, name?: string, sessionId?: strin
  */
 export function startInboxPump(
   peerId: string | (() => string | undefined),
-  inject: (text: string, stillPending: () => boolean, withdrawn?: () => boolean) => Promise<boolean>,
+  inject: (text: string, stillPending: () => boolean, withdrawn?: () => boolean, claim?: () => boolean) => Promise<boolean>,
 ): () => void {
   const resolve = typeof peerId === 'function' ? peerId : () => peerId;
   const done = new Set<string>();
@@ -293,7 +293,16 @@ export function startInboxPump(
           continue;
         }
         const text = formatAsUserTurn(msg);
-        const ok = await inject(text, pending, withdrawn);
+        // Settles the inbox copy as the host sends it: whoever renames it first delivers it.
+        const claim = () => {
+          try {
+            fs.renameSync(file, path.join(ensureDir(archiveDir(id)), `${msg.id}.json`));
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        const ok = await inject(text, pending, withdrawn, claim);
         if (withdrawn()) {
           done.add(msg.id);
           continue;

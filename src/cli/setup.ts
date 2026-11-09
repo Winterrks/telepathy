@@ -2,7 +2,7 @@ import { updateGlobalCli } from '../cli-self-update.ts';
 import { agentLabel, type Agent } from '../core/agents.ts';
 import { describeHookState, trustTelepathyCodexHooks } from '../core/codex-hooks.ts';
 import { installsInScope, isNewer } from '../core/installs.ts';
-import { describeUpdate, latestKnown, runHarnessCommand, updateInstall } from '../update-all.ts';
+import { describeUpdate, latestKnown, replaceRetiredAdapter, runHarnessCommand, updateInstall } from '../update-all.ts';
 import { detectedHarnesses, harnessByAgent, resolvedAcpBin, type Harness } from './harnesses.ts';
 import { alreadyInstalled, describeInstall, enableSidecarIfInScope, installHarness, parseOnly } from './install.ts';
 
@@ -113,6 +113,13 @@ async function setupCodexHooks(args: SetupArgs, report: Report): Promise<void> {
 async function setupAdapter(harness: Harness, args: SetupArgs, report: Report): Promise<void> {
   const acp = harness.acp;
   if (!args.adapters || !acp?.adapter || !acp.installHint) return;
+  const replaced = await replaceRetiredAdapter(harness, args.dryRun);
+  if (replaced) {
+    report.parts.push(replaced.text);
+    if (replaced.ok && !args.dryRun) report.changed = true;
+    if (!replaced.ok) report.failed = true;
+    return;
+  }
   if (resolvedAcpBin(acp)) return;
   const [cmd, ...rest] = acp.installHint.split(' ');
   if (!cmd) return;

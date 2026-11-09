@@ -42,7 +42,7 @@ interface Plane {
   exited: Promise<number>;
   /** Plugin peer claimed from the harness session id, before the first prompt. */
   pluginPeerId?: string;
-  inject(text: string, stillPending: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
+  inject(text: string, stillPending: () => boolean, withdrawn?: () => boolean, claim?: () => boolean): Promise<boolean>;
 }
 
 interface Memory {
@@ -152,7 +152,7 @@ export async function runHeadless(options: HeadlessRun): Promise<number> {
   persist();
   const stopPump = startInboxPump(
     plane.pluginPeerId ?? (pluginPeer ? () => pluginInboxPeerId(options.agent, options.name, memory.id) ?? hosted.peerId : hosted.peerId),
-    (text, stillPending, withdrawn) => plane.inject(text, stillPending, withdrawn),
+    (text, stillPending, withdrawn, claim) => plane.inject(text, stillPending, withdrawn, claim),
   );
   let stopping = false;
   const shutdown = () => {
@@ -552,6 +552,6 @@ async function startAcp(options: HeadlessRun, memory: Memory, writeLog: (text: s
     child: session.child,
     exited: session.exited,
     pluginPeerId: claimed,
-    inject: (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
+    inject: (text, stillPending, withdrawn, claim) => session.prompt(text, stillPending, withdrawn, undefined, claim),
   };
 }

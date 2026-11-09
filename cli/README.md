@@ -34,6 +34,6 @@ Restart the sessions you already had open, then ask one agent about another:
 More at [github.com/Winterrks/telepathy](https://github.com/Winterrks/telepathy), and how it all behaves in
 [docs/behaviour](https://github.com/Winterrks/telepathy/tree/main/docs/behaviour).
 
-The version matches the plugin (`0.14.1` until the plugin version changes). One number, so a CLI and the plugin it
+The version matches the plugin (`0.14.2` until the plugin version changes). One number, so a CLI and the plugin it
 updates are the same release. The plugin package in the repository root stays `telepathy` and `private`, which is
 what OpenCode installs from git; this package is the one published to npm.

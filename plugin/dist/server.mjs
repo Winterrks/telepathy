@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.14.1" : "0.0.0-dev";
+    VERSION = true ? "0.14.2" : "0.0.0-dev";
   }
 });
 
@@ -3438,28 +3438,28 @@ var init_state = __esm({
 });
 
 // src/bridge/client.ts
-async function call(target, path37, body, timeoutMs2, signal) {
+async function call(target, path38, body, timeoutMs2, signal) {
   const self2 = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire2 = { device: self2.id, name: self2.name };
-  if (key) wire2.sealed = seal(key, requestAad(path37, self2.id, target.id), body);
+  if (key) wire2.sealed = seal(key, requestAad(path38, self2.id, target.id), body);
   else wire2.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path37);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path38);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path37}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path38}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path37, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
+    body: JSON.stringify(reverse ? { device: target.id, route: path38, wire: wire2, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire2),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire2.sealed) throw new Error("the answer was not sealed");
-    return open2(key, responseAad(path37, self2.id, target.id, wire2.sealed.n), reply.sealed);
+    return open2(key, responseAad(path38, self2.id, target.id, wire2.sealed.n), reply.sealed);
   }
   return reply.body;
 }
@@ -3470,8 +3470,8 @@ var init_client = __esm({
     init_crypto();
     init_state();
     UNREACHABLE = "TELEPATHY_UNREACHABLE";
-    requestAad = (path37, from, to) => `req ${path37} ${from}->${to}`;
-    responseAad = (path37, from, to, nonce) => `res ${path37} ${from}->${to} ${nonce}`;
+    requestAad = (path38, from, to) => `req ${path38} ${from}->${to}`;
+    responseAad = (path38, from, to, nonce) => `res ${path38} ${from}->${to} ${nonce}`;
     baseUrl = (addr) => `http://${addr}`;
     REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
   }
@@ -3949,10 +3949,25 @@ var init_deliver = __esm({
 
 // src/cli/harnesses.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
+import fs19 from "node:fs";
+import path21 from "node:path";
 function canonicalRunAgent(name) {
   if (!name) return void 0;
   if (name === "agy") return "antigravity";
   return isAgent(name) ? name : void 0;
+}
+function binPath(cmd, env = process.env) {
+  try {
+    const found = execFileSync4(process.platform === "win32" ? "where" : "which", [cmd], { env, encoding: "utf8" }).split("\n")[0].trim();
+    return found ? fs19.realpathSync(found) : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function retiredAdapter(acp, env = process.env) {
+  if (!acp.replaces) return void 0;
+  const found = binPath(acp.bin, env);
+  return found && found.split(path21.sep).join("/").includes(`/node_modules/${acp.replaces}/`) ? acp.replaces : void 0;
 }
 function onPath(cmd, env = process.env) {
   try {
@@ -3984,7 +3999,8 @@ var init_harnesses = __esm({
           fallbacks: ["claude-code-acp"],
           args: [],
           adapter: true,
-          installHint: "npm install -g @zed-industries/claude-agent-acp"
+          installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
+          replaces: "@zed-industries/claude-agent-acp"
         },
         install: {
           kind: "commands",
@@ -4000,7 +4016,9 @@ var init_harnesses = __esm({
         passthroughBin: "codex",
         defaultMode: "acp",
         headless: "codex",
-        acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @zed-industries/codex-acp" },
+        // The ACP project's adapter runs Codex's own app-server. Zed's earlier one bundled a copy of Codex that fell
+        // behind the CLI and refused config.toml settings the CLI reads.
+        acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @agentclientprotocol/codex-acp", replaces: "@zed-industries/codex-acp" },
         install: {
           kind: "commands",
           steps: [
@@ -4143,8 +4161,8 @@ var init_harnesses = __esm({
 });
 
 // src/headless/peer.ts
-import fs29 from "node:fs";
-import path32 from "node:path";
+import fs30 from "node:fs";
+import path33 from "node:path";
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
 }
@@ -4152,7 +4170,7 @@ function writeHeadlessRecord(record2) {
   writeJsonAtomic(headlessRecordPath(record2.agent, record2.slug), record2);
 }
 function writeHosted(peerId2, parent) {
-  writeJsonAtomic(path32.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path33.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid),
     ...parent ? { parent } : {}
@@ -4160,7 +4178,7 @@ function writeHosted(peerId2, parent) {
 }
 function clearHosted(peerId2) {
   try {
-    fs29.rmSync(path32.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs30.rmSync(path33.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -4184,15 +4202,15 @@ var init_peer = __esm({
     init_paths();
     init_proc();
     init_peers();
-    headlessDir = () => path32.join(stateDir(), "headless");
-    headlessRecordPath = (agent, slug) => path32.join(headlessDir(), `${agent}-${slug}.json`);
-    headlessLogPath = (agent, slug) => path32.join(headlessDir(), `${agent}-${slug}.log`);
+    headlessDir = () => path33.join(stateDir(), "headless");
+    headlessRecordPath = (agent, slug) => path33.join(headlessDir(), `${agent}-${slug}.json`);
+    headlessLogPath = (agent, slug) => path33.join(headlessDir(), `${agent}-${slug}.log`);
   }
 });
 
 // src/grokbot/config.ts
-import fs30 from "node:fs";
-import path33 from "node:path";
+import fs31 from "node:fs";
+import path34 from "node:path";
 function urlProblem(raw) {
   let url2;
   try {
@@ -4214,7 +4232,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file2 = configPath(slug);
   try {
-    if ((fs30.statSync(file2).mode & 63) !== 0) return void 0;
+    if ((fs31.statSync(file2).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -4231,14 +4249,14 @@ function writeConfig(name, url2, key) {
 }
 function removeConfig(slug) {
   const file2 = configPath(slug);
-  if (!fs30.existsSync(file2)) return false;
-  fs30.rmSync(file2, { force: true });
+  if (!fs31.existsSync(file2)) return false;
+  fs31.rmSync(file2, { force: true });
   return true;
 }
 function listConfigs() {
   let names = [];
   try {
-    names = fs30.readdirSync(grokbotDir());
+    names = fs31.readdirSync(grokbotDir());
   } catch {
     return [];
   }
@@ -4247,14 +4265,14 @@ function listConfigs() {
 function looseConfigs() {
   let names = [];
   try {
-    names = fs30.readdirSync(grokbotDir());
+    names = fs31.readdirSync(grokbotDir());
   } catch {
     return [];
   }
   return names.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs30.statSync(path33.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs31.statSync(path34.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -4266,15 +4284,15 @@ var init_config = __esm({
     "use strict";
     init_paths();
     init_peers();
-    grokbotDir = () => path33.join(stateDir(), "grokbot");
-    configPath = (slug) => path33.join(grokbotDir(), `${slug}.json`);
+    grokbotDir = () => path34.join(stateDir(), "grokbot");
+    configPath = (slug) => path34.join(grokbotDir(), `${slug}.json`);
   }
 });
 
 // src/grokbot/host.ts
-import fs31 from "node:fs";
+import fs32 from "node:fs";
 import os11 from "node:os";
-import path34 from "node:path";
+import path35 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 async function postContext(config2, context) {
   const start = Date.now();
@@ -4308,21 +4326,21 @@ async function postContext(config2, context) {
   }
 }
 function grokbotArgv() {
-  const here = path34.dirname(fileURLToPath4(import.meta.url));
-  for (const file2 of [path34.join(here, "grokbot.mjs"), path34.join(here, "..", "grokbot-main.ts")]) {
-    if (fs31.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
+  const here = path35.dirname(fileURLToPath4(import.meta.url));
+  for (const file2 of [path35.join(here, "grokbot.mjs"), path35.join(here, "..", "grokbot-main.ts")]) {
+    if (fs32.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
 function takeLock(slug) {
-  const file2 = path34.join(ensureDir(grokbotDir()), `${slug}.lock`);
+  const file2 = path35.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs31.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs32.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs31.readFileSync(file2, "utf8"));
-          if (held.pid === process.pid) fs31.rmSync(file2, { force: true });
+          const held = JSON.parse(fs32.readFileSync(file2, "utf8"));
+          if (held.pid === process.pid) fs32.rmSync(file2, { force: true });
         } catch {
         }
       };
@@ -4330,12 +4348,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs31.readFileSync(file2, "utf8"));
+        held = JSON.parse(fs32.readFileSync(file2, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs31.rmSync(file2, { force: true });
+      fs32.rmSync(file2, { force: true });
     }
   }
   return void 0;
@@ -4357,8 +4375,8 @@ function contextFor(config2, messages, cli = cliCommand()) {
   return [note, ...turns].join("\n\n");
 }
 function appendTranscript(peerId2, text) {
-  const file2 = path34.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs31.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file2 = path35.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs32.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -4375,10 +4393,10 @@ async function runGrokbotHost(slug) {
     return 1;
   }
   const logFile2 = headlessLogPath("grok", slug);
-  ensureDir(path34.dirname(logFile2));
+  ensureDir(path35.dirname(logFile2));
   const log = (line) => {
     try {
-      fs31.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs32.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -4412,8 +4430,8 @@ async function runGrokbotHost(slug) {
         stop();
         return;
       }
-      const pendingFile = (msg) => path34.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs31.existsSync(pendingFile(msg)));
+      const pendingFile = (msg) => path35.join(inboxDir(hosted.peerId), `${msg.id}.json`);
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs32.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now = Date.now();
@@ -4426,7 +4444,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs31.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs32.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config2, live, cli);
       const result = await postContext(config2, context);
@@ -4439,9 +4457,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs31.existsSync(path34.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs32.existsSync(path35.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript(hosted.peerId, formatAsUserTurn(msg));
-        if (fs31.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs32.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -4501,9 +4519,9 @@ __export(cli_exports, {
   grokbotCommand: () => grokbotCommand
 });
 import { spawn as spawn8 } from "node:child_process";
-import fs32 from "node:fs";
+import fs33 from "node:fs";
 import os12 from "node:os";
-import path35 from "node:path";
+import path36 from "node:path";
 function readStdin() {
   return new Promise((resolve, reject) => {
     let data = "";
@@ -4551,12 +4569,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile2 = headlessLogPath("grok", slug);
-  fs32.mkdirSync(path35.dirname(logFile2), { recursive: true, mode: 448 });
-  const out = fs32.openSync(logFile2, "a", 384);
+  fs33.mkdirSync(path36.dirname(logFile2), { recursive: true, mode: 448 });
+  const out = fs33.openSync(logFile2, "a", 384);
   const [cmd, ...args] = grokbotArgv();
   const home2 = os12.homedir();
   const child = spawn8(cmd, [...args, "host", slug], {
-    cwd: fs32.existsSync(home2) ? home2 : stateDir(),
+    cwd: fs33.existsSync(home2) ? home2 : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -4564,7 +4582,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs32.closeSync(out);
+  fs33.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record2 = readHeadlessRecord("grok", slug);
@@ -4743,7 +4761,7 @@ machine. The key stays in ~/.telepathy/grokbot/<name>.json (mode 600) and is nev
 });
 
 // src/server.ts
-import path36 from "node:path";
+import path37 from "node:path";
 import { fileURLToPath as fileURLToPath5 } from "node:url";
 
 // node_modules/@modelcontextprotocol/server/dist/chunk-Br0eD_fh.mjs
@@ -5619,10 +5637,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path37) {
-  if (!path37)
+function getElementAtPath(obj, path38) {
+  if (!path38)
     return obj;
-  return path37.reduce((acc, key) => acc?.[key], obj);
+  return path38.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -5962,11 +5980,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path37, issues) {
+function prefixIssues(path38, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path37);
+    iss.path.unshift(path38);
     return iss;
   });
 }
@@ -6416,16 +6434,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path37 = []) => {
+  const processError = (error63, path38 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path37, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path38, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path38, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path38, ...issue2.path]);
       } else {
-        const fullpath = [...path37, ...issue2.path];
+        const fullpath = [...path38, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -6464,17 +6482,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path37 = []) => {
+  const processError = (error63, path38 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path37, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path38, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path38, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path37, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path38, ...issue2.path]);
       } else {
-        const fullpath = [...path37, ...issue2.path];
+        const fullpath = [...path38, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -6513,8 +6531,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path37 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path37) {
+  const path38 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path38) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -23616,13 +23634,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path37 = ref.slice(1).split("/").filter(Boolean);
-  if (path37.length === 0) {
+  const path38 = ref.slice(1).split("/").filter(Boolean);
+  if (path38.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path37[0] === defsKey) {
-    const key = path37[1] === void 0 ? void 0 : decodeJSONPointerSegment(path37[1]);
+  if (path38[0] === defsKey) {
+    const key = path38[1] === void 0 ? void 0 : decodeJSONPointerSegment(path38[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -28045,9 +28063,9 @@ var rev2026Codec = {
     });
     const parsed = buildSchemas2026().RequestMetaEnvelopeSchema.safeParse(meta3);
     if (!parsed.success) for (const issue2 of parsed.error.issues) {
-      const path37 = issue2.path.map(String);
-      const key = path37.length > 0 ? path37.join(".") : "_meta";
-      if (path37.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
+      const path38 = issue2.path.map(String);
+      const key = path38.length > 0 ? path38.join(".") : "_meta";
+      if (path38.length === 1 && issues.some((existing) => existing.key === key && existing.problem === "missing")) continue;
       issues.push({
         key,
         problem: issue2.message
@@ -28368,29 +28386,29 @@ var PERMITTED_X_MCP_HEADER_TYPES = /* @__PURE__ */ new Set([
 function scanXMcpHeaderDeclarations(inputSchema) {
   const declarations = [];
   const seenLower = /* @__PURE__ */ new Map();
-  const visit2 = (node2, path37, reachable) => {
+  const visit2 = (node2, path38, reachable) => {
     if (node2 === null || typeof node2 !== "object") return void 0;
     const schema = node2;
     if (X_MCP_HEADER_KEY in schema) {
-      if (!reachable || path37.length === 0) return `${pathName(path37)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
+      if (!reachable || path38.length === 0) return `${pathName(path38)}: x-mcp-header is only permitted on properties statically reachable via a chain of 'properties' keys (not under items, additionalProperties, oneOf/anyOf/allOf/not, if/then/else, or $ref)`;
       const raw = schema[X_MCP_HEADER_KEY];
-      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path37)}: x-mcp-header MUST be a non-empty string`;
-      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path37)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
+      if (typeof raw !== "string" || raw.length === 0) return `${pathName(path38)}: x-mcp-header MUST be a non-empty string`;
+      if (!RFC9110_TOKEN.test(raw)) return `${pathName(path38)}: x-mcp-header '${raw}' is not a valid RFC 9110 token (no spaces, control characters or HTTP delimiters)`;
       const type = typeof schema.type === "string" ? schema.type : void 0;
-      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path37)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
+      if (type === void 0 || !PERMITTED_X_MCP_HEADER_TYPES.has(type)) return `${pathName(path38)}: x-mcp-header is only permitted on primitive-typed properties (string, integer, boolean); got ${type ?? "<none>"}`;
       const lower = raw.toLowerCase();
       const prior = seenLower.get(lower);
       if (prior !== void 0) return `x-mcp-header '${raw}' is not case-insensitively unique (also declared as '${prior}')`;
       seenLower.set(lower, raw);
       declarations.push({
-        path: path37,
+        path: path38,
         headerName: raw,
         type
       });
     }
     const properties = schema.properties;
     if (properties !== null && typeof properties === "object") for (const [key, child] of Object.entries(properties)) {
-      const fault$1 = visit2(child, [...path37, key], reachable);
+      const fault$1 = visit2(child, [...path38, key], reachable);
       if (fault$1 !== void 0) return fault$1;
     }
     for (const k of NON_REACHABLE_SUBSCHEMA_KEYWORDS) {
@@ -28398,7 +28416,7 @@ function scanXMcpHeaderDeclarations(inputSchema) {
       if (sub === void 0) continue;
       const branches = Array.isArray(sub) ? sub : sub !== null && typeof sub === "object" && OBJECT_VALUED_SUBSCHEMA_KEYWORDS.has(k) ? Object.values(sub) : [sub];
       for (const branch of branches) {
-        const fault$1 = visit2(branch, [...path37, `<${k}>`], false);
+        const fault$1 = visit2(branch, [...path38, `<${k}>`], false);
         if (fault$1 !== void 0) return fault$1;
       }
     }
@@ -28438,8 +28456,8 @@ var OBJECT_VALUED_SUBSCHEMA_KEYWORDS = /* @__PURE__ */ new Set([
   "$defs",
   "definitions"
 ]);
-function pathName(path37) {
-  return path37.length === 0 ? "<root>" : path37.join(".");
+function pathName(path38) {
+  return path38.length === 0 ? "<root>" : path38.join(".");
 }
 var HEADER_MISMATCH_ERROR_CODE = -32020;
 var INBOUND_VALIDATION_LADDER = [
@@ -28728,7 +28746,7 @@ var PROPERTY_KEYS_BY_TYPE = {
   array: shapeKeys([UntitledMultiSelectEnumSchemaSchema, TitledMultiSelectEnumSchemaSchema])
 };
 var SUPPORTED_STRING_FORMATS = new Set(StringSchemaSchema.shape.format.unwrap().options);
-function walkProperty(node2, path37, vendor, unsupported) {
+function walkProperty(node2, path38, vendor, unsupported) {
   if (!isJsonObject(node2)) return node2;
   const allowedKeys = typeof node2.type === "string" && Object.hasOwn(PROPERTY_KEYS_BY_TYPE, node2.type) ? PROPERTY_KEYS_BY_TYPE[node2.type] : void 0;
   if (allowedKeys === void 0) return node2;
@@ -28736,8 +28754,8 @@ function walkProperty(node2, path37, vendor, unsupported) {
   for (const [key, value] of Object.entries(node2)) if (allowedKeys.has(key) || isAnnotationOnlyJsonSchemaKeyword(key)) pruned[key] = value;
   else if (key === "pattern" && node2.type === "string" && typeof node2.format === "string") {
     if (!SUPPORTED_STRING_FORMATS.has(node2.format)) pruned[key] = value;
-    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path37}.${key}`);
-  } else unsupported.push(`${path37}.${key}`);
+    else if (typeof value !== "string" || !isLibraryFormatPattern(node2.format, value, vendor)) unsupported.push(`${path38}.${key}`);
+  } else unsupported.push(`${path38}.${key}`);
   return pruned;
 }
 function walkRequestedSchema(converted, vendor) {
@@ -28754,11 +28772,11 @@ function describeUnsupportedProperties(pruned, fallback) {
   const offenders = Object.entries(pruned.properties).filter(([, node2]) => !parseSchema(PrimitiveSchemaDefinitionSchema, node2).success).map(([name]) => `properties.${name}`);
   return offenders.length > 0 ? offenders.join(", ") : fallback;
 }
-function findDroppedConstraintPaths(original, parsed, path37 = "") {
-  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path37}[${index}]`));
+function findDroppedConstraintPaths(original, parsed, path38 = "") {
+  if (Array.isArray(original) && Array.isArray(parsed)) return original.flatMap((item, index) => findDroppedConstraintPaths(item, parsed[index], `${path38}[${index}]`));
   if (!isJsonObject(original) || !isJsonObject(parsed)) return [];
   return Object.entries(original).flatMap(([key, value]) => {
-    const childPath = path37 ? `${path37}.${key}` : key;
+    const childPath = path38 ? `${path38}.${key}` : key;
     if (!Object.prototype.hasOwnProperty.call(parsed, key)) return isAnnotationOnlyJsonSchemaKeyword(key) ? [] : [childPath];
     return findDroppedConstraintPaths(value, parsed[key], childPath);
   });
@@ -33569,8 +33587,8 @@ init_paths();
 init_peers();
 init_proc();
 import { execFileSync as execFileSync6, spawn as spawn3 } from "node:child_process";
-import fs19 from "node:fs";
-import path22 from "node:path";
+import fs20 from "node:fs";
+import path23 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/agent/worktree.ts
@@ -33593,8 +33611,8 @@ function removeCleanWorktree(spec) {
 
 // src/agent/policy.ts
 init_paths();
-import path21 from "node:path";
-var policyFile = (dir) => path21.join(dir, "policy.json");
+import path22 from "node:path";
+var policyFile = (dir) => path22.join(dir, "policy.json");
 function readPolicy(dir) {
   const stored2 = readJson(policyFile(dir));
   return {
@@ -33633,9 +33651,9 @@ init_spec();
 var startableHarnesses = () => harnesses().filter((h) => h.acp).map((h) => h.agent);
 var startWaitMs = () => envDurationMs("TELEPATHY_AGENT_START_MS", 9e4);
 function hostCommand(dir) {
-  const here = path22.dirname(fileURLToPath2(import.meta.url));
-  for (const file2 of [path22.join(here, "agent.mjs"), path22.join(here, "..", "agent-main.ts")]) {
-    if (fs19.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
+  const here = path23.dirname(fileURLToPath2(import.meta.url));
+  for (const file2 of [path23.join(here, "agent.mjs"), path23.join(here, "..", "agent-main.ts")]) {
+    if (fs20.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
   }
   return { cmd: process.execPath, args: [...process.execArgv, process.argv[1] ?? "", "agent-host", dir] };
 }
@@ -33643,7 +33661,7 @@ var failed = (text) => ({ text, isError: true });
 function reserveSlug(harness, wanted, busy = () => false) {
   const taken = new Set(listPeers().filter((p) => p.agent === harness).map((p) => p.address.slice(harness.length + 1)));
   for (const entry of listAgents()) if (entry.spec.harness === harness && hostAlive(entry.state)) taken.add(entry.spec.slug);
-  const free = (slug) => !taken.has(slug) && !fs19.existsSync(path22.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
+  const free = (slug) => !taken.has(slug) && !fs20.existsSync(path23.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
   ensureDir(agentsDir());
   for (let n = 1; ; n++) {
     const slug = n === 1 ? wanted : `${wanted}-${n}`;
@@ -33652,7 +33670,7 @@ function reserveSlug(harness, wanted, busy = () => false) {
 }
 function claimDir(dir) {
   try {
-    fs19.mkdirSync(dir);
+    fs20.mkdirSync(dir);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") throw err;
@@ -33662,7 +33680,7 @@ function claimDir(dir) {
   if (!state) {
     let age = 0;
     try {
-      age = Date.now() - fs19.statSync(dir).mtimeMs;
+      age = Date.now() - fs20.statSync(dir).mtimeMs;
     } catch {
       return false;
     }
@@ -33670,13 +33688,13 @@ function claimDir(dir) {
   }
   const aside = `${dir}.old-${process.pid}-${Date.now().toString(36)}`;
   try {
-    fs19.renameSync(dir, aside);
+    fs20.renameSync(dir, aside);
   } catch {
     return false;
   }
-  fs19.rmSync(aside, { recursive: true, force: true });
+  fs20.rmSync(aside, { recursive: true, force: true });
   try {
-    fs19.mkdirSync(dir);
+    fs20.mkdirSync(dir);
     return true;
   } catch {
     return false;
@@ -33694,12 +33712,12 @@ function makeWorktree(cwd, harness, slug) {
   const git = (...args) => execFileSync6("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
   const repo = git("rev-parse", "--show-toplevel");
   const base = git("rev-parse", "HEAD");
-  const tree = path22.join(stateDir(), "worktrees", `${harness}-${slug}`);
+  const tree = path23.join(stateDir(), "worktrees", `${harness}-${slug}`);
   const branch = `telepathy/${slug}`;
-  fs19.mkdirSync(path22.dirname(tree), { recursive: true });
+  fs20.mkdirSync(path23.dirname(tree), { recursive: true });
   git("worktree", "add", "-b", branch, tree, base);
-  const inside = path22.relative(fs19.realpathSync(repo), fs19.realpathSync(cwd));
-  return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path22.join(tree, inside) : tree };
+  const inside = path23.relative(fs20.realpathSync(repo), fs20.realpathSync(cwd));
+  return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path23.join(tree, inside) : tree };
 }
 var parentOf = (self2) => ({
   party: partyOf(self2),
@@ -33720,10 +33738,10 @@ function launchAgent(parent, args) {
     return fail(`Not started: ${agentLabel(harness)} needs \`${known.acp.bin}\` on PATH for ACP, and it is not there.${hint}`);
   }
   if (!args.prompt.trim()) return fail("Not started: the prompt is empty.");
-  let cwd = path22.resolve(args.cwd ?? parent.cwd ?? process.cwd());
+  let cwd = path23.resolve(args.cwd ?? parent.cwd ?? process.cwd());
   let isDir = false;
   try {
-    isDir = fs19.statSync(cwd).isDirectory();
+    isDir = fs20.statSync(cwd).isDirectory();
   } catch {
     return fail(`Not started: ${cwd} does not exist.`);
   }
@@ -33742,7 +33760,7 @@ function launchAgent(parent, args) {
       cwd = made.cwd;
       worktree = { repo: made.repo, path: made.path, branch: made.branch, base: made.base };
     } catch (err) {
-      fs19.rmSync(dir, { recursive: true, force: true });
+      fs20.rmSync(dir, { recursive: true, force: true });
       return fail(`Not started: could not make a git worktree from ${cwd}: ${err.message.trim()}`);
     }
   }
@@ -33764,12 +33782,12 @@ function launchAgent(parent, args) {
   writeSpec(dir, spec);
   if (args.permissions) updatePolicy(dir, { mode: args.permissions.mode, allow: args.permissions.allow, model: args.permissions.model });
   const { cmd, args: argv } = hostCommand(dir);
-  const log = fs19.openSync(path22.join(dir, "host.log"), "a");
+  const log = fs20.openSync(path23.join(dir, "host.log"), "a");
   const child = spawn3(cmd, argv, { cwd, detached: true, stdio: ["ignore", log, log], env: process.env });
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs19.closeSync(log);
+  fs20.closeSync(log);
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
 }
 function decides(policy, noAutoMode, label) {
@@ -33825,7 +33843,7 @@ async function startAgentTool(self2, args) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   removeCleanWorktree(spec);
-  return failed(`Not started: ${agentLabel(harness)} did not get ready within ${Math.round(startWaitMs() / 1e3)}s. See ${path22.join(dir, "host.log")}.`);
+  return failed(`Not started: ${agentLabel(harness)} did not get ready within ${Math.round(startWaitMs() / 1e3)}s. See ${path23.join(dir, "host.log")}.`);
 }
 function findChild(self2, name) {
   const q = name.trim().replace(/^["'`]|["'`]$/g, "").replace(/^.*\[([^\]]+)\]\s*$/, "$1").toLowerCase();
@@ -33870,7 +33888,7 @@ function answerPermissionTool(self2, args) {
   const request = readJson(permissionRequestFile(found.dir, args.request));
   if (!request) return failed(`${args.agent} has no permission request "${args.request}".`);
   const answer = permissionAnswerFile(found.dir, args.request);
-  if (fs19.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
+  if (fs20.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
   if (!hostAlive(found.state)) return failed(`${args.agent} is no longer running.`);
   const remembered = args.allow && args.always ? rememberPrefixes(found.dir, request.prefixes) : "";
   writeJsonAtomic(answer, { allow: args.allow, at: (/* @__PURE__ */ new Date()).toISOString() });
@@ -34013,7 +34031,7 @@ init_messages();
 init_paths();
 init_peers();
 init_tags();
-import fs20 from "node:fs";
+import fs21 from "node:fs";
 var INBOX_URI = "telepathy://inbox";
 function attachGrokDelivery(server, currentId) {
   server.registerResource(
@@ -34104,7 +34122,7 @@ function attachGrokDelivery(server, currentId) {
     if (watched !== selfId) announced.clear();
     watched = selfId;
     try {
-      watcher = fs20.watch(inboxDir(selfId), () => void announce());
+      watcher = fs21.watch(inboxDir(selfId), () => void announce());
       watcher.on("error", () => {
         try {
           watcher?.close();
@@ -34133,8 +34151,8 @@ init_version();
 init_client();
 init_remote();
 init_state();
-import fs21 from "node:fs";
-import path23 from "node:path";
+import fs22 from "node:fs";
+import path24 from "node:path";
 function agentDevice(name) {
   const device = findDevice(name.trim().toLowerCase());
   if (!device) {
@@ -34159,8 +34177,8 @@ async function agentsRequest(device, self2, request, timeoutMs2 = 15e3) {
     return { ok: false, error: `device ${device.slug} did not answer (${why})`, reached: false };
   }
 }
-var childrenDir = () => path23.join(stateDir(), "agents-elsewhere");
-var childFile = (child) => path23.join(childrenDir(), `${child.parentId}--${child.device}--${child.harness}-${child.slug}.json`.replace(/[^\w.@-]/g, "_"));
+var childrenDir = () => path24.join(stateDir(), "agents-elsewhere");
+var childFile = (child) => path24.join(childrenDir(), `${child.parentId}--${child.device}--${child.harness}-${child.slug}.json`.replace(/[^\w.@-]/g, "_"));
 function rememberChild(self2, device, agent) {
   const child = {
     device: device.id,
@@ -34183,11 +34201,11 @@ function findRemoteChild(self2, name) {
   if (target && device) q = target.query;
   let names;
   try {
-    names = fs21.readdirSync(childrenDir());
+    names = fs22.readdirSync(childrenDir());
   } catch {
     return void 0;
   }
-  return names.map((file2) => readJson(path23.join(childrenDir(), file2))).filter((child) => !!child && child.parentId === self2.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  return names.map((file2) => readJson(path24.join(childrenDir(), file2))).filter((child) => !!child && child.parentId === self2.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
 var failed2 = (text) => ({ text, isError: true });
 var sleep4 = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -34261,33 +34279,33 @@ async function setRemotePermissionMode(self2, child, args) {
 }
 
 // src/agent/task.ts
-import fs22 from "node:fs";
+import fs23 from "node:fs";
 init_harnesses();
 init_agents();
 init_paths();
 init_proc();
-import path24 from "node:path";
+import path25 from "node:path";
 var taskHarnesses = () => harnesses().filter((h) => h.acp && h.agent !== "claude").map((h) => h.agent);
 var installedTaskHarnesses = () => taskHarnesses().filter((agent) => {
   const acp = harnesses().find((h) => h.agent === agent)?.acp;
   return !!acp && !!resolvedAcpBin(acp);
 });
-var taskDir = (dir) => path24.join(dir, "task");
-var eventsDir = (dir) => path24.join(taskDir(dir), "events");
-var openDir = (dir) => path24.join(taskDir(dir), "open");
+var taskDir = (dir) => path25.join(dir, "task");
+var eventsDir = (dir) => path25.join(taskDir(dir), "events");
+var openDir = (dir) => path25.join(taskDir(dir), "open");
 var PENDING = /^\d{6}\.json$/;
 function claimEvent(dir) {
   let names;
   try {
-    names = fs22.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
+    names = fs23.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
   } catch {
     return void 0;
   }
   for (const name of names) {
-    const from = path24.join(eventsDir(dir), name);
+    const from = path25.join(eventsDir(dir), name);
     const to = from.replace(/\.json$/, ".taken");
     try {
-      fs22.renameSync(from, to);
+      fs23.renameSync(from, to);
     } catch {
       continue;
     }
@@ -34300,19 +34318,19 @@ var openSeq = 0;
 function openTask(dir, taskId, procStart2) {
   ensureDir(openDir(dir));
   forgetLostTasks(dir);
-  const file2 = path24.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
+  const file2 = path25.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
   writeJsonAtomic(file2, { taskId, pid: process.pid, procStart: procStart2 });
-  return () => fs22.rmSync(file2, { force: true });
+  return () => fs23.rmSync(file2, { force: true });
 }
 function markers(dir) {
   let names;
   try {
-    names = fs22.readdirSync(openDir(dir));
+    names = fs23.readdirSync(openDir(dir));
   } catch {
     return [];
   }
   return names.flatMap((name) => {
-    const file2 = path24.join(openDir(dir), name);
+    const file2 = path25.join(openDir(dir), name);
     const marker = readJson(file2);
     if (!marker?.pid) return [];
     const lapsed = marker.until !== void 0 && marker.until < Date.now();
@@ -34321,7 +34339,7 @@ function markers(dir) {
 }
 var taskOpen = (dir) => markers(dir).some((m) => m.live);
 function forgetLostTasks(dir) {
-  for (const marker of markers(dir)) if (!marker.live) fs22.rmSync(marker.file, { force: true });
+  for (const marker of markers(dir)) if (!marker.live) fs23.rmSync(marker.file, { force: true });
 }
 
 // src/agent/mcp-tasks.ts
@@ -34329,8 +34347,8 @@ init_agents();
 init_deliver();
 init_paths();
 init_remote();
-import fs23 from "node:fs";
-import path25 from "node:path";
+import fs24 from "node:fs";
+import path26 from "node:path";
 init_spec();
 var TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 var POLL_MS = 2e3;
@@ -34385,13 +34403,13 @@ function localSource(entry, taskId, procStart2) {
     description: spec.description,
     createdAt: spec.createdAt,
     transcript: () => transcriptFile(dir),
-    log: () => path25.join(dir, "host.log"),
+    log: () => path26.join(dir, "host.log"),
     next: () => claimEvent(dir),
     state: () => {
       const state = readState(dir);
       return { status: state?.status, error: state?.error, alive: hostAlive(state) };
     },
-    answered: (request) => fs23.existsSync(permissionAnswerFile(dir, request)),
+    answered: (request) => fs24.existsSync(permissionAnswerFile(dir, request)),
     answer: (request, allow, always) => {
       if (allow && always) rememberPrefixes(dir, readJson(permissionRequestFile(dir, request))?.prefixes);
       writeJsonAtomic(permissionAnswerFile(dir, request), { allow, at: stamp() });
@@ -34653,23 +34671,24 @@ init_installs();
 init_paths();
 init_proc();
 import { spawn as spawn7 } from "node:child_process";
-import fs28 from "node:fs";
-import path31 from "node:path";
+import fs29 from "node:fs";
+import path32 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/cli-self-update.ts
 init_installs();
 init_sandbox_launch();
 import { execFileSync as execFileSync9 } from "node:child_process";
-import fs27 from "node:fs";
-import path30 from "node:path";
+import fs28 from "node:fs";
+import path31 from "node:path";
 
 // src/update-all.ts
 import { spawn as spawn6 } from "node:child_process";
-import fs26 from "node:fs";
+import fs27 from "node:fs";
 import os10 from "node:os";
-import path29 from "node:path";
+import path30 from "node:path";
 init_agents();
+init_harnesses();
 
 // src/core/codex-hooks.ts
 import { spawn as spawn5 } from "node:child_process";
@@ -34751,16 +34770,16 @@ var LineRpc = class {
 init_paths();
 init_sandbox_launch();
 import { execFileSync as execFileSync7, spawn as spawn4 } from "node:child_process";
-import fs24 from "node:fs";
-import path26 from "node:path";
+import fs25 from "node:fs";
+import path27 from "node:path";
 var USER_APPROVED = 64;
 var probeMs = () => envDurationMs("TELEPATHY_GATEKEEPER_PROBE_MS", 15e3);
 function executablePath(cmd, env = process.env) {
-  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path26.delimiter).filter(Boolean).map((dir) => path26.join(dir, cmd));
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path27.delimiter).filter(Boolean).map((dir) => path27.join(dir, cmd));
   for (const file2 of candidates) {
     try {
-      fs24.accessSync(file2, fs24.constants.X_OK);
-      if (fs24.statSync(file2).isFile()) return fs24.realpathSync(file2);
+      fs25.accessSync(file2, fs25.constants.X_OK);
+      if (fs25.statSync(file2).isFile()) return fs25.realpathSync(file2);
     } catch {
     }
   }
@@ -34909,8 +34928,8 @@ init_installs();
 // src/core/kimi-plugin.ts
 init_installs();
 import { execFileSync as execFileSync8 } from "node:child_process";
-import fs25 from "node:fs";
-import path27 from "node:path";
+import fs26 from "node:fs";
+import path28 from "node:path";
 var ID = "telepathy";
 var DEFAULT_SOURCE = "https://github.com/Winterrks/telepathy";
 var githubWeb = () => (process.env.TELEPATHY_GITHUB_WEB || "https://github.com").replace(/\/$/, "");
@@ -34951,18 +34970,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version2 = JSON.parse(fs25.readFileSync(path27.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version2 = JSON.parse(fs26.readFileSync(path28.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path27.join(kimiHome(), "plugins");
-  fs25.mkdirSync(dir, { recursive: true });
-  const final = path27.join(dir, "installed.json");
-  fs25.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs25.renameSync(`${final}.tmp`, final);
+  const dir = path28.join(kimiHome(), "plugins");
+  fs26.mkdirSync(dir, { recursive: true });
+  const final = path28.join(dir, "installed.json");
+  fs26.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs26.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -34979,15 +34998,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef2(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path27.join(home2, "plugins", "managed", ID);
+    const managed = path28.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path27.dirname(managed);
-    fs25.mkdirSync(parent, { recursive: true });
-    const staging = fs25.mkdtempSync(path27.join(parent, `${ID}-`));
+    const parent = path28.dirname(managed);
+    fs26.mkdirSync(parent, { recursive: true });
+    const staging = fs26.mkdtempSync(path28.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -34995,22 +35014,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs25.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      fs26.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
       execFileSync8("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version2 = readManifestVersion(staging);
       if (!version2) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs25.renameSync(managed, previous);
+        fs26.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs25.renameSync(staging, managed);
+      fs26.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs25.realpathSync(managed),
+        root: fs26.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -35021,16 +35040,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs25.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs26.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version2 ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version2} (${ref.value}, ${sha.slice(0, 12)})`, version: version2, changed: true };
     } catch (err) {
-      fs25.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs25.renameSync(previous, managed);
+      fs26.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs26.renameSync(previous, managed);
       throw err;
     } finally {
-      fs25.rmSync(archive, { force: true });
-      fs25.rmSync(staging, { recursive: true, force: true });
+      fs26.rmSync(archive, { force: true });
+      fs26.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -35043,9 +35062,9 @@ init_sandbox_launch();
 
 // src/version-check.ts
 init_paths();
-import path28 from "node:path";
+import path29 from "node:path";
 var DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-var cacheFile = () => path28.join(stateDir(), "github-version.json");
+var cacheFile = () => path29.join(stateDir(), "github-version.json");
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -35126,35 +35145,35 @@ async function runHarnessCommand({ cmd, args }, cwd = os10.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path29.join(process.env.XDG_CACHE_HOME || path29.join(os10.homedir(), ".cache"), install.agent, "packages");
-  const relative = path29.relative(packages, install.dir).split(path29.sep);
-  const entry = path29.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path29.join(path29.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs26.renameSync(entry, aside);
+  const packages = path30.join(process.env.XDG_CACHE_HOME || path30.join(os10.homedir(), ".cache"), install.agent, "packages");
+  const relative = path30.relative(packages, install.dir).split(path30.sep);
+  const entry = path30.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path30.join(path30.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs27.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs26.rmSync(aside, { recursive: true, force: true });
+    fs27.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs26.rmSync(entry, { recursive: true, force: true });
-  fs26.renameSync(aside, entry);
+  fs27.rmSync(entry, { recursive: true, force: true });
+  fs27.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path29.join(process.env.XDG_CACHE_HOME || path29.join(os10.homedir(), ".cache"), "opencode");
-  const npm = path29.join(opencodeCache, "npm");
-  const entry = path29.join(npm, path29.relative(npm, install.dir).split(path29.sep)[0] ?? "");
-  const aside = path29.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs26.renameSync(entry, aside);
+  const opencodeCache = path30.join(process.env.XDG_CACHE_HOME || path30.join(os10.homedir(), ".cache"), "opencode");
+  const npm = path30.join(opencodeCache, "npm");
+  const entry = path30.join(npm, path30.relative(npm, install.dir).split(path30.sep)[0] ?? "");
+  const aside = path30.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs27.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs26.rmSync(aside, { recursive: true, force: true });
+    fs27.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs26.rmSync(entry, { recursive: true, force: true });
-  fs26.renameSync(aside, entry);
+  fs27.rmSync(entry, { recursive: true, force: true });
+  fs27.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -35172,6 +35191,18 @@ function describeUpdate(install) {
   if (steps === "opencode-npm") return `move its package folder aside and run \`opencode plugin add ${OPENCODE_SPEC2}\` to reinstall`;
   if (steps === "kimi") return "download the latest release into ~/.kimi-code/plugins/managed/telepathy, as `/plugins install` does";
   return steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
+}
+async function replaceRetiredAdapter(harness, dryRun = false) {
+  const acp = harness.acp;
+  const old = acp ? retiredAdapter(acp) : void 0;
+  if (!acp?.installHint || !old) return void 0;
+  const [cmd, ...rest] = acp.installHint.split(" ");
+  if (dryRun) return { ok: true, text: `would replace ${old} with \`${acp.installHint}\`` };
+  const removed = await runHarnessCommand({ cmd: "npm", args: ["uninstall", "-g", old] });
+  const added = removed.ok ? await runHarnessCommand({ cmd, args: rest }) : removed;
+  if (added.ok) return { ok: true, text: `replaced ${old}, which is no longer updated, with ${rest.at(-1)}` };
+  const tail = added.output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "failed";
+  return { ok: false, text: `could not replace ${old} (${tail}); run \`npm uninstall -g ${old} && ${acp.installHint}\`` };
 }
 async function retrustChangedCodexHooks(say) {
   const result = await trustTelepathyCodexHooks(["modified"]);
@@ -35251,6 +35282,10 @@ async function updateAll(options = {}) {
     );
   }
   if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
+  for (const harness of harnesses()) {
+    const replaced = await replaceRetiredAdapter(harness);
+    if (replaced) say(`${agentLabel(harness.agent)}: ${replaced.text}.`);
+  }
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`
@@ -35281,9 +35316,9 @@ function globalCliDir() {
   } catch {
     return void 0;
   }
-  const dir = path30.join(root, PACKAGE);
+  const dir = path31.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs27.readFileSync(path30.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs28.readFileSync(path31.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -35291,7 +35326,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version2 = JSON.parse(fs27.readFileSync(path30.join(dir, "package.json"), "utf8")).version;
+    const version2 = JSON.parse(fs28.readFileSync(path31.join(dir, "package.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -35329,13 +35364,13 @@ function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path31.join(stateDir(), "config.json"));
+  const cfg = readJson(path32.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 var DAY_MS = 24 * 60 * 60 * 1e3;
-var stampFile = () => path31.join(stateDir(), "auto-update.json");
-var logFile = () => path31.join(stateDir(), "auto-update.log");
+var stampFile = () => path32.join(stateDir(), "auto-update.json");
+var logFile = () => path32.join(stateDir(), "auto-update.log");
 function autoUpdateCheckedAt() {
   return readJson(stampFile())?.checkedAt;
 }
@@ -35346,7 +35381,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs28.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs29.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -35354,10 +35389,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path31.dirname(fileURLToPath3(import.meta.url));
+  const dir = path32.dirname(fileURLToPath3(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path31.join(dir, name);
-    if (fs28.existsSync(candidate)) return candidate;
+    const candidate = path32.join(dir, name);
+    if (fs29.existsSync(candidate)) return candidate;
   }
   return fileURLToPath3(import.meta.url);
 }
@@ -35386,15 +35421,15 @@ async function startMcpServer() {
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
   function sessionCwd() {
     const cwd = process.cwd();
-    const pluginRoot = path36.dirname(path36.dirname(fileURLToPath5(import.meta.url)));
-    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path36.resolve(value));
-    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path36.sep) || declaredRoots.includes(cwd)) {
+    const pluginRoot = path37.dirname(path37.dirname(fileURLToPath5(import.meta.url)));
+    const declaredRoots = Object.entries(process.env).filter(([name, value]) => name.endsWith("PLUGIN_ROOT") && value).map(([, value]) => path37.resolve(value));
+    if (agent === "codex" || cwd === pluginRoot || cwd.startsWith(pluginRoot + path37.sep) || declaredRoots.includes(cwd)) {
       return void 0;
     }
     return cwd;
   }
   function monitorCommand() {
-    const monitor = path36.join(path36.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
+    const monitor = path37.join(path37.dirname(fileURLToPath5(import.meta.url)), "monitor.mjs");
     return `node "${monitor}" --agent ${agent}`;
   }
   function claudeWithoutMonitor() {

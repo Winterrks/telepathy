@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { updateGlobalCli } from './cli-self-update.ts';
 import { agentLabel } from './core/agents.ts';
+import { harnesses, retiredAdapter, type Harness } from './cli/harnesses.ts';
 import { trustTelepathyCodexHooks } from './core/codex-hooks.ts';
 import { gatekeeperHold, heldNote } from './core/gatekeeper.ts';
 import { installsInScope, isNewer, type Install, isOpencodeNpmInstall, outsideIsolatedHome } from './core/installs.ts';
@@ -163,6 +164,23 @@ export function describeUpdate(install: Install): string {
 }
 
 /**
+ * Replaces an adapter installed from a retired package (Zed's `@zed-industries/codex-acp`) with the one
+ * `installHint` names. Undefined when there is nothing to replace; otherwise what happened.
+ */
+export async function replaceRetiredAdapter(harness: Harness, dryRun = false): Promise<{ ok: boolean; text: string } | undefined> {
+  const acp = harness.acp;
+  const old = acp ? retiredAdapter(acp) : undefined;
+  if (!acp?.installHint || !old) return undefined;
+  const [cmd, ...rest] = acp.installHint.split(' ');
+  if (dryRun) return { ok: true, text: `would replace ${old} with \`${acp.installHint}\`` };
+  const removed = await runHarnessCommand({ cmd: 'npm', args: ['uninstall', '-g', old] });
+  const added = removed.ok ? await runHarnessCommand({ cmd, args: rest }) : removed;
+  if (added.ok) return { ok: true, text: `replaced ${old}, which is no longer updated, with ${rest.at(-1)}` };
+  const tail = added.output.split('\n').map((line) => line.trim()).filter(Boolean).at(-1) ?? 'failed';
+  return { ok: false, text: `could not replace ${old} (${tail}); run \`npm uninstall -g ${old} && ${acp.installHint}\`` };
+}
+
+/**
  * After telepathy updates Codex's copy, its hooks show as changed and stop running until someone approves them
  * in `/hooks` again. The user approved an earlier version, so those (and only those) are approved again.
  */
@@ -272,6 +290,11 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
   // Codex may have updated its own copy first (it refreshes marketplace plugins), which leaves the hooks changed
   // with nothing here to update: approve them whenever Codex has telepathy, not only when this run changed it.
   if (after.some((i) => i.agent === 'codex')) await retrustChangedCodexHooks(say);
+  // An ACP adapter from a package that is no longer updated (Zed's) moves to its successor.
+  for (const harness of harnesses()) {
+    const replaced = await replaceRetiredAdapter(harness);
+    if (replaced) say(`${agentLabel(harness.agent)}: ${replaced.text}.`);
+  }
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);

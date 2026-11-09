@@ -71,7 +71,8 @@ const tail = (value: string) => value.toLowerCase().split(/[#/]/).pop() ?? '';
  * bypass or yolo mode: those approve everything, and auto is what was asked for.
  */
 export function autoMode(choices: Choice[]): string | undefined {
-  for (const wanted of ['auto', 'autopilot', 'smart']) {
+  // Codex's "Auto review" is its `agent` mode; Cursor's `agent` asks about every command, so the name decides.
+  for (const wanted of ['auto', 'autopilot', 'smart', 'auto review']) {
     const hit = choices.find((c) => tail(c.value) === wanted || c.name?.toLowerCase() === wanted);
     if (hit) return hit.value;
   }

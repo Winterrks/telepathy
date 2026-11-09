@@ -510,7 +510,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.14.1" : "0.0.0-dev";
+var VERSION = true ? "0.14.2" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -3077,7 +3077,7 @@ async function startAcpSession(options) {
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text, stillPending2 = () => true, withdrawn, onStart) {
+      prompt(text, stillPending2 = () => true, withdrawn, onStart, claim) {
         const recalled = withdrawn ?? (() => !stillPending2());
         const marker = options.agent === "copilot" ? promptMarker(text) : void 0;
         const eventsProven = () => !!marker && copilotEventsHaveMarker(sessionId, marker);
@@ -3156,6 +3156,11 @@ async function startAcpSession(options) {
             sent = true;
             if (!stillPending2() || recalled()) {
               if (!recalled() && !stillPending2()) noteStart();
+              finish(false);
+              return;
+            }
+            if (claim && !claim()) {
+              if (!recalled()) noteStart();
               finish(false);
               return;
             }
@@ -3251,7 +3256,8 @@ var HARNESSES = [
       fallbacks: ["claude-code-acp"],
       args: [],
       adapter: true,
-      installHint: "npm install -g @zed-industries/claude-agent-acp"
+      installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
+      replaces: "@zed-industries/claude-agent-acp"
     },
     install: {
       kind: "commands",
@@ -3267,7 +3273,9 @@ var HARNESSES = [
     passthroughBin: "codex",
     defaultMode: "acp",
     headless: "codex",
-    acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @zed-industries/codex-acp" },
+    // The ACP project's adapter runs Codex's own app-server. Zed's earlier one bundled a copy of Codex that fell
+    // behind the CLI and refused config.toml settings the CLI reads.
+    acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @agentclientprotocol/codex-acp", replaces: "@zed-industries/codex-acp" },
     install: {
       kind: "commands",
       steps: [
@@ -4220,7 +4228,15 @@ function startInboxPump(peerId2, inject) {
           continue;
         }
         const text = formatAsUserTurn(msg);
-        const ok = await inject(text, pending, withdrawn);
+        const claim = () => {
+          try {
+            fs17.renameSync(file, path20.join(ensureDir(archiveDir(id)), `${msg.id}.json`));
+            return true;
+          } catch {
+            return false;
+          }
+        };
+        const ok = await inject(text, pending, withdrawn, claim);
         if (withdrawn()) {
           done.add(msg.id);
           continue;
@@ -4283,7 +4299,7 @@ function readOffer(created) {
 }
 var tail = (value) => value.toLowerCase().split(/[#/]/).pop() ?? "";
 function autoMode(choices) {
-  for (const wanted of ["auto", "autopilot", "smart"]) {
+  for (const wanted of ["auto", "autopilot", "smart", "auto review"]) {
     const hit = choices.find((c) => tail(c.value) === wanted || c.name?.toLowerCase() === wanted);
     if (hit) return hit.value;
   }
@@ -4902,7 +4918,7 @@ function parentPresent(spec) {
 }
 function explainStartError(harness, bin, message) {
   if (harness !== "codex" || !/error loading config/i.test(message)) return message;
-  return `${message.replace(/\.?\s*$/, "")}. ${path23.basename(bin)} runs its own copy of Codex, which can be older than your codex CLI and not read a setting the CLI does. Update it (\`npm install -g @zed-industries/codex-acp\`); if it is already the latest, that setting has to come out of ~/.codex/config.toml (or its value change) until codex-acp catches up. telepathy does not edit that file.`;
+  return `${message.replace(/\.?\s*$/, "")}. This ${path23.basename(bin)} runs a Codex older than your codex CLI, which can't read a setting the CLI does: Zed's retired adapter does. \`telepathy update\` replaces it, or run \`npm uninstall -g @zed-industries/codex-acp && npm install -g @agentclientprotocol/codex-acp\`.`;
 }
 var RESULT_RETRIES = 3;
 var resultRetryMs = () => envDurationMs("TELEPATHY_AGENT_RESULT_RETRY_MS", 6e4);
@@ -5210,10 +5226,12 @@ Started by ${spec.parent.address} [${spec.parent.id}] at ${(/* @__PURE__ */ new 
     state.working = value;
     save();
   };
-  const submit = (text, stillPending2, withdrawn, onStart) => {
+  const submit = (text, stillPending2, withdrawn, onStart, claim) => {
     setWorking(true);
-    writeStatus(peerId2, "busy");
-    const accepted = session.prompt(text, stillPending2, withdrawn, onStart);
+    const accepted = session.prompt(text, stillPending2, withdrawn, () => {
+      writeStatus(peerId2, "busy");
+      onStart?.();
+    }, claim);
     void accepted.then((ok) => {
       if (!ok && !session.busy()) {
         setWorking(false);
@@ -5224,11 +5242,11 @@ Started by ${spec.parent.address} [${spec.parent.id}] at ${(/* @__PURE__ */ new 
   };
   const stopPump = startInboxPump(
     peerId2,
-    (text, stillPending2, withdrawn) => submit(text, stillPending2, withdrawn, () => write(`
+    (text, stillPending2, withdrawn, claim) => submit(text, stillPending2, withdrawn, () => write(`
 
 ## Message \xB7 ${now()}
 
-${text}`))
+${text}`), claim)
   );
   const task = {
     id: newMessageId(),

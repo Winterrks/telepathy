@@ -86,9 +86,9 @@ function parentPresent(spec: AgentSpec): boolean | undefined {
 export function explainStartError(harness: Agent, bin: string, message: string): string {
   if (harness !== 'codex' || !/error loading config/i.test(message)) return message;
   return (
-    `${message.replace(/\.?\s*$/, '')}. ${path.basename(bin)} runs its own copy of Codex, which can be older than your codex CLI and ` +
-    "not read a setting the CLI does. Update it (`npm install -g @zed-industries/codex-acp`); if it is already the latest, that " +
-    'setting has to come out of ~/.codex/config.toml (or its value change) until codex-acp catches up. telepathy does not edit that file.'
+    `${message.replace(/\.?\s*$/, '')}. This ${path.basename(bin)} runs a Codex older than your codex CLI, which can't read a setting ` +
+    'the CLI does: Zed\'s retired adapter does. `telepathy update` replaces it, or run ' +
+    '`npm uninstall -g @zed-industries/codex-acp && npm install -g @agentclientprotocol/codex-acp`.'
   );
 }
 
@@ -421,10 +421,14 @@ export async function runAgent(dir: string): Promise<number> {
     save();
   };
   /** A turn is running from now on, unless the agent never takes this prompt. */
-  const submit = (text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void) => {
+  const submit = (text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void, claim?: () => boolean) => {
     setWorking(true);
-    writeStatus(peerId, 'busy');
-    const accepted = session.prompt(text, stillPending, withdrawn, onStart);
+    // Busy only once the prompt goes: OpenCode's plugin steers what arrives while the agent is busy, and would
+    // otherwise take this very message.
+    const accepted = session.prompt(text, stillPending, withdrawn, () => {
+      writeStatus(peerId, 'busy');
+      onStart?.();
+    }, claim);
     void accepted.then((ok) => {
       if (!ok && !session.busy()) {
         setWorking(false);
@@ -433,8 +437,8 @@ export async function runAgent(dir: string): Promise<number> {
     });
     return accepted;
   };
-  const stopPump = startInboxPump(peerId, (text, stillPending, withdrawn) =>
-    submit(text, stillPending, withdrawn, () => write(`\n\n## Message · ${now()}\n\n${text}`)),
+  const stopPump = startInboxPump(peerId, (text, stillPending, withdrawn, claim) =>
+    submit(text, stillPending, withdrawn, () => write(`\n\n## Message · ${now()}\n\n${text}`), claim),
   );
 
   const task: Message = {

@@ -18,7 +18,7 @@ import { argvFlag } from '../src/core/argv.ts';
 import { codexCandidateBins, queueIntoCodex } from '../src/core/codex-queue.ts';
 import { explicitResume, parseRunArgs } from '../src/cli/run.ts';
 import { describePeer } from '../src/core/listing.ts';
-import { formatAsUserTurn, type Message, writeToInbox } from '../src/core/messages.ts';
+import { formatAsUserTurn, type Message, withdrawEverywhere, writeToInbox } from '../src/core/messages.ts';
 import { ROOT, fakeAgent, killAndWait, makeSandbox, type Sandbox } from './helpers.ts';
 
 const CLI = path.join(ROOT, 'src', 'cli.ts');
@@ -750,7 +750,7 @@ test('a missing ACP adapter says how to install it and that --tui is the vendor 
     const result = run(['run', 'codex'], env);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /`codex-acp` is not on PATH/);
-    assert.match(result.stderr, /npm install -g @zed-industries\/codex-acp/);
+    assert.match(result.stderr, /npm install -g @agentclientprotocol\/codex-acp/);
     assert.match(result.stderr, /`telepathy run --tui codex` starts the Codex CLI instead/);
     assert.equal(w.readLog().length, 0);
   } finally {
@@ -1328,15 +1328,22 @@ test('the real home state directory is untouched', () => {
   assert.equal(fs.existsSync(REAL_STATE), realStateBefore);
 });
 
-/** Moves the one inbox file aside, the way a hook claim (archive) or a recall (withdrawn) does. */
-function relocateInbox(peerId: string, destName: 'archive' | 'withdrawn'): string {
-  const srcDir = inboxDir(peerId);
-  const files = fs.readdirSync(srcDir).filter((name) => name.endsWith('.json'));
-  assert.equal(files.length, 1);
-  const dest = path.join(path.dirname(srcDir), destName);
-  fs.mkdirSync(dest, { recursive: true });
-  fs.renameSync(path.join(srcDir, files[0] as string), path.join(dest, files[0] as string));
-  return files[0] as string;
+const inboxFiles = (peerId: string) => {
+  try {
+    return fs.readdirSync(inboxDir(peerId)).filter((name) => /^m-.*\.json$/.test(name));
+  } catch {
+    return [];
+  }
+};
+
+/** The id of the message whose body has `text`, wherever it is now. */
+function messageIdWith(peerId: string, text: string): string {
+  for (const dir of [inboxDir(peerId), path.join(path.dirname(inboxDir(peerId)), 'archive')]) {
+    for (const name of fs.existsSync(dir) ? fs.readdirSync(dir) : []) {
+      if (fs.readFileSync(path.join(dir, name), 'utf8').includes(text)) return name.replace(/\.json$/, '');
+    }
+  }
+  throw new Error(`no message with ${text}`);
 }
 
 function statusOf(home: string, peerId: string): { status?: string; at?: string } {
@@ -1347,7 +1354,7 @@ function statusOf(home: string, peerId: string): { status?: string; at?: string 
   }
 }
 
-test('a hook claim does not cancel an ACP prompt, and a real withdraw does', async () => {
+test('the ACP host takes the message as its prompt goes, so no hook can claim it too, and a real withdraw still cancels it', async () => {
   const w = world({ FAKE_ACP_DELAY_MS: '800' });
   confirmEnv();
   process.env.TELEPATHY_CONFIRM_ABORT_MS = '4000';
@@ -1360,7 +1367,8 @@ test('a hook claim does not cancel an ACP prompt, and a real withdraw does', asy
     await waitFor(() =>
       w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('claim-not-cancel')) ? true : undefined,
     );
-    relocateInbox(peerId, 'archive');
+    // Out of the inbox before session/prompt went: a hook or in-process plugin finds nothing to deliver again.
+    assert.deepEqual(inboxFiles(peerId), []);
     const sent = await claimed;
     assert.equal(sent.ok, true, sent.ok ? '' : sent.error);
     assert.equal(w.readLog().some((entry) => entry.method === 'session/cancel'), false);
@@ -1370,7 +1378,8 @@ test('a hook claim does not cancel an ACP prompt, and a real withdraw does', asy
     await waitFor(() =>
       w.readLog().some((entry) => entry.method === 'session/prompt' && JSON.stringify(entry.params).includes('withdraw-cancels')) ? true : undefined,
     );
-    relocateInbox(peerId, 'withdrawn');
+    // The sender's withdraw takes it back from the archive, and the host cancels the turn.
+    assert.equal(withdrawEverywhere(peerId, messageIdWith(peerId, 'withdraw-cancels')), 'withdrawn');
     await waitFor(() => (w.readLog().some((entry) => entry.method === 'session/cancel') ? true : undefined));
     const failed = await recalled;
     assert.equal(failed.ok, false);

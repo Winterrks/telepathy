@@ -106,8 +106,8 @@ test('setup --dry-run plans installs, hook approval and adapters, and runs nothi
     const result = await cli(['setup', '--dry-run'], w.env);
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /Claude Code: would install: `claude plugin marketplace add Winterrks\/telepathy`/);
-    assert.match(result.stdout, /would run `npm install -g @zed-industries\/claude-agent-acp`/);
-    assert.match(result.stdout, /Codex: would install: .*; would approve telepathy's hooks .*; would run `npm install -g @zed-industries\/codex-acp`/);
+    assert.match(result.stdout, /would run `npm install -g @agentclientprotocol\/claude-agent-acp`/);
+    assert.match(result.stdout, /Codex: would install: .*; would approve telepathy's hooks .*; would run `npm install -g @agentclientprotocol\/codex-acp`/);
     assert.match(result.stdout, /Cursor.*: loads Claude Code's copy/);
     assert.match(result.stdout, /Hermes.*: Telepathy has no Hermes install command yet/);
     assert.equal(w.log().length, 0, JSON.stringify(w.log()));
@@ -126,7 +126,7 @@ test('setup approves new and changed Codex hooks, installs adapters, and is quie
     assert.match(first.stdout, /Claude Code: telepathy 0\.9\.0, current; installed claude-agent-acp/);
     assert.match(first.stdout, /Codex: telepathy 0\.9\.0, current; approved 3 hooks; installed codex-acp/);
     const npm = w.log().filter((entry) => entry.cmd === 'npm').map((entry) => entry.args?.join(' '));
-    assert.deepEqual(npm.sort(), ['install -g @zed-industries/claude-agent-acp', 'install -g @zed-industries/codex-acp']);
+    assert.deepEqual(npm.sort(), ['install -g @agentclientprotocol/claude-agent-acp', 'install -g @agentclientprotocol/codex-acp']);
     const writes = w.log().filter((entry) => entry.method === 'config/batchWrite');
     assert.equal(writes.length, 1);
     const edit = (writes[0]?.params as { edits: { keyPath: string; mergeStrategy: string; value: Record<string, { trusted_hash: string }> }[] }).edits[0];

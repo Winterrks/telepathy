@@ -22,7 +22,7 @@ start_agent(harness: "codex", description: "Review auth changes", prompt: "Revie
 - **Transcript:** `~/.telepathy/agents/<harness>-<name>/transcript.md`, with the task, each message it got, its text,
   and its tool calls.
 - **Mode, model, effort:** set over ACP from what the harness offers on `session/new`. The agent runs in auto mode:
-  its harness's own (`auto`, Copilot's `autopilot`, Devin's `smart`; never a bypass or yolo mode), or telepathy's
+  its harness's own (`auto`, Copilot's `autopilot`, Devin's `smart`, Codex's `agent` ("Auto review"); never a bypass or yolo mode), or telepathy's
   for a harness with none over ACP (Cursor, OpenCode, Kilo; see [Fewer permission requests](#fewer-permission-requests)). `model` matches an id or a
   unique part of one (`opus`, `gpt-5.5`); `effort` is the harness's own name for it. A model that does not exist is an
   error that lists what is there; an effort the harness has no setting for is noted.

@@ -23,6 +23,10 @@ describe('choosing mode and model', () => {
     assert.equal(autoMode([{ value: 'https://agentclientprotocol.com/protocol/session-modes#agent' }, { value: copilot }]), copilot);
     assert.equal(autoMode([{ value: 'accept-edits' }, { value: 'smart' }, { value: 'bypass' }]), 'smart');
     assert.equal(autoMode([{ value: 'build' }, { value: 'plan' }, { value: 'yolo' }]), undefined);
+    // Codex (@agentclientprotocol/codex-acp): `agent` is "Auto review"; Cursor's `agent` is not an auto mode.
+    const codex = [{ value: 'read-only', name: 'Read-only' }, { value: 'agent', name: 'Auto review' }, { value: 'agent-full-access', name: 'Full access' }];
+    assert.equal(autoMode(codex), 'agent');
+    assert.equal(autoMode([{ value: 'agent', name: 'Agent' }, { value: 'plan', name: 'Plan' }, { value: 'ask', name: 'Ask' }]), undefined);
   });
 
   test('only a single sign-in the agent runs itself is called; a terminal login is left to the user', () => {
@@ -116,8 +120,8 @@ describe('reports that are not the agent\'s work', () => {
 
   test('a Codex config the adapter cannot read says why', () => {
     const said = explainStartError('codex', '/opt/homebrew/bin/codex-acp', 'agent exited: Error: error loading config: config.toml:557:1: invalid type');
-    assert.match(said, /codex-acp runs its own copy of Codex/);
-    assert.match(said, /does not edit that file/);
+    assert.match(said, /This codex-acp runs a Codex older than your codex CLI/);
+    assert.match(said, /npm install -g @agentclientprotocol\/codex-acp/);
     assert.equal(explainStartError('opencode', 'opencode', 'error loading config'), 'error loading config');
   });
 });
@@ -402,7 +406,7 @@ describe('start_agent', () => {
       assert.equal(traversal.isError, true);
       assert.match(toolText(traversal), /is not a permission request id/);
       const codex = await client.callTool({ name: 'start_agent', arguments: { harness: 'codex', description: 'Review', prompt: 'x' } });
-      assert.match(toolText(codex), /^Not started: Codex needs `codex-acp` on PATH for ACP, and it is not there\. Install it with `npm install -g @zed-industries\/codex-acp`\./);
+      assert.match(toolText(codex), /^Not started: Codex needs `codex-acp` on PATH for ACP, and it is not there\. Install it with `npm install -g @agentclientprotocol\/codex-acp`\./);
     } finally {
       await client.close();
     }

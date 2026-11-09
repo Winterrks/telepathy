@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { agentLabel, isAgent, type Agent } from '../core/agents.ts';
 
 /** GitHub repo the harness install commands fetch. OpenCode's package name stays `telepathy`. */
@@ -30,6 +32,8 @@ export interface AcpLaunch {
   adapter: boolean;
   /** How to get a missing adapter. */
   installHint?: string;
+  /** An npm package that used to provide `bin` and is no longer updated: setup and update replace it. */
+  replaces?: string;
 }
 
 export interface Harness {
@@ -61,7 +65,8 @@ const HARNESSES: Harness[] = [
       fallbacks: ['claude-code-acp'],
       args: [],
       adapter: true,
-      installHint: 'npm install -g @zed-industries/claude-agent-acp',
+      installHint: 'npm install -g @agentclientprotocol/claude-agent-acp',
+      replaces: '@zed-industries/claude-agent-acp',
     },
     install: {
       kind: 'commands',
@@ -77,7 +82,9 @@ const HARNESSES: Harness[] = [
     passthroughBin: 'codex',
     defaultMode: 'acp',
     headless: 'codex',
-    acp: { bin: 'codex-acp', args: [], adapter: true, installHint: 'npm install -g @zed-industries/codex-acp' },
+    // The ACP project's adapter runs Codex's own app-server. Zed's earlier one bundled a copy of Codex that fell
+    // behind the CLI and refused config.toml settings the CLI reads.
+    acp: { bin: 'codex-acp', args: [], adapter: true, installHint: 'npm install -g @agentclientprotocol/codex-acp', replaces: '@zed-industries/codex-acp' },
     install: {
       kind: 'commands',
       steps: [
@@ -224,6 +231,23 @@ export function canonicalRunAgent(name: string | undefined): Agent | undefined {
   if (!name) return undefined;
   if (name === 'agy') return 'antigravity';
   return isAgent(name) ? name : undefined;
+}
+
+/** Where `cmd` resolves on PATH, links followed. */
+export function binPath(cmd: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  try {
+    const found = execFileSync(process.platform === 'win32' ? 'where' : 'which', [cmd], { env, encoding: 'utf8' }).split('\n')[0].trim();
+    return found ? fs.realpathSync(found) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The retired package that still provides this adapter here, if one does (`@zed-industries/codex-acp`). */
+export function retiredAdapter(acp: AcpLaunch, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!acp.replaces) return undefined;
+  const found = binPath(acp.bin, env);
+  return found && found.split(path.sep).join('/').includes(`/node_modules/${acp.replaces}/`) ? acp.replaces : undefined;
 }
 
 export function onPath(cmd: string, env: NodeJS.ProcessEnv = process.env): boolean {

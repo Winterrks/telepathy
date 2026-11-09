@@ -1,6 +1,6 @@
 # The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.14.1. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.14.2. Requires Node 20 or newer.
 
 Install it and set up every agent CLI it finds:
 
@@ -29,7 +29,7 @@ telepathy grokbot connect <name> <url> # a Grok Bot routine webhook as a session
 
 `telepathy setup` looks for every agent CLI on `PATH`. It installs telepathy where it is missing, updates a copy older
 than GitHub, approves telepathy's own Codex hooks, installs the Claude Code and Codex ACP adapters
-(`@zed-industries/claude-agent-acp`, `@zed-industries/codex-acp`) when they are missing, and enables the Antigravity
+(`@agentclientprotocol/claude-agent-acp`, `@agentclientprotocol/codex-acp`) when they are missing, replaces Zed's retired `@zed-industries` packages of the same names (`update` does too), and enables the Antigravity
 App sidecar. It prints one line per agent and then what is left for you: Cursor installs from the Marketplace tab of
 `/plugin`; Grok and Cursor load Claude Code's copy; Hermes, OpenClaw and Pi have no plugin. `--only claude,codex`
 limits it, `--no-hooks` and `--no-adapters` skip those steps, and `--dry-run` only prints the plan. It exits 1 when
@@ -48,7 +48,7 @@ sets, is not checked. `telepathy doctor` marks a held program `held by macOS` an
 
 ## Running an agent under telepathy's host
 
-`telepathy run <agent>` starts the agent in its ACP mode under telepathy's host, so an incoming message starts a turn even while the session is idle: `claude-agent-acp` (Claude Code; `claude-code-acp` is the older adapter name), `codex-acp` (Codex), `opencode acp`, `kilo acp`, `copilot --acp`, `qwen --acp`, `grok agent stdio`, `devin acp`, `cursor-agent acp`, `kimi acp`, and `agy acp` (alias `agy`; falls back to `antigravity acp`, `antigravity-acp`, or `agy_acp_server.par`). Claude Code and Codex need their adapters: `npm install -g @zed-industries/claude-agent-acp` and `npm install -g @zed-industries/codex-acp`. When one is missing, `run` says so and exits. `telepathy run --tui <agent>` execs the vendor CLI with your arguments and a full terminal instead. A session started that way, or started on its own without `telepathy run`, keeps its own TUI and is reachable through its plugin as before. Hermes, OpenClaw and Pi have no ACP mode and start their CLI. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. The ACP host has telepathy's tools when the agent's own plugin starts telepathy's MCP server, or when the agent accepts one from the host; otherwise it says the session has no telepathy tools, and the session can still receive.
+`telepathy run <agent>` starts the agent in its ACP mode under telepathy's host, so an incoming message starts a turn even while the session is idle: `claude-agent-acp` (Claude Code; `claude-code-acp` is the older adapter name), `codex-acp` (Codex), `opencode acp`, `kilo acp`, `copilot --acp`, `qwen --acp`, `grok agent stdio`, `devin acp`, `cursor-agent acp`, `kimi acp`, and `agy acp` (alias `agy`; falls back to `antigravity acp`, `antigravity-acp`, or `agy_acp_server.par`). Claude Code and Codex need their adapters: `npm install -g @agentclientprotocol/claude-agent-acp` and `npm install -g @agentclientprotocol/codex-acp`. The Codex adapter runs Codex's own app-server; Zed's earlier one bundled an older Codex that could refuse settings in `~/.codex/config.toml`. When one is missing, `run` says so and exits. `telepathy run --tui <agent>` execs the vendor CLI with your arguments and a full terminal instead. A session started that way, or started on its own without `telepathy run`, keeps its own TUI and is reachable through its plugin as before. Hermes, OpenClaw and Pi have no ACP mode and start their CLI. Telepathy is installed first if it is missing. A newer GitHub version is checked from the local cache and updated in the background, without blocking the session. The ACP host has telepathy's tools when the agent's own plugin starts telepathy's MCP server, or when the agent accepts one from the host; otherwise it says the session has no telepathy tools, and the session can still receive.
 
 ## Hosted and headless sessions
 

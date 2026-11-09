@@ -1,6 +1,6 @@
 {
   "name": "telepathy",
-  "version": "0.14.1",
+  "version": "0.14.2",
   "description": "Telepathy for your coding agents: this Codex session can message Claude Code, OpenCode, Antigravity and other agent sessions on this machine and your other devices, and their messages start a turn here. Messages stay on this machine in ~/.telepathy unless you start telepathy bridge, which talks only to your own devices, or connect a Grok Bot. No telemetry; otherwise its only network calls are version checks and updates.",
   "author": {
     "name": "Winterrks"

@@ -260,7 +260,7 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
   if (memoryPeer) rememberHarnessSession(memoryPeer, session.sessionId);
   const stopPump = startInboxPump(
     hosted?.peerId ?? pluginId ?? (() => pluginInboxPeerId(harness.agent, name, session.sessionId)),
-    (text, stillPending, withdrawn) => session.prompt(text, stillPending, withdrawn),
+    (text, stillPending, withdrawn, claim) => session.prompt(text, stillPending, withdrawn, undefined, claim),
   );
   const shutdown = () => session.close();
   process.on('SIGTERM', shutdown);

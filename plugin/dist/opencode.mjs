@@ -20036,7 +20036,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.14.1" : "0.0.0-dev";
+var VERSION = true ? "0.14.2" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -22959,7 +22959,8 @@ var HARNESSES = [
       fallbacks: ["claude-code-acp"],
       args: [],
       adapter: true,
-      installHint: "npm install -g @zed-industries/claude-agent-acp"
+      installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
+      replaces: "@zed-industries/claude-agent-acp"
     },
     install: {
       kind: "commands",
@@ -22975,7 +22976,9 @@ var HARNESSES = [
     passthroughBin: "codex",
     defaultMode: "acp",
     headless: "codex",
-    acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @zed-industries/codex-acp" },
+    // The ACP project's adapter runs Codex's own app-server. Zed's earlier one bundled a copy of Codex that fell
+    // behind the CLI and refused config.toml settings the CLI reads.
+    acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @agentclientprotocol/codex-acp", replaces: "@zed-industries/codex-acp" },
     install: {
       kind: "commands",
       steps: [

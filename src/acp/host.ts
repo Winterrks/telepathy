@@ -58,7 +58,11 @@ export interface AcpSession {
   /** Stop reading stdin so a dead agent does not wait for Ctrl-D. */
   releaseStdin(): void;
   /** Resolves once the agent has accepted the turn, which may be before the turn finishes. */
-  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void): Promise<boolean>;
+  /**
+   * `claim` takes the message out of the inbox as the prompt goes out; false means something else (an in-process
+   * plugin steering a running turn) took it first, and this prompt is not sent.
+   */
+  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void, claim?: () => boolean): Promise<boolean>;
   /**
    * True when `resumeSessionId` was loaded. False when that load failed or returned a different id,
    * including a Copilot session that was stopped before it ever had a turn.
@@ -595,7 +599,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean, onStart?: () => void): Promise<boolean> {
+      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean, onStart?: () => void, claim?: () => boolean): Promise<boolean> {
         // Callers that only know "still in the inbox" keep the old cancel. The inbox pump passes
         // `withdrawn` so a hook claim is not treated as a recall.
         const recalled = withdrawn ?? (() => !stillPending());
@@ -680,6 +684,13 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             sent = true;
             if (!stillPending() || recalled()) {
               if (!recalled() && !stillPending()) noteStart();
+              finish(false);
+              return;
+            }
+            // Out of the inbox before the prompt goes, so an in-process plugin (OpenCode 2's `steer`) can't also
+            // deliver it, or take it and start the turn outside this prompt, where its tool calls go unseen.
+            if (claim && !claim()) {
+              if (!recalled()) noteStart();
               finish(false);
               return;
             }

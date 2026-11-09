@@ -580,7 +580,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.14.1" : "0.0.0-dev";
+    VERSION = true ? "0.14.2" : "0.0.0-dev";
   }
 });
 
@@ -719,6 +719,202 @@ var init_proc = __esm({
   }
 });
 
+// src/cli/harnesses.ts
+import { execFileSync as execFileSync4 } from "node:child_process";
+import fs17 from "node:fs";
+import path19 from "node:path";
+function binPath(cmd, env = process.env) {
+  try {
+    const found = execFileSync4(process.platform === "win32" ? "where" : "which", [cmd], { env, encoding: "utf8" }).split("\n")[0].trim();
+    return found ? fs17.realpathSync(found) : void 0;
+  } catch {
+    return void 0;
+  }
+}
+function retiredAdapter(acp, env = process.env) {
+  if (!acp.replaces) return void 0;
+  const found = binPath(acp.bin, env);
+  return found && found.split(path19.sep).join("/").includes(`/node_modules/${acp.replaces}/`) ? acp.replaces : void 0;
+}
+var REPO, OPENCODE_SPEC, HARNESSES, harnesses;
+var init_harnesses = __esm({
+  "src/cli/harnesses.ts"() {
+    "use strict";
+    init_agents();
+    REPO = "https://github.com/Winterrks/telepathy";
+    OPENCODE_SPEC = `telepathy@git+${REPO}.git`;
+    HARNESSES = [
+      {
+        agent: "claude",
+        bins: ["claude"],
+        passthroughBin: "claude",
+        defaultMode: "acp",
+        headless: "claude",
+        acp: {
+          bin: "claude-agent-acp",
+          fallbacks: ["claude-code-acp"],
+          args: [],
+          adapter: true,
+          installHint: "npm install -g @agentclientprotocol/claude-agent-acp",
+          replaces: "@zed-industries/claude-agent-acp"
+        },
+        install: {
+          kind: "commands",
+          steps: [
+            { cmd: "claude", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
+            { cmd: "claude", args: ["plugin", "install", "telepathy@telepathy"] }
+          ]
+        }
+      },
+      {
+        agent: "codex",
+        bins: ["codex"],
+        passthroughBin: "codex",
+        defaultMode: "acp",
+        headless: "codex",
+        // The ACP project's adapter runs Codex's own app-server. Zed's earlier one bundled a copy of Codex that fell
+        // behind the CLI and refused config.toml settings the CLI reads.
+        acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @agentclientprotocol/codex-acp", replaces: "@zed-industries/codex-acp" },
+        install: {
+          kind: "commands",
+          steps: [
+            { cmd: "codex", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
+            { cmd: "codex", args: ["plugin", "add", "telepathy@telepathy"] }
+          ]
+        }
+      },
+      {
+        agent: "opencode",
+        bins: ["opencode"],
+        passthroughBin: "opencode",
+        defaultMode: "acp",
+        headless: "opencode",
+        acp: { bin: "opencode", args: ["acp"], adapter: false },
+        install: { kind: "commands", steps: [{ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC] }] }
+      },
+      {
+        agent: "kilo",
+        bins: ["kilo", "kilocode"],
+        passthroughBin: "kilo",
+        defaultMode: "acp",
+        headless: "opencode",
+        acp: { bin: "kilo", fallbacks: ["kilocode"], args: ["acp"], adapter: false },
+        install: { kind: "kilo-config" }
+      },
+      {
+        agent: "copilot",
+        bins: ["copilot"],
+        passthroughBin: "copilot",
+        defaultMode: "acp",
+        headless: "acp",
+        acp: { bin: "copilot", args: ["--acp"], adapter: false },
+        install: {
+          kind: "commands",
+          steps: [
+            { cmd: "copilot", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
+            { cmd: "copilot", args: ["plugin", "install", "telepathy@telepathy"] }
+          ]
+        }
+      },
+      {
+        agent: "qwen",
+        bins: ["qwen"],
+        passthroughBin: "qwen",
+        defaultMode: "acp",
+        headless: "acp",
+        deliveryNote: "Qwen Code cannot wake an idle session; a message arrives on the next turn.",
+        acp: { bin: "qwen", args: ["--acp"], adapter: false },
+        install: {
+          kind: "commands",
+          steps: [{ cmd: "qwen", args: ["extensions", "install", `${REPO}/archive/refs/heads/main.tar.gz`, "--auto-update"] }]
+        }
+      },
+      {
+        agent: "grok",
+        bins: ["grok"],
+        passthroughBin: "grok",
+        defaultMode: "acp",
+        acp: { bin: "grok", args: ["agent", "stdio"], adapter: false },
+        deliveryNote: "Grok wakes an idle session only after it starts the telepathy monitor, on its first prompt.",
+        install: {
+          kind: "commands",
+          steps: [{ cmd: "grok", args: ["plugin", "install", "Winterrks/telepathy#plugin", "--trust"] }]
+        }
+      },
+      {
+        agent: "devin",
+        bins: ["devin"],
+        passthroughBin: "devin",
+        defaultMode: "acp",
+        acp: { bin: "devin", args: ["acp"], adapter: false },
+        deliveryNote: "Devin cannot wake an idle session; a message arrives on the next turn.",
+        install: { kind: "commands", steps: [{ cmd: "devin", args: ["plugins", "install", "Winterrks/telepathy#plugin"] }] }
+      },
+      {
+        agent: "antigravity",
+        bins: ["agy", "antigravity"],
+        passthroughBin: "agy",
+        defaultMode: "acp",
+        headless: "antigravity",
+        deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
+        acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
+        install: {
+          kind: "commands",
+          steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }],
+          note: "Enables the App sidecar in ~/.gemini/config/config.json. A leftover ~/.gemini/extensions/telepathy is removed so `agy plugin import gemini` does not install telepathy twice."
+        }
+      },
+      {
+        agent: "cursor",
+        bins: ["cursor-agent"],
+        passthroughBin: "cursor-agent",
+        defaultMode: "acp",
+        acp: { bin: "cursor-agent", args: ["acp"], adapter: false },
+        deliveryNote: "Cursor hands a message over after the next tool call; it does not wake an idle session.",
+        install: {
+          kind: "commands",
+          steps: [{ cmd: "cursor-agent", args: ["plugin", "marketplace", "add", REPO] }],
+          note: "Then install telepathy from the Marketplace tab of /plugin in the Cursor CLI."
+        }
+      },
+      {
+        agent: "kimi",
+        bins: ["kimi", "kimi-code"],
+        passthroughBin: "kimi",
+        defaultMode: "acp",
+        acp: { bin: "kimi", fallbacks: ["kimi-code"], args: ["acp"], adapter: false },
+        deliveryNote: "Kimi Code cannot wake an idle session; a message arrives on the next turn.",
+        install: { kind: "kimi" }
+      },
+      {
+        agent: "hermes",
+        bins: ["hermes"],
+        passthroughBin: "hermes",
+        defaultMode: "passthrough",
+        deliveryNote: "Telepathy has no Hermes plugin yet. The process starts, and it will not see messages.",
+        install: { kind: "none", instructions: "Telepathy has no Hermes install command yet." }
+      },
+      {
+        agent: "openclaw",
+        bins: ["openclaw"],
+        passthroughBin: "openclaw",
+        defaultMode: "passthrough",
+        deliveryNote: "Telepathy has no OpenClaw plugin yet. The process starts, and it will not see messages.",
+        install: { kind: "none", instructions: "Telepathy has no OpenClaw install command yet." }
+      },
+      {
+        agent: "pi",
+        bins: ["pi"],
+        passthroughBin: "pi",
+        defaultMode: "passthrough",
+        deliveryNote: "Telepathy has no Pi plugin yet. The process starts, and it will not see messages.",
+        install: { kind: "none", instructions: "Telepathy has no Pi install command yet." }
+      }
+    ];
+    harnesses = () => HARNESSES;
+  }
+});
+
 // src/acp/rpc.ts
 var LineRpc;
 var init_rpc = __esm({
@@ -798,15 +994,15 @@ var init_rpc = __esm({
 });
 
 // src/core/gatekeeper.ts
-import { execFileSync as execFileSync4, spawn as spawn3 } from "node:child_process";
-import fs17 from "node:fs";
-import path19 from "node:path";
+import { execFileSync as execFileSync5, spawn as spawn3 } from "node:child_process";
+import fs18 from "node:fs";
+import path20 from "node:path";
 function executablePath(cmd, env = process.env) {
-  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path19.delimiter).filter(Boolean).map((dir) => path19.join(dir, cmd));
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path20.delimiter).filter(Boolean).map((dir) => path20.join(dir, cmd));
   for (const file of candidates) {
     try {
-      fs17.accessSync(file, fs17.constants.X_OK);
-      if (fs17.statSync(file).isFile()) return fs17.realpathSync(file);
+      fs18.accessSync(file, fs18.constants.X_OK);
+      if (fs18.statSync(file).isFile()) return fs18.realpathSync(file);
     } catch {
     }
   }
@@ -818,7 +1014,7 @@ function unapprovedDownload(cmd, env = process.env) {
   if (!file) return void 0;
   let value;
   try {
-    value = execFileSync4("/usr/bin/xattr", ["-p", "com.apple.quarantine", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
+    value = execFileSync5("/usr/bin/xattr", ["-p", "com.apple.quarantine", file], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 5e3 });
   } catch {
     return void 0;
   }
@@ -970,9 +1166,9 @@ var init_codex_hooks = __esm({
 });
 
 // src/core/kimi-plugin.ts
-import { execFileSync as execFileSync5 } from "node:child_process";
-import fs18 from "node:fs";
-import path20 from "node:path";
+import { execFileSync as execFileSync6 } from "node:child_process";
+import fs19 from "node:fs";
+import path21 from "node:path";
 function parseSource(source) {
   let url;
   try {
@@ -1009,18 +1205,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version = JSON.parse(fs18.readFileSync(path20.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version = JSON.parse(fs19.readFileSync(path21.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path20.join(kimiHome(), "plugins");
-  fs18.mkdirSync(dir, { recursive: true });
-  const final = path20.join(dir, "installed.json");
-  fs18.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs18.renameSync(`${final}.tmp`, final);
+  const dir = path21.join(kimiHome(), "plugins");
+  fs19.mkdirSync(dir, { recursive: true });
+  const final = path21.join(dir, "installed.json");
+  fs19.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs19.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -1037,15 +1233,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path20.join(home2, "plugins", "managed", ID);
+    const managed = path21.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path20.dirname(managed);
-    fs18.mkdirSync(parent, { recursive: true });
-    const staging = fs18.mkdtempSync(path20.join(parent, `${ID}-`));
+    const parent = path21.dirname(managed);
+    fs19.mkdirSync(parent, { recursive: true });
+    const staging = fs19.mkdtempSync(path21.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -1053,22 +1249,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs18.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
-      execFileSync5("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
+      fs19.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      execFileSync6("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version = readManifestVersion(staging);
       if (!version) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs18.renameSync(managed, previous);
+        fs19.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs18.renameSync(staging, managed);
+      fs19.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs18.realpathSync(managed),
+        root: fs19.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -1079,16 +1275,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs18.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs19.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version} (${ref.value}, ${sha.slice(0, 12)})`, version, changed: true };
     } catch (err) {
-      fs18.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs18.renameSync(previous, managed);
+      fs19.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs19.renameSync(previous, managed);
       throw err;
     } finally {
-      fs18.rmSync(archive, { force: true });
-      fs18.rmSync(staging, { recursive: true, force: true });
+      fs19.rmSync(archive, { force: true });
+      fs19.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -1107,7 +1303,7 @@ var init_kimi_plugin = __esm({
 });
 
 // src/version-check.ts
-import path21 from "node:path";
+import path22 from "node:path";
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -1134,15 +1330,15 @@ var init_version_check = __esm({
     "use strict";
     init_paths();
     DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path21.join(stateDir(), "github-version.json");
+    cacheFile = () => path22.join(stateDir(), "github-version.json");
   }
 });
 
 // src/update-all.ts
 import { spawn as spawn5 } from "node:child_process";
-import fs19 from "node:fs";
+import fs20 from "node:fs";
 import os9 from "node:os";
-import path22 from "node:path";
+import path23 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -1160,7 +1356,7 @@ function stepsFor(install) {
     case "devin":
       return [{ cmd: "devin", args: ["plugins", "update", "telepathy"] }];
     case "antigravity":
-      return [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }];
+      return [{ cmd: "agy", args: ["plugin", "install", `${REPO2}/tree/main/antigravity`] }];
     case "opencode":
       return isOpencodeNpmInstall(install) ? "opencode-npm" : "cache";
     case "kimi":
@@ -1202,35 +1398,35 @@ async function runHarnessCommand({ cmd, args }, cwd = os9.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path22.join(process.env.XDG_CACHE_HOME || path22.join(os9.homedir(), ".cache"), install.agent, "packages");
-  const relative = path22.relative(packages, install.dir).split(path22.sep);
-  const entry = path22.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path22.join(path22.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs19.renameSync(entry, aside);
+  const packages = path23.join(process.env.XDG_CACHE_HOME || path23.join(os9.homedir(), ".cache"), install.agent, "packages");
+  const relative = path23.relative(packages, install.dir).split(path23.sep);
+  const entry = path23.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path23.join(path23.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs20.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs19.rmSync(aside, { recursive: true, force: true });
+    fs20.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs19.rmSync(entry, { recursive: true, force: true });
-  fs19.renameSync(aside, entry);
+  fs20.rmSync(entry, { recursive: true, force: true });
+  fs20.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path22.join(process.env.XDG_CACHE_HOME || path22.join(os9.homedir(), ".cache"), "opencode");
-  const npm = path22.join(opencodeCache, "npm");
-  const entry = path22.join(npm, path22.relative(npm, install.dir).split(path22.sep)[0] ?? "");
-  const aside = path22.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs19.renameSync(entry, aside);
-  const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC] });
+  const opencodeCache = path23.join(process.env.XDG_CACHE_HOME || path23.join(os9.homedir(), ".cache"), "opencode");
+  const npm = path23.join(opencodeCache, "npm");
+  const entry = path23.join(npm, path23.relative(npm, install.dir).split(path23.sep)[0] ?? "");
+  const aside = path23.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs20.renameSync(entry, aside);
+  const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs19.rmSync(aside, { recursive: true, force: true });
+    fs20.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs19.rmSync(entry, { recursive: true, force: true });
-  fs19.renameSync(aside, entry);
+  fs20.rmSync(entry, { recursive: true, force: true });
+  fs20.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -1245,9 +1441,21 @@ async function updateInstall(install) {
 function describeUpdate(install) {
   const steps = stepsFor(install);
   if (steps === "cache") return `clear its package cache and run \`${install.agent} debug config\` to reinstall`;
-  if (steps === "opencode-npm") return `move its package folder aside and run \`opencode plugin add ${OPENCODE_SPEC}\` to reinstall`;
+  if (steps === "opencode-npm") return `move its package folder aside and run \`opencode plugin add ${OPENCODE_SPEC2}\` to reinstall`;
   if (steps === "kimi") return "download the latest release into ~/.kimi-code/plugins/managed/telepathy, as `/plugins install` does";
   return steps.map((s) => `\`${[s.cmd, ...s.args].join(" ")}\``).join(", then ");
+}
+async function replaceRetiredAdapter(harness, dryRun = false) {
+  const acp = harness.acp;
+  const old = acp ? retiredAdapter(acp) : void 0;
+  if (!acp?.installHint || !old) return void 0;
+  const [cmd, ...rest] = acp.installHint.split(" ");
+  if (dryRun) return { ok: true, text: `would replace ${old} with \`${acp.installHint}\`` };
+  const removed = await runHarnessCommand({ cmd: "npm", args: ["uninstall", "-g", old] });
+  const added = removed.ok ? await runHarnessCommand({ cmd, args: rest }) : removed;
+  if (added.ok) return { ok: true, text: `replaced ${old}, which is no longer updated, with ${rest.at(-1)}` };
+  const tail = added.output.split("\n").map((line) => line.trim()).filter(Boolean).at(-1) ?? "failed";
+  return { ok: false, text: `could not replace ${old} (${tail}); run \`npm uninstall -g ${old} && ${acp.installHint}\`` };
 }
 async function retrustChangedCodexHooks(say) {
   const result = await trustTelepathyCodexHooks(["modified"]);
@@ -1325,6 +1533,10 @@ async function updateAll(options = {}) {
     );
   }
   if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
+  for (const harness of harnesses()) {
+    const replaced = await replaceRetiredAdapter(harness);
+    if (replaced) say(`${agentLabel(harness.agent)}: ${replaced.text}.`);
+  }
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`
@@ -1339,12 +1551,13 @@ function invokedAsUpdateAll() {
   const entry = process.argv[1] ?? "";
   return /(?:^|[/\\])update-all\.(?:mjs|ts|js)$/.test(entry);
 }
-var REPO, OPENCODE_SPEC, STEP_TIMEOUT_MS, lastLine, alreadyCurrent;
+var REPO2, OPENCODE_SPEC2, STEP_TIMEOUT_MS, lastLine, alreadyCurrent;
 var init_update_all = __esm({
   async "src/update-all.ts"() {
     "use strict";
     await init_cli_self_update();
     init_agents();
+    init_harnesses();
     init_codex_hooks();
     init_gatekeeper();
     init_installs();
@@ -1352,8 +1565,8 @@ var init_update_all = __esm({
     init_paths();
     init_sandbox_launch();
     init_version_check();
-    REPO = "https://github.com/Winterrks/telepathy";
-    OPENCODE_SPEC = `telepathy@git+${REPO}.git`;
+    REPO2 = "https://github.com/Winterrks/telepathy";
+    OPENCODE_SPEC2 = `telepathy@git+${REPO2}.git`;
     STEP_TIMEOUT_MS = 18e4;
     lastLine = (text) => text.split("\n").map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trim()).filter(Boolean).at(-1) ?? "";
     alreadyCurrent = (install, latest) => !!latest && !isNewer(latest, install.version);
@@ -1365,20 +1578,20 @@ var init_update_all = __esm({
 });
 
 // src/cli-self-update.ts
-import { execFileSync as execFileSync6 } from "node:child_process";
-import fs20 from "node:fs";
-import path23 from "node:path";
+import { execFileSync as execFileSync7 } from "node:child_process";
+import fs21 from "node:fs";
+import path24 from "node:path";
 function globalCliDir() {
   if (inTestSandbox()) return void 0;
   let root;
   try {
-    root = execFileSync6("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    root = execFileSync7("npm", ["root", "-g"], { encoding: "utf8", timeout: 15e3, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
     return void 0;
   }
-  const dir = path23.join(root, PACKAGE);
+  const dir = path24.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs20.readFileSync(path23.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs21.readFileSync(path24.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -1386,7 +1599,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version = JSON.parse(fs20.readFileSync(path23.join(dir, "package.json"), "utf8")).version;
+    const version = JSON.parse(fs21.readFileSync(path24.join(dir, "package.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
@@ -1441,19 +1654,19 @@ __export(auto_update_exports, {
   setAutoUpdate: () => setAutoUpdate
 });
 import { spawn as spawn6 } from "node:child_process";
-import fs21 from "node:fs";
-import path24 from "node:path";
+import fs22 from "node:fs";
+import path25 from "node:path";
 import { fileURLToPath } from "node:url";
 function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path24.join(stateDir(), "config.json"));
+  const cfg = readJson(path25.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 function setAutoUpdate(on) {
-  const file = path24.join(stateDir(), "config.json");
+  const file = path25.join(stateDir(), "config.json");
   const cfg = readJson(file) ?? {};
   cfg.autoUpdate = on;
   writeJsonAtomic(file, cfg);
@@ -1468,7 +1681,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs21.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs22.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -1476,10 +1689,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path24.dirname(fileURLToPath(import.meta.url));
+  const dir = path25.dirname(fileURLToPath(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path24.join(dir, name);
-    if (fs21.existsSync(candidate)) return candidate;
+    const candidate = path25.join(dir, name);
+    if (fs22.existsSync(candidate)) return candidate;
   }
   return fileURLToPath(import.meta.url);
 }
@@ -1502,9 +1715,9 @@ function scheduleAutoUpdate(reason, options = {}) {
 function acquireLock() {
   ensureDir(stateDir());
   try {
-    const fd = fs21.openSync(lockFile(), "wx", 384);
-    fs21.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
-    fs21.closeSync(fd);
+    const fd = fs22.openSync(lockFile(), "wx", 384);
+    fs22.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs22.closeSync(fd);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") return false;
@@ -1513,7 +1726,7 @@ function acquireLock() {
     const alive = typeof info?.pid === "number" && isAlive(info.pid);
     if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
     try {
-      fs21.rmSync(lockFile(), { force: true });
+      fs22.rmSync(lockFile(), { force: true });
     } catch {
       return false;
     }
@@ -1522,7 +1735,7 @@ function acquireLock() {
 }
 function releaseLock() {
   const info = readJson(lockFile());
-  if (info?.pid === process.pid) fs21.rmSync(lockFile(), { force: true });
+  if (info?.pid === process.pid) fs22.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
   const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === "1";
@@ -1586,15 +1799,15 @@ var init_auto_update = __esm({
     await init_update_all();
     init_version_check();
     DAY_MS = 24 * 60 * 60 * 1e3;
-    stampFile = () => path24.join(stateDir(), "auto-update.json");
-    lockFile = () => path24.join(stateDir(), "auto-update.lock");
-    logFile = () => path24.join(stateDir(), "auto-update.log");
+    stampFile = () => path25.join(stateDir(), "auto-update.json");
+    lockFile = () => path25.join(stateDir(), "auto-update.lock");
+    logFile = () => path25.join(stateDir(), "auto-update.log");
   }
 });
 
 // src/hook.ts
-import fs24 from "node:fs";
-import path28 from "node:path";
+import fs25 from "node:fs";
+import path29 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/core/claude-socket.ts
@@ -4183,32 +4396,32 @@ var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
 var UNREACHABLE = "TELEPATHY_UNREACHABLE";
-var requestAad = (path29, from, to) => `req ${path29} ${from}->${to}`;
-var responseAad = (path29, from, to, nonce) => `res ${path29} ${from}->${to} ${nonce}`;
+var requestAad = (path30, from, to) => `req ${path30} ${from}->${to}`;
+var responseAad = (path30, from, to, nonce) => `res ${path30} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
 var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
-async function call(target, path29, body, timeoutMs2, signal) {
+async function call(target, path30, body, timeoutMs2, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire = { device: self.id, name: self.name };
-  if (key) wire.sealed = seal(key, requestAad(path29, self.id, target.id), body);
+  if (key) wire.sealed = seal(key, requestAad(path30, self.id, target.id), body);
   else wire.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path29);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path30);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path29}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path30}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path29, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
+    body: JSON.stringify(reverse ? { device: target.id, route: path30, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply2 = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply2.error) throw Object.assign(new Error(reply2.error), reverse && reply2.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply2.sealed || !wire.sealed) throw new Error("the answer was not sealed");
-    return open(key, responseAad(path29, self.id, target.id, wire.sealed.n), reply2.sealed);
+    return open(key, responseAad(path30, self.id, target.id, wire.sealed.n), reply2.sealed);
   }
   return reply2.body;
 }
@@ -4540,193 +4753,21 @@ function argvFlag(argv, name) {
 }
 
 // src/agent/task.ts
-import fs22 from "node:fs";
-import os10 from "node:os";
-import path25 from "node:path";
-
-// src/cli/harnesses.ts
-init_agents();
-var REPO2 = "https://github.com/Winterrks/telepathy";
-var OPENCODE_SPEC2 = `telepathy@git+${REPO2}.git`;
-var HARNESSES = [
-  {
-    agent: "claude",
-    bins: ["claude"],
-    passthroughBin: "claude",
-    defaultMode: "acp",
-    headless: "claude",
-    acp: {
-      bin: "claude-agent-acp",
-      fallbacks: ["claude-code-acp"],
-      args: [],
-      adapter: true,
-      installHint: "npm install -g @zed-industries/claude-agent-acp"
-    },
-    install: {
-      kind: "commands",
-      steps: [
-        { cmd: "claude", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
-        { cmd: "claude", args: ["plugin", "install", "telepathy@telepathy"] }
-      ]
-    }
-  },
-  {
-    agent: "codex",
-    bins: ["codex"],
-    passthroughBin: "codex",
-    defaultMode: "acp",
-    headless: "codex",
-    acp: { bin: "codex-acp", args: [], adapter: true, installHint: "npm install -g @zed-industries/codex-acp" },
-    install: {
-      kind: "commands",
-      steps: [
-        { cmd: "codex", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
-        { cmd: "codex", args: ["plugin", "add", "telepathy@telepathy"] }
-      ]
-    }
-  },
-  {
-    agent: "opencode",
-    bins: ["opencode"],
-    passthroughBin: "opencode",
-    defaultMode: "acp",
-    headless: "opencode",
-    acp: { bin: "opencode", args: ["acp"], adapter: false },
-    install: { kind: "commands", steps: [{ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] }] }
-  },
-  {
-    agent: "kilo",
-    bins: ["kilo", "kilocode"],
-    passthroughBin: "kilo",
-    defaultMode: "acp",
-    headless: "opencode",
-    acp: { bin: "kilo", fallbacks: ["kilocode"], args: ["acp"], adapter: false },
-    install: { kind: "kilo-config" }
-  },
-  {
-    agent: "copilot",
-    bins: ["copilot"],
-    passthroughBin: "copilot",
-    defaultMode: "acp",
-    headless: "acp",
-    acp: { bin: "copilot", args: ["--acp"], adapter: false },
-    install: {
-      kind: "commands",
-      steps: [
-        { cmd: "copilot", args: ["plugin", "marketplace", "add", "Winterrks/telepathy"] },
-        { cmd: "copilot", args: ["plugin", "install", "telepathy@telepathy"] }
-      ]
-    }
-  },
-  {
-    agent: "qwen",
-    bins: ["qwen"],
-    passthroughBin: "qwen",
-    defaultMode: "acp",
-    headless: "acp",
-    deliveryNote: "Qwen Code cannot wake an idle session; a message arrives on the next turn.",
-    acp: { bin: "qwen", args: ["--acp"], adapter: false },
-    install: {
-      kind: "commands",
-      steps: [{ cmd: "qwen", args: ["extensions", "install", `${REPO2}/archive/refs/heads/main.tar.gz`, "--auto-update"] }]
-    }
-  },
-  {
-    agent: "grok",
-    bins: ["grok"],
-    passthroughBin: "grok",
-    defaultMode: "acp",
-    acp: { bin: "grok", args: ["agent", "stdio"], adapter: false },
-    deliveryNote: "Grok wakes an idle session only after it starts the telepathy monitor, on its first prompt.",
-    install: {
-      kind: "commands",
-      steps: [{ cmd: "grok", args: ["plugin", "install", "Winterrks/telepathy#plugin", "--trust"] }]
-    }
-  },
-  {
-    agent: "devin",
-    bins: ["devin"],
-    passthroughBin: "devin",
-    defaultMode: "acp",
-    acp: { bin: "devin", args: ["acp"], adapter: false },
-    deliveryNote: "Devin cannot wake an idle session; a message arrives on the next turn.",
-    install: { kind: "commands", steps: [{ cmd: "devin", args: ["plugins", "install", "Winterrks/telepathy#plugin"] }] }
-  },
-  {
-    agent: "antigravity",
-    bins: ["agy", "antigravity"],
-    passthroughBin: "agy",
-    defaultMode: "acp",
-    headless: "antigravity",
-    deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
-    acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
-    install: {
-      kind: "commands",
-      steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO2}/tree/main/antigravity`] }],
-      note: "Enables the App sidecar in ~/.gemini/config/config.json. A leftover ~/.gemini/extensions/telepathy is removed so `agy plugin import gemini` does not install telepathy twice."
-    }
-  },
-  {
-    agent: "cursor",
-    bins: ["cursor-agent"],
-    passthroughBin: "cursor-agent",
-    defaultMode: "acp",
-    acp: { bin: "cursor-agent", args: ["acp"], adapter: false },
-    deliveryNote: "Cursor hands a message over after the next tool call; it does not wake an idle session.",
-    install: {
-      kind: "commands",
-      steps: [{ cmd: "cursor-agent", args: ["plugin", "marketplace", "add", REPO2] }],
-      note: "Then install telepathy from the Marketplace tab of /plugin in the Cursor CLI."
-    }
-  },
-  {
-    agent: "kimi",
-    bins: ["kimi", "kimi-code"],
-    passthroughBin: "kimi",
-    defaultMode: "acp",
-    acp: { bin: "kimi", fallbacks: ["kimi-code"], args: ["acp"], adapter: false },
-    deliveryNote: "Kimi Code cannot wake an idle session; a message arrives on the next turn.",
-    install: { kind: "kimi" }
-  },
-  {
-    agent: "hermes",
-    bins: ["hermes"],
-    passthroughBin: "hermes",
-    defaultMode: "passthrough",
-    deliveryNote: "Telepathy has no Hermes plugin yet. The process starts, and it will not see messages.",
-    install: { kind: "none", instructions: "Telepathy has no Hermes install command yet." }
-  },
-  {
-    agent: "openclaw",
-    bins: ["openclaw"],
-    passthroughBin: "openclaw",
-    defaultMode: "passthrough",
-    deliveryNote: "Telepathy has no OpenClaw plugin yet. The process starts, and it will not see messages.",
-    install: { kind: "none", instructions: "Telepathy has no OpenClaw install command yet." }
-  },
-  {
-    agent: "pi",
-    bins: ["pi"],
-    passthroughBin: "pi",
-    defaultMode: "passthrough",
-    deliveryNote: "Telepathy has no Pi plugin yet. The process starts, and it will not see messages.",
-    install: { kind: "none", instructions: "Telepathy has no Pi install command yet." }
-  }
-];
-var harnesses = () => HARNESSES;
-
-// src/agent/task.ts
+init_harnesses();
 init_agents();
 init_paths();
 init_proc();
+import fs23 from "node:fs";
+import os10 from "node:os";
+import path26 from "node:path";
 var taskHarnesses = () => harnesses().filter((h) => h.acp && h.agent !== "claude").map((h) => h.agent);
-var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path25.join(os10.homedir(), ".claude");
+var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path26.join(os10.homedir(), ".claude");
 function claudeHasAgent(name, cwd) {
-  const files2 = [path25.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path25.join(cwd, ".claude", "agents", `${name}.md`)] : []];
-  if (files2.some((file) => fs22.existsSync(file))) return true;
+  const files2 = [path26.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path26.join(cwd, ".claude", "agents", `${name}.md`)] : []];
+  if (files2.some((file) => fs23.existsSync(file))) return true;
   const [plugin] = name.split(":");
   if (plugin === name) return false;
-  const installed = readJson(path25.join(claudeDir(), "plugins", "installed_plugins.json"));
+  const installed = readJson(path26.join(claudeDir(), "plugins", "installed_plugins.json"));
   return Object.keys(installed?.plugins ?? {}).some((key) => key.split("@")[0] === plugin);
 }
 function harnessAgentType(type, cwd) {
@@ -4746,6 +4787,7 @@ function harnessAgentType(type, cwd) {
 }
 
 // src/agent/tools.ts
+init_harnesses();
 init_agents();
 init_paths();
 init_proc();
@@ -4771,11 +4813,11 @@ var agentAddress = (entry) => readState(entry.dir)?.address ?? `${entry.spec.har
 
 // src/agent/remote.ts
 init_agents();
-import fs23 from "node:fs";
-import path26 from "node:path";
+import fs24 from "node:fs";
+import path27 from "node:path";
 init_paths();
 init_version();
-var childrenDir = () => path26.join(stateDir(), "agents-elsewhere");
+var childrenDir = () => path27.join(stateDir(), "agents-elsewhere");
 var childAddress = (child) => `${child.address}@${findDevice(child.device)?.slug ?? child.device}`;
 function findRemoteChild(self, name) {
   let q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
@@ -4784,16 +4826,16 @@ function findRemoteChild(self, name) {
   if (target && device) q = target.query;
   let names;
   try {
-    names = fs23.readdirSync(childrenDir());
+    names = fs24.readdirSync(childrenDir());
   } catch {
     return void 0;
   }
-  return names.map((file) => readJson(path26.join(childrenDir(), file))).filter((child) => !!child && child.parentId === self.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+  return names.map((file) => readJson(path27.join(childrenDir(), file))).filter((child) => !!child && child.parentId === self.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
 }
 
 // src/core/antigravity.ts
 import os11 from "node:os";
-import path27 from "node:path";
+import path28 from "node:path";
 function antigravitySurface(transcriptPath) {
   if (!transcriptPath) return void 0;
   const norm = transcriptPath.replace(/\\/g, "/");
@@ -4804,7 +4846,7 @@ function antigravitySurface(transcriptPath) {
 }
 function expandHomePath(file) {
   if (file === "~") return os11.homedir();
-  if (file.startsWith("~/") || file.startsWith("~\\")) return path27.join(os11.homedir(), file.slice(2));
+  if (file.startsWith("~/") || file.startsWith("~\\")) return path28.join(os11.homedir(), file.slice(2));
   return file;
 }
 
@@ -4838,7 +4880,7 @@ async function readStdin() {
   return raw ? JSON.parse(raw) : {};
 }
 var print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-var HOST_PROMPT = (id) => path28.join(peerDir(id), "host-prompt.json");
+var HOST_PROMPT = (id) => path29.join(peerDir(id), "host-prompt.json");
 var MESSAGE_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/g;
 function promptMessageIds(input) {
   const ids = /* @__PURE__ */ new Set();
@@ -4853,7 +4895,7 @@ function takeHostPrompt(peerId2) {
   const file = HOST_PROMPT(peerId2);
   const ids = readJson(file)?.ids;
   try {
-    fs24.rmSync(file, { force: true });
+    fs25.rmSync(file, { force: true });
   } catch {
   }
   if (!Array.isArray(ids)) return void 0;
@@ -4948,7 +4990,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
-  const waiter = `node "${path28.join(path28.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path29.join(path29.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return noteTag(
     "wake",
     `This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`
