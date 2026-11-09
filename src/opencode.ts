@@ -7,12 +7,13 @@ import { debugLog } from './core/debug.ts';
 import { trackTouchedFiles } from './core/edits.ts';
 import { guideText } from './core/guide.ts';
 import { claimInbox, formatForContext, pendingCount } from './core/messages.ts';
-import { ensureDir, inboxDir, peerDir, peersDir } from './core/paths.ts';
-import { isDeliveryOwner, isPeerAlive, keepSessionName, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
-import { commandLine, processTable } from './core/proc.ts';
+import { ensureDir, inboxDir, peerDir, peersDir, readJson } from './core/paths.ts';
+import { isDeliveryOwner, isPeerAlive, keepSessionName, listenerPid, peerId, readPeer, readSession, registerListener, registerPresence, registerSession, selfPeer, sessionPeerId } from './core/peers.ts';
+import { commandLine, isAlive, processTable } from './core/proc.ts';
 import { type PeerStatus, writeStatus } from './core/status.ts';
 import { listPeersTool, readMessagesTool, sendMessageTool, TOOLS, type ToolResult } from './core/tools.ts';
-import { answerPermissionTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { answerPermissionTool, setPermissionModeTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { appendTranscript, listHeadlessRecords } from './headless/peer.ts';
 import { startWakeFlusher } from './core/wake.ts';
 
 startWakeFlusher();
@@ -251,6 +252,8 @@ const skillsDir = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.
 const out = (r: ToolResult) => (r.isError ? `Error: ${r.text}` : r.text);
 
 const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
+  // A session telepathy started without itself, such as a permission reviewer (src/agent/reviewer.ts).
+  if (process.env.TELEPATHY_DISABLED === '1') return {};
   const agent: Agent = /kilo/i.test(path.basename(process.execPath)) ? 'kilo' : 'opencode';
   const pid = process.pid;
   let id = peerId(agent, pid);
@@ -528,7 +531,12 @@ const TelepathyPlugin = async ({ client, directory }: PluginInput) => {
       telepathy_answer_permission: {
         description: TOOLS.answer_permission.description,
         args: TOOLS.answer_permission.args,
-        execute: async (args: { agent: string; request: string; allow: boolean }) => out(answerPermissionTool(self(), args)),
+        execute: async (args: { agent: string; request: string; allow: boolean; always?: boolean }) => out(answerPermissionTool(self(), args)),
+      },
+      telepathy_set_permission_mode: {
+        description: TOOLS.set_permission_mode.description,
+        args: TOOLS.set_permission_mode.args,
+        execute: async (args: unknown) => out(setPermissionModeTool(self(), z.object(TOOLS.set_permission_mode.args).parse(args))),
       },
     },
   };
@@ -603,13 +611,16 @@ function readSkill(): { id: string; name: string; description?: string; path: st
 const jsonSchema = (args: z.ZodRawShape) => z.toJSONSchema(z.object(args));
 
 async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
+  if (process.env.TELEPATHY_DISABLED === '1') return async () => {};
   const agent: Agent = 'opencode';
   const pid = process.pid;
   const directory = ctx.location.directory;
   const idOf = (sessionID: string) => peerId(agent, sessionID);
   const sessions = new Set<string>(); // this directory's sessions that registered here
+  const busy = new Set<string>(); // sessions currently executing a turn
   const parents = new Map<string, string>(); // subagent session → its parent: subagents are no peers of their own
   const disposables: Disposable[] = [];
+  const isAcpHosted = (id: string) => process.argv.includes('--stdio') || fs.existsSync(path.join(peerDir(id), 'hosted.json'));
   debugLog('opencode', `plugin set up (OpenCode 2) in pid ${pid} for ${directory}`);
 
   const register = (sessionID: string) => {
@@ -619,21 +630,31 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
     if (sessions.has(sessionID)) return;
     sessions.add(sessionID);
     registerPresence(agent, pid, { cwd: directory }, id);
-    registerListener(agent, pid, id); // this plugin wakes the session with its messages
-    writeStatus(id, 'idle');
+    const lp = listenerPid(id);
+    if (!lp || lp === pid || !isAlive(lp)) registerListener(agent, pid, id); // this plugin wakes the session with its messages
+    if (!busy.has(sessionID)) writeStatus(id, 'idle');
     watch(sessionID);
   };
 
   const delivering = new Set<string>();
+  const isBusy = (sessionID: string, id: string) =>
+    busy.has(sessionID) || readJson<{ status?: PeerStatus }>(path.join(peerDir(id), 'status.json'))?.status === 'busy';
   /** Hands pending messages to the session as a prompt; `steer` starts a turn, or joins the running one. */
   async function deliver(sessionID: string): Promise<void> {
-    if (delivering.has(sessionID) || !isDeliveryOwner(idOf(sessionID), pid)) return;
+    const id = idOf(sessionID);
+    // An ACP host (`start_agent`, `telepathy run opencode`) drives idle turns over ACP `session/prompt` so it
+    // can stream updates and observe turn completion. While a turn is busy, this plugin steers incoming messages
+    // into the running turn and records the delivery marker for `confirmDelivery`.
+    if (isAcpHosted(id) && !isBusy(sessionID, id)) return;
+    if (delivering.has(sessionID) || !isDeliveryOwner(id, pid)) return;
     delivering.add(sessionID);
     try {
-      const messages = claimInbox(idOf(sessionID));
+      const messages = claimInbox(id);
       if (!messages.length) return;
+      const text = formatForContext(messages, { lead: false });
       // The messages are a turn of their own here, so they need no lead-in.
-      await ctx.session.prompt({ sessionID, text: formatForContext(messages, { lead: false }), delivery: 'steer' });
+      await ctx.session.prompt({ sessionID, text, delivery: 'steer' });
+      appendTranscript(id, text);
       debugLog('opencode', `delivered ${messages.map((m) => m.id).join(', ')} to session ${sessionID}`);
     } catch (err) {
       // The messages stay in the archive, where read_messages shows them as the most recent received.
@@ -666,20 +687,25 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
   timer.unref?.();
 
   // A restarted service runs the sessions of this directory that the previous one had, under a new pid: take them over.
-  let names: string[] = [];
-  try {
-    names = fs.readdirSync(peersDir());
-  } catch {
-    // no registry yet
-  }
-  for (const name of names) {
-    const session = name.startsWith(`${agent}-ses_`) ? readSession(name) : undefined;
-    if (!session?.sessionId || session.cwd !== directory || session.pid === pid || isPeerAlive(readPeer(name))) continue;
-    const sessionID = session.sessionId;
-    ctx.session.get({ sessionID }).then(
-      () => register(sessionID),
-      () => fs.rmSync(peerDir(name), { recursive: true, force: true }), // deleted meanwhile
-    );
+  // Single-session `--stdio` servers (`opencode acp`) and headless/subagent sessions are not taken over.
+  if (!process.argv.includes('--stdio')) {
+    const headlessIds = new Set(listHeadlessRecords().map((rec) => rec.peerId));
+    let names: string[] = [];
+    try {
+      names = fs.readdirSync(peersDir());
+    } catch {
+      // no registry yet
+    }
+    for (const name of names) {
+      if (headlessIds.has(name) || isAcpHosted(name)) continue;
+      const session = name.startsWith(`${agent}-ses_`) ? readSession(name) : undefined;
+      if (!session?.sessionId || session.cwd !== directory || session.pid === pid || isPeerAlive(readPeer(name))) continue;
+      const sessionID = session.sessionId;
+      ctx.session.get({ sessionID }).then(
+        () => register(sessionID),
+        () => fs.rmSync(peerDir(name), { recursive: true, force: true }), // deleted meanwhile
+      );
+    }
   }
 
   disposables.push(ctx.session.hook('prompt', (event) => register(event.sessionID)));
@@ -754,6 +780,14 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
           content: out(answerPermissionTool(self(c.sessionID), z.object(TOOLS.answer_permission.args).parse(input))),
         }),
       });
+      editor.add({
+        name: 'telepathy_set_permission_mode',
+        description: TOOLS.set_permission_mode.description,
+        input: jsonSchema(TOOLS.set_permission_mode.args),
+        execute: async (input, c) => ({
+          content: out(setPermissionModeTool(self(c.sessionID), z.object(TOOLS.set_permission_mode.args).parse(input))),
+        }),
+      });
     }),
   );
 
@@ -787,6 +821,7 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
       const id = idOf(sessionID);
       if (event.type === 'session.deleted' && sessionID === data.sessionID) {
         sessions.delete(sessionID);
+        busy.delete(sessionID);
         watchers.get(sessionID)?.close();
         watchers.delete(sessionID);
         fs.rmSync(peerDir(id), { recursive: true, force: true });
@@ -794,7 +829,11 @@ async function setupV2(ctx: V2Context): Promise<() => Promise<void>> {
       }
       const status = STATUS_EVENTS[event.type];
       // A subagent finishing doesn't make its parent idle.
-      if (status && (status === 'waiting' || status === 'busy' || sessionID === data.sessionID)) writeStatus(id, status);
+      if (status && (status === 'waiting' || status === 'busy' || sessionID === data.sessionID)) {
+        if (status === 'idle') busy.delete(sessionID);
+        else busy.add(sessionID);
+        writeStatus(id, status);
+      }
     }
   })().catch((err) => {
     if (!abort.signal.aborted) debugLog('opencode', `event stream ended: ${(err as Error).message}`);

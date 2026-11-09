@@ -11,7 +11,7 @@ import { runHeadless } from '../headless/run.ts';
 import { writeStatus } from '../core/status.ts';
 import { claimPluginSession, clearHosted, namedPeerId, pluginInboxPeerId, recallHarnessSession, registerHostedPeer, rememberHarnessSession, startInboxPump, type HostedPeer } from '../headless/peer.ts';
 import { ensureInstalled } from './install.ts';
-import { acpCommand, canonicalRunAgent, defaultRunMode, harnessByAgent, harnesses, headlessPlane, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
+import { acpArgs, acpCommand, canonicalRunAgent, defaultRunMode, harnessByAgent, harnesses, headlessPlane, listRuns, onPath, resolvedAcpBin, resolvedBin, type AcpLaunch, type Harness } from './harnesses.ts';
 import { launchEnv, pluginInstalled } from './launch.ts';
 
 export interface RunArgs {
@@ -125,7 +125,7 @@ export async function runCommand(argv: string[]): Promise<number> {
     return 1;
   }
   const useAcp = !parsed.headless && !parsed.tui && (parsed.acp || defaultRunMode(harness) === 'acp');
-  if (harness.agent === 'antigravity' && (parsed.headless || useAcp)) {
+  if (harness.agent === 'antigravity' && parsed.headless && !parsed.acp) {
     const auth = ensureAgyApiKey();
     if (!auth.ok) {
       console.error(auth.warning);
@@ -158,7 +158,7 @@ export async function runCommand(argv: string[]): Promise<number> {
         agent: harness.agent,
         plane: 'acp',
         bin: acpBin,
-        acpArgs: harness.acp.args,
+        acpArgs: acpArgs(harness.acp, acpBin),
         userArgs: parsed.userArgs,
         cwd,
         name: peerName,
@@ -235,7 +235,7 @@ async function runInteractiveAcp(harness: Harness, bin: string, userArgs: string
   const session = await startAcpSession({
     agent: harness.agent,
     bin,
-    args: [...acp.args, ...userArgs],
+    args: [...acpArgs(acp, bin), ...userArgs],
     cwd,
     headless: false,
     resumeSessionId: resume,

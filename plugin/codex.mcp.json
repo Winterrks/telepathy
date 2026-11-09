@@ -29,6 +29,7 @@
         "TELEPATHY_AUTO_UPDATE_ENTRY",
         "TELEPATHY_CODEX_PROCS",
         "TELEPATHY_PS_BIN",
+        "TELEPATHY_DISABLED",
         "CODEX_HOME"
       ]
     }

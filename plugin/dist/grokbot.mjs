@@ -350,7 +350,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.13.1" : "0.0.0-dev";
+var VERSION = true ? "0.14.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -430,6 +430,27 @@ function psField(pid, field) {
   } catch {
     return void 0;
   }
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list = children.get(info.ppid);
+    if (list) list.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out;
 }
 
 // src/core/codex-launch.ts
@@ -737,12 +758,21 @@ var ownersFile = (id) => path7.join(peerDir(id), "owners.json");
 var linkFile = (agent, pid) => path7.join(peerDir(peerId(agent, pid)), "link.json");
 var rememberedFile = (agent, sessionId) => path7.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
 function sessionOwners(id) {
-  const owners = readJson(ownersFile(id)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson(ownersFile(id)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 function claimSessionOwner(id, pid) {
   const owners = sessionOwners(id);
   if (!owners.some((owner) => owner.pid === pid)) {
+    const ancestor = owners.findIndex((owner) => owner.pid !== pid && descendantPids(owner.pid).includes(pid));
+    if (ancestor >= 0) {
+      owners[ancestor] = { pid, procStart: procStart(pid), at: owners[ancestor].at };
+      writeJsonAtomic(ownersFile(id), owners);
+      return owners[0]?.pid === pid;
+    }
+    const descendant = owners.find((owner) => owner.pid !== pid && descendantPids(pid).includes(owner.pid));
+    if (descendant) return owners[0]?.pid === descendant.pid;
     owners.push({ pid, procStart: procStart(pid), at: (/* @__PURE__ */ new Date()).toISOString() });
     owners.sort((a, b) => a.at.localeCompare(b.at));
     writeJsonAtomic(ownersFile(id), owners);
@@ -997,11 +1027,13 @@ function isPeerAlive(peer, now = Date.now()) {
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
     const pid = owner?.pid ?? peer.pid;
+    if (pid <= 1) return false;
     const started = owner?.procStart ?? readSession(peer.id)?.procStart;
     if (!isSameProcess(pid, started)) return false;
     if (peer.agent === "opencode" || peer.agent === "kilo") return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
     return true;
   }
+  if (peer.pid <= 1) return false;
   return isSameProcess(peer.pid, peer.procStart);
 }
 function readPeer(id) {
@@ -1311,12 +1343,18 @@ function openTag(msg, extra = {}) {
   return `<${PEER_MESSAGE_TAG} ${text}>`;
 }
 var closeTag = `</${PEER_MESSAGE_TAG}>`;
+function hostedParent(id) {
+  if (!id) return void 0;
+  const parent = readJson(path8.join(peerDir(id), "hosted.json"))?.parent;
+  return typeof parent === "string" && parent ? parent : void 0;
+}
 function formatAsUserTurn(msg, reply) {
+  const toParent = !reply && hostedParent(msg.to?.id) === msg.from.address ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.` : void 0;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     "",
     escapeTelepathyTags(msg.body),
     closeTag
@@ -2339,6 +2377,24 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   const recipient = resolved.peer;
   const limited = self ? checkRate(self.id, recipient.id, body) : void 0;
   if (limited) return { ok: false, error: limited };
+  const senderId = self?.id ?? from.id;
+  if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
+    writeJsonAtomic(path14.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    const message2 = {
+      id: newMessageId(),
+      from,
+      to: partyOf(recipient),
+      body,
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return {
+      ok: true,
+      message: message2,
+      recipient,
+      status: `Held for turn end: you are an agent ${recipient.address} started with start_agent, so telepathy delivers your final message when your turn ends. End your turn now with your final report as your last message; do not call send_message again.`,
+      delivery: { confirmed: true, attempts: [] }
+    };
+  }
   const plan = confirmWindow();
   const message = {
     id: newMessageId(),
@@ -2899,10 +2955,11 @@ function readHeadlessRecord(agent, slug) {
 function writeHeadlessRecord(record) {
   writeJsonAtomic(headlessRecordPath(record.agent, record.slug), record);
 }
-function writeHosted(peerId2) {
+function writeHosted(peerId2, parent) {
   writeJsonAtomic(path16.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
-    procStart: procStart(process.pid)
+    procStart: procStart(process.pid),
+    ...parent ? { parent } : {}
   });
 }
 function clearHosted(peerId2) {
@@ -3117,7 +3174,7 @@ var HARNESSES = [
     defaultMode: "acp",
     headless: "antigravity",
     deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
-    acp: { bin: "antigravity-acp", fallbacks: ["agy_acp_server.par"], args: [], adapter: true },
+    acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
     install: {
       kind: "commands",
       steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }],

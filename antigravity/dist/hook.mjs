@@ -580,7 +580,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.13.1" : "0.0.0-dev";
+    VERSION = true ? "0.14.0" : "0.0.0-dev";
   }
 });
 
@@ -685,7 +685,28 @@ function findAgent(hint) {
   }
   const claudePid = Number(process.env.CLAUDE_PID);
   if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
-  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid > 1 ? process.ppid : process.pid };
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list2 = children.get(info.ppid);
+    if (list2) list2.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out;
 }
 var cache, commandLine, argsCache, isStreamJsonClaude;
 var init_proc = __esm({
@@ -1574,8 +1595,8 @@ var init_auto_update = __esm({
 });
 
 // src/hook.ts
-import fs22 from "node:fs";
-import path26 from "node:path";
+import fs24 from "node:fs";
+import path28 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/core/claude-socket.ts
@@ -2021,12 +2042,21 @@ var ownersFile = (id) => path8.join(peerDir(id), "owners.json");
 var linkFile = (agent, pid) => path8.join(peerDir(peerId(agent, pid)), "link.json");
 var rememberedFile = (agent, sessionId) => path8.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
 function sessionOwners(id) {
-  const owners = readJson(ownersFile(id)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson(ownersFile(id)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 function claimSessionOwner(id, pid) {
   const owners = sessionOwners(id);
   if (!owners.some((owner) => owner.pid === pid)) {
+    const ancestor = owners.findIndex((owner) => owner.pid !== pid && descendantPids(owner.pid).includes(pid));
+    if (ancestor >= 0) {
+      owners[ancestor] = { pid, procStart: procStart(pid), at: owners[ancestor].at };
+      writeJsonAtomic(ownersFile(id), owners);
+      return owners[0]?.pid === pid;
+    }
+    const descendant = owners.find((owner) => owner.pid !== pid && descendantPids(pid).includes(owner.pid));
+    if (descendant) return owners[0]?.pid === descendant.pid;
     owners.push({ pid, procStart: procStart(pid), at: (/* @__PURE__ */ new Date()).toISOString() });
     owners.sort((a, b) => a.at.localeCompare(b.at));
     writeJsonAtomic(ownersFile(id), owners);
@@ -2284,11 +2314,13 @@ function isPeerAlive(peer, now = Date.now()) {
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
     const pid = owner?.pid ?? peer.pid;
+    if (pid <= 1) return false;
     const started = owner?.procStart ?? readSession(peer.id)?.procStart;
     if (!isSameProcess(pid, started)) return false;
     if (peer.agent === "opencode" || peer.agent === "kilo") return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
     return true;
   }
+  if (peer.pid <= 1) return false;
   return isSameProcess(peer.pid, peer.procStart);
 }
 function readPeer(id) {
@@ -2411,9 +2443,9 @@ function observeLaunchedCodex() {
 function observeResumedCodex(proc, threadId, cwd) {
   const id = sessionPeerId("codex", proc.pid, threadId);
   const existing = readSession(id);
-  const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
+  const hostAlive2 = !!existing && isSameProcess(existing.pid, existing.procStart);
   const home2 = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
-  if (!existing?.sessionId || !hostAlive || proc.codexHome && existing.codexHome !== proc.codexHome) {
+  if (!existing?.sessionId || !hostAlive2 || proc.codexHome && existing.codexHome !== proc.codexHome) {
     registerSession("codex", proc.pid, {
       sessionId: threadId,
       cwd: cwd ?? existing?.cwd,
@@ -2644,12 +2676,18 @@ function openTag(msg, extra = {}) {
   return `<${PEER_MESSAGE_TAG} ${text}>`;
 }
 var closeTag = `</${PEER_MESSAGE_TAG}>`;
+function hostedParent(id) {
+  if (!id) return void 0;
+  const parent = readJson(path9.join(peerDir(id), "hosted.json"))?.parent;
+  return typeof parent === "string" && parent ? parent : void 0;
+}
 function formatAsUserTurn(msg, reply2) {
+  const toParent = !reply2 && hostedParent(msg.to?.id) === msg.from.address ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.` : void 0;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply2 ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply2 ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     "",
     escapeTelepathyTags(msg.body),
     closeTag
@@ -3760,6 +3798,24 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   const recipient = resolved.peer;
   const limited = self ? checkRate(self.id, recipient.id, body) : void 0;
   if (limited) return { ok: false, error: limited };
+  const senderId = self?.id ?? from.id;
+  if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
+    writeJsonAtomic(path15.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    const message2 = {
+      id: newMessageId(),
+      from,
+      to: partyOf(recipient),
+      body,
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return {
+      ok: true,
+      message: message2,
+      recipient,
+      status: `Held for turn end: you are an agent ${recipient.address} started with start_agent, so telepathy delivers your final message when your turn ends. End your turn now with your final report as your last message; do not call send_message again.`,
+      delivery: { confirmed: true, attempts: [] }
+    };
+  }
   const plan = confirmWindow();
   const message = {
     id: newMessageId(),
@@ -4085,32 +4141,32 @@ var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
 var UNREACHABLE = "TELEPATHY_UNREACHABLE";
-var requestAad = (path27, from, to) => `req ${path27} ${from}->${to}`;
-var responseAad = (path27, from, to, nonce) => `res ${path27} ${from}->${to} ${nonce}`;
+var requestAad = (path29, from, to) => `req ${path29} ${from}->${to}`;
+var responseAad = (path29, from, to, nonce) => `res ${path29} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
 var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
-async function call(target, path27, body, timeoutMs2, signal) {
+async function call(target, path29, body, timeoutMs2, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire = { device: self.id, name: self.name };
-  if (key) wire.sealed = seal(key, requestAad(path27, self.id, target.id), body);
+  if (key) wire.sealed = seal(key, requestAad(path29, self.id, target.id), body);
   else wire.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path27);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path29);
   const timeout = AbortSignal.timeout(timeoutMs2);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path27}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path29}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path27, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
+    body: JSON.stringify(reverse ? { device: target.id, route: path29, wire, timeoutMs: Math.max(1e3, timeoutMs2 - 500) } : wire),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply2 = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply2.error) throw Object.assign(new Error(reply2.error), reverse && reply2.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply2.sealed || !wire.sealed) throw new Error("the answer was not sealed");
-    return open(key, responseAad(path27, self.id, target.id, wire.sealed.n), reply2.sealed);
+    return open(key, responseAad(path29, self.id, target.id, wire.sealed.n), reply2.sealed);
   }
   return reply2.body;
 }
@@ -4401,7 +4457,7 @@ function guideLines(agent, opts = {}) {
     "telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and more).",
     ...agent === "claude" ? [
       "- Your own tools reach other agents: ListAgents lists their sessions too (Codex, OpenCode\u2026), and SendMessage reaches them. telepathy delivers a SendMessage to another agent and stops the built-in call, so the result reads as an error though the message was sent: don't resend it. You don't need telepathy's list_peers or send_message for this.",
-      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message)."
+      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way; SendMessage to it is stopped with a pointer to send_message."
     ] : ["- list_peers shows the sessions you can reach; send_message delivers."],
     "- Message other sessions whenever it helps, for example one working in the same repo. Replies arrive as new messages: don't wait or poll.",
     ...agent === "claude" ? [] : ["- start_agent starts another agent (Codex, Claude Code, OpenCode\u2026) as your subagent, here or (with device) on another of your devices that allows it. Its final message comes back to you as a message with its transcript path."],
@@ -4561,7 +4617,7 @@ var HARNESSES = [
     defaultMode: "acp",
     headless: "antigravity",
     deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
-    acp: { bin: "antigravity-acp", fallbacks: ["agy_acp_server.par"], args: [], adapter: true },
+    acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
     install: {
       kind: "commands",
       steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO2}/tree/main/antigravity`] }],
@@ -4647,9 +4703,84 @@ function harnessAgentType(type, cwd) {
   return name ? { harness, name } : { harness };
 }
 
+// src/agent/tools.ts
+init_agents();
+init_paths();
+init_proc();
+
+// src/agent/policy.ts
+init_paths();
+
+// src/agent/tools.ts
+init_sandbox_launch();
+
+// src/agent/spec.ts
+init_paths();
+init_proc();
+import fs22 from "node:fs";
+import path25 from "node:path";
+var agentsDir = () => path25.join(stateDir(), "agents");
+var specFile = (dir) => path25.join(dir, "spec.json");
+var stateFile = (dir) => path25.join(dir, "state.json");
+var readSpec = (dir) => readJson(specFile(dir));
+var readState = (dir) => readJson(stateFile(dir));
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names;
+  try {
+    names = fs22.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const dir = path25.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+
+// src/agent/tools.ts
+function findChild(self, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").replace(/^.*\[([^\]]+)\]\s*$/, "$1").toLowerCase();
+  const matches = listAgents().filter((entry) => {
+    const keys = [entry.spec.slug, `${entry.spec.harness}:${entry.spec.slug}`, entry.state?.address, entry.state?.peerId];
+    return keys.some((key) => key?.toLowerCase() === q);
+  });
+  const mine = matches.filter((entry) => entry.spec.parent.id === self.id);
+  const pick = (mine.length ? mine : matches).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!pick) return { error: `No agent named "${name}" was started with start_agent.` };
+  if (pick.spec.parent.id !== self.id) return { error: `${name} was started by ${pick.spec.parent.address}, not this session.` };
+  return pick;
+}
+var agentAddress = (entry) => readState(entry.dir)?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+
+// src/agent/remote.ts
+init_agents();
+import fs23 from "node:fs";
+import path26 from "node:path";
+init_paths();
+init_version();
+var childrenDir = () => path26.join(stateDir(), "agents-elsewhere");
+var childAddress = (child) => `${child.address}@${findDevice(child.device)?.slug ?? child.device}`;
+function findRemoteChild(self, name) {
+  let q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const target = remoteTarget(q);
+  const device = target ? findDevice(target.slug) : void 0;
+  if (target && device) q = target.query;
+  let names;
+  try {
+    names = fs23.readdirSync(childrenDir());
+  } catch {
+    return void 0;
+  }
+  return names.map((file) => readJson(path26.join(childrenDir(), file))).filter((child) => !!child && child.parentId === self.id && (!device || child.device === device.id)).filter((child) => [child.address, child.slug].some((key) => key.toLowerCase() === q)).sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}
+
 // src/core/antigravity.ts
 import os11 from "node:os";
-import path25 from "node:path";
+import path27 from "node:path";
 function antigravitySurface(transcriptPath) {
   if (!transcriptPath) return void 0;
   const norm = transcriptPath.replace(/\\/g, "/");
@@ -4660,7 +4791,7 @@ function antigravitySurface(transcriptPath) {
 }
 function expandHomePath(file) {
   if (file === "~") return os11.homedir();
-  if (file.startsWith("~/") || file.startsWith("~\\")) return path25.join(os11.homedir(), file.slice(2));
+  if (file.startsWith("~/") || file.startsWith("~\\")) return path27.join(os11.homedir(), file.slice(2));
   return file;
 }
 
@@ -4694,7 +4825,7 @@ async function readStdin() {
   return raw ? JSON.parse(raw) : {};
 }
 var print = (value) => process.stdout.write(JSON.stringify(value) + "\n");
-var HOST_PROMPT = (id) => path26.join(peerDir(id), "host-prompt.json");
+var HOST_PROMPT = (id) => path28.join(peerDir(id), "host-prompt.json");
 var MESSAGE_MARKER = /telepathy-id:(m-[0-9a-z]+-[0-9a-f]+)/g;
 function promptMessageIds(input) {
   const ids = /* @__PURE__ */ new Set();
@@ -4709,7 +4840,7 @@ function takeHostPrompt(peerId2) {
   const file = HOST_PROMPT(peerId2);
   const ids = readJson(file)?.ids;
   try {
-    fs22.rmSync(file, { force: true });
+    fs24.rmSync(file, { force: true });
   } catch {
   }
   if (!Array.isArray(ids)) return void 0;
@@ -4804,7 +4935,7 @@ function socketOwnsDelivery(selfId) {
 }
 function waiterReminder(agent, agentPid) {
   if (agent !== "claude" || !isStreamJsonClaude(agentPid) || process.env.CLAUDE_CODE_MESSAGING_SOCKET) return void 0;
-  const waiter = `node "${path26.join(path26.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
+  const waiter = `node "${path28.join(path28.dirname(fileURLToPath2(import.meta.url)), "monitor.mjs")}" --agent claude --once`;
   return noteTag(
     "wake",
     `This session can't run telepathy's monitor, so messages from other agent sessions can't wake it yet. Start the waiter now with your Bash tool in the background (run_in_background: true): ${waiter}. It exits when a message arrives, which wakes you; after handling the message, start it again the same way.`
@@ -4916,8 +5047,8 @@ function nativeListingBlock(agent, selfId) {
   }
   return sections.join("\n\n");
 }
-function listAgents(agentPid, input) {
-  const block = nativeListingBlock("claude", peerId("claude", agentPid));
+function listAgents2(agentPid, input) {
+  const block = nativeListingBlock("claude", boundSelf("claude", agentPid, input).id);
   if (!block) return;
   const response = input.tool_response;
   if (typeof response?.listing === "string") {
@@ -4956,10 +5087,23 @@ async function interceptSendMessage(agent, agentPid, input) {
     denyTool("Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.");
     return;
   }
+  const self = boundSelf(agent, agentPid, input);
+  if (agent === "claude") {
+    const local = findChild(self, to);
+    const localAddr = !("error" in local) && hostAlive(readState(local.dir)) ? agentAddress(local) : void 0;
+    const remote = !localAddr ? findRemoteChild(self, to) : void 0;
+    const childAddr = localAddr ?? (remote ? childAddress(remote) : void 0);
+    if (childAddr) {
+      denyTool(
+        `Not sent: ${childAddr} is an agent you started with start_agent. Call telepathy's send_message tool (to: "${childAddr}") so its turn runs as a background task.`
+      );
+      return;
+    }
+  }
   const ownsClock = beginToolCall();
   let result;
   try {
-    result = await sendMessage(boundSelf(agent, agentPid, input), to, message);
+    result = await sendMessage(self, to, message);
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -4985,6 +5129,7 @@ function redirectAgent(input) {
   );
 }
 async function main() {
+  if (process.env.TELEPATHY_DISABLED === "1") return;
   if (process.argv.includes("--telepathy-auto-update")) {
     const { runAutoUpdate: runAutoUpdate2 } = await init_auto_update().then(() => auto_update_exports);
     await runAutoUpdate2();
@@ -5002,7 +5147,7 @@ async function main() {
   else if (action === "turn-end") turnEnd(agent, agentPid, input);
   else if (action === "files") files(agent, agentPid, input);
   else if (action === "status" && event === "waiting") waiting(agent, agentPid, input);
-  else if (action === "list-agents" && agent === "claude") listAgents(agentPid, input);
+  else if (action === "list-agents" && agent === "claude") listAgents2(agentPid, input);
   else if (action === "send-message") await interceptSendMessage(agent, agentPid, input);
   else if (action === "agent" && agent === "claude") redirectAgent(input);
   else throw new Error(`unknown hook action ${JSON.stringify(action)} for ${agent}`);

@@ -237,7 +237,7 @@ if (args[0] === '--version') {
     if (hold > 0) await new Promise((resolve) => setTimeout(resolve, hold));
     send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
   };
-  rl.on('line', (line) => {
+  rl.on('line', async (line) => {
     let msg;
     try {
       msg = JSON.parse(line);
@@ -312,10 +312,25 @@ if (args[0] === '--version') {
         send({ jsonrpc: '2.0', id: msg.id, error: { code: -32000, message: 'unauthorized' } });
         return;
       }
+      const asked = (msg.params?.prompt ?? []).map((part) => part?.text ?? '').join('\n');
+      if (asked.startsWith('telepathy permission review.')) {
+        // A permission reviewer (src/agent/reviewer.ts): FAKE_REVIEW_VERDICT is its one-line answer.
+        log({ event: 'review', disabled: process.env.TELEPATHY_DISABLED, mcpServers: undefined });
+        send({
+          jsonrpc: '2.0',
+          method: 'session/update',
+          params: { sessionId: msg.params?.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: process.env.FAKE_REVIEW_VERDICT || 'ALLOW: a routine listing' } } },
+        });
+        send({ jsonrpc: '2.0', id: msg.id, result: { stopReason: 'end_turn' } });
+        return;
+      }
       if (process.env.FAKE_ACP_PERMISSION === '1') {
         permId += 1;
         const id = 9000 + permId;
         pending = { permId: id, prompt: msg };
+        // FAKE_ACP_PERMISSION_DELAY_MS: the turn works a while before it asks.
+        const wait = Number(process.env.FAKE_ACP_PERMISSION_DELAY_MS || 0);
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
         send({
           jsonrpc: '2.0',
           id,
@@ -326,7 +341,7 @@ if (args[0] === '--version') {
               { optionId: 'allow-once', kind: 'allow_once', name: 'Allow once' },
               { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
             ],
-            toolCall: { toolCallId: 'tool-1', title: 'shell', rawInput: { command: 'ls' } },
+            toolCall: { toolCallId: 'tool-1', title: 'shell', kind: 'execute', rawInput: { command: process.env.FAKE_ACP_PERMISSION_COMMAND || 'ls' } },
           },
         });
         return;

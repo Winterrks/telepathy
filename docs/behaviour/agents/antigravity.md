@@ -51,14 +51,11 @@ peer and `/fork` is a new one.
 
 ## telepathy run
 
-`telepathy run antigravity` (alias `agy`) uses the official `antigravity-acp` binary. `telepathy run --tui antigravity`
+`telepathy run antigravity` (alias `agy`) runs `agy acp` (falling back to `antigravity acp`, `antigravity-acp`, or `agy_acp_server.par`), as does `start_agent(harness: "antigravity")`. `telepathy run --tui antigravity`
 is the interactive TUI. `telepathy run --headless antigravity` keeps a
-long-lived `agy --input-format stream-json --output-format stream-json` and writes prompts on stdin. It does not
-wrap `agy -p`. Headless and ACP require `GEMINI_API_KEY` and `"modelProvider": "gemini"` in
-`~/.gemini/antigravity-cli/settings.json`. A consumer login alone is refused: Google's FAQ says driving a
-consumer account from third-party software, or wrapping `agy -p`, can suspend the account. There is no
-`agy --acp`. The ACP run uses `antigravity-acp` (`agy_acp_server.par` if that is the name on PATH) and the same
-API-key check, so on a consumer login use `telepathy run --tui antigravity`.
+long-lived `agy --input-format stream-json --output-format stream-json` and writes prompts on stdin (or use `--headless --acp` to run over `agy acp`). It does not
+wrap `agy -p`. The `stream-json` headless wrapper requires `GEMINI_API_KEY` and `"modelProvider": "gemini"` in
+`~/.gemini/antigravity-cli/settings.json`; `agy acp` works directly with your signed-in Antigravity account or an API key.
 
 Hooks were exercised on Antigravity CLI 1.2.9. The App sidecar, surface detection, and headless stream follow
 the 1.4.9 docs and are not live-tested here.

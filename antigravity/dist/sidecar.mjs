@@ -267,12 +267,18 @@ function openTag(msg, extra = {}) {
   return `<${PEER_MESSAGE_TAG} ${text}>`;
 }
 var closeTag = `</${PEER_MESSAGE_TAG}>`;
+function hostedParent(id) {
+  if (!id) return void 0;
+  const parent = readJson(path3.join(peerDir(id), "hosted.json"))?.parent;
+  return typeof parent === "string" && parent ? parent : void 0;
+}
 function formatAsUserTurn(msg, reply) {
+  const toParent = !reply && hostedParent(msg.to?.id) === msg.from.address ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.` : void 0;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     "",
     escapeTelepathyTags(msg.body),
     closeTag

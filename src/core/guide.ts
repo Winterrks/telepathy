@@ -21,7 +21,7 @@ export function guideLines(agent: Agent, opts: GuideOptions = {}): string[] {
           "- Your own tools reach other agents: ListAgents lists their sessions too (Codex, OpenCode…), and SendMessage reaches them. telepathy delivers a SendMessage to another agent and stops the built-in call, so the result reads as an error though the message was sent: don't resend it. You don't need telepathy's list_peers or send_message for this.",
           "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" +
             (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(', ')})` : '') +
-            ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message).",
+            ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way; SendMessage to it is stopped with a pointer to send_message.",
         ]
       : ['- list_peers shows the sessions you can reach; send_message delivers.']),
     "- Message other sessions whenever it helps, for example one working in the same repo. Replies arrive as new messages: don't wait or poll.",

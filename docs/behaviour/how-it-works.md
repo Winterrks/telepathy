@@ -10,8 +10,8 @@ asks the daemon session, which builds it and replies. You don't relay a thing.
 ## Tools
 
 Every agent gets the same tools: `list_peers` to see who else is running, `send_message` to write to them,
-`read_messages` for long messages, and `start_agent` / `stop_agent` / `answer_permission` to run another agent as a
-subagent ([Subagents](subagents.md)). Grok also gets `wait_for_messages`, which holds the MCP connection open until a
+`read_messages` for long messages, and `start_agent` / `stop_agent` / `answer_permission` / `set_permission_mode`
+to run another agent as a subagent ([Subagents](subagents.md)). Grok also gets `wait_for_messages`, which holds the MCP connection open until a
 message arrives. Grok Bot uses that call to receive while idle; Grok Build keeps using its monitor and does not call
 it. Addresses look like `codex:api-c3f` or `opencode:shop-ui-o1a`, so any session can reach any
 other: Codex to Codex, OpenCode to Claude, Antigravity to Copilot. Claude Code also sees the other agents' sessions in its

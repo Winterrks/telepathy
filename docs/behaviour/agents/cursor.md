@@ -24,3 +24,13 @@ What these mean is under [Supported agents](README.md#supported-agents).
 | Piece | Mechanism |
 |---|---|
 | The others receive | Their hooks: before a prompt or after a tool call the pending messages go into the context; at the end of a turn they keep the turn going (`decision: block`, Cursor's `followup_message`, Antigravity's `continue`) |
+
+## As a subagent
+
+`start_agent(harness: "cursor")` runs `cursor-agent acp`. Its ACP modes are `agent`, `plan` and `ask`, with no
+auto mode: the ACP server reads only `--force` (run everything, which telepathy never sets), and treats Cursor's
+Auto-review setting as Allowlist. Commands on Cursor's own allowlist (`permissions.allow` in
+`~/.cursor/cli-config.json`) run without asking, and Cursor asks about every other shell command. So a Cursor agent
+runs in telepathy's auto mode: a reviewer session of Cursor, in its `ask` mode, approves routine commands, and the
+rest come to the parent ([Fewer permission requests](../subagents.md#fewer-permission-requests)). telepathy answers
+Cursor's "Allow once", never its "Allow always", which would write to that global allowlist.

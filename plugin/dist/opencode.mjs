@@ -7,7 +7,7 @@ var __export = (target, all) => {
 
 // src/opencode.ts
 import fs19 from "node:fs";
-import path20 from "node:path";
+import path21 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // node_modules/zod/v4/classic/external.js
@@ -826,10 +826,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path21) {
-  if (!path21)
+function getElementAtPath(obj, path22) {
+  if (!path22)
     return obj;
-  return path21.reduce((acc, key) => acc?.[key], obj);
+  return path22.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -1169,11 +1169,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path21, issues) {
+function prefixIssues(path22, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path21);
+    iss.path.unshift(path22);
     return iss;
   });
 }
@@ -1623,16 +1623,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path22 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path22, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -1671,17 +1671,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path21 = []) => {
+  const processError = (error63, path22 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path21, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path22, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path21, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path22, ...issue2.path]);
       } else {
-        const fullpath = [...path21, ...issue2.path];
+        const fullpath = [...path22, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -1720,8 +1720,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path21 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path21) {
+  const path22 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path22) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -18823,13 +18823,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path21 = ref.slice(1).split("/").filter(Boolean);
-  if (path21.length === 0) {
+  const path22 = ref.slice(1).split("/").filter(Boolean);
+  if (path22.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path21[0] === defsKey) {
-    const key = path21[1] === void 0 ? void 0 : decodeJSONPointerSegment(path21[1]);
+  if (path22[0] === defsKey) {
+    const key = path22[1] === void 0 ? void 0 : decodeJSONPointerSegment(path22[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -20036,7 +20036,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.13.1" : "0.0.0-dev";
+var VERSION = true ? "0.14.0" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -20116,6 +20116,27 @@ function psField(pid, field) {
   } catch {
     return void 0;
   }
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list = children.get(info.ppid);
+    if (list) list.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out2 = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out2.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out2;
 }
 
 // src/core/codex-launch.ts
@@ -20423,12 +20444,21 @@ var ownersFile = (id) => path7.join(peerDir(id), "owners.json");
 var linkFile = (agent, pid) => path7.join(peerDir(peerId(agent, pid)), "link.json");
 var rememberedFile = (agent, sessionId) => path7.join(stateDir(), "identities", agent, `${sessionToken(sessionId)}.json`);
 function sessionOwners(id) {
-  const owners = readJson(ownersFile(id)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson(ownersFile(id)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 function claimSessionOwner(id, pid) {
   const owners = sessionOwners(id);
   if (!owners.some((owner) => owner.pid === pid)) {
+    const ancestor = owners.findIndex((owner) => owner.pid !== pid && descendantPids(owner.pid).includes(pid));
+    if (ancestor >= 0) {
+      owners[ancestor] = { pid, procStart: procStart(pid), at: owners[ancestor].at };
+      writeJsonAtomic(ownersFile(id), owners);
+      return owners[0]?.pid === pid;
+    }
+    const descendant = owners.find((owner) => owner.pid !== pid && descendantPids(pid).includes(owner.pid));
+    if (descendant) return owners[0]?.pid === descendant.pid;
     owners.push({ pid, procStart: procStart(pid), at: (/* @__PURE__ */ new Date()).toISOString() });
     owners.sort((a, b) => a.at.localeCompare(b.at));
     writeJsonAtomic(ownersFile(id), owners);
@@ -20594,6 +20624,9 @@ function registerListener(agent, pid, id = peerId(agent, pid)) {
   const record2 = { pid: process.pid, procStart: procStart(process.pid), startedAt: (/* @__PURE__ */ new Date()).toISOString() };
   writeJsonAtomic(path7.join(peerDir(id), "listener.json"), record2);
 }
+function listenerPid(id) {
+  return readJson(path7.join(peerDir(id), "listener.json"))?.pid;
+}
 var sameStableName = (a, b) => !!a.stableName && a.id !== b.id && a.agent === b.agent && a.stableName === b.stableName;
 function readSession(id) {
   return readJson(path7.join(peerDir(id), "session.json"));
@@ -20661,11 +20694,13 @@ function isPeerAlive(peer, now = Date.now()) {
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
     const pid = owner?.pid ?? peer.pid;
+    if (pid <= 1) return false;
     const started = owner?.procStart ?? readSession(peer.id)?.procStart;
     if (!isSameProcess(pid, started)) return false;
     if (peer.agent === "opencode" || peer.agent === "kilo") return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
     return true;
   }
+  if (peer.pid <= 1) return false;
   return isSameProcess(peer.pid, peer.procStart);
 }
 function readPeer(id) {
@@ -21016,12 +21051,18 @@ function openTag(msg, extra = {}) {
   return `<${PEER_MESSAGE_TAG} ${text}>`;
 }
 var closeTag = `</${PEER_MESSAGE_TAG}>`;
+function hostedParent(id) {
+  if (!id) return void 0;
+  const parent = readJson(path8.join(peerDir(id), "hosted.json"))?.parent;
+  return typeof parent === "string" && parent ? parent : void 0;
+}
 function formatAsUserTurn(msg, reply) {
+  const toParent = !reply && hostedParent(msg.to?.id) === msg.from.address ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.` : void 0;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     "",
     escapeTelepathyTags(msg.body),
     closeTag
@@ -22101,6 +22142,24 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   const recipient = resolved.peer;
   const limited = self ? checkRate(self.id, recipient.id, body) : void 0;
   if (limited) return { ok: false, error: limited };
+  const senderId = self?.id ?? from.id;
+  if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
+    writeJsonAtomic(path14.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    const message2 = {
+      id: newMessageId(),
+      from,
+      to: partyOf(recipient),
+      body,
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return {
+      ok: true,
+      message: message2,
+      recipient,
+      status: `Held for turn end: you are an agent ${recipient.address} started with start_agent, so telepathy delivers your final message when your turn ends. End your turn now with your final report as your last message; do not call send_message again.`,
+      delivery: { confirmed: true, attempts: [] }
+    };
+  }
   const plan = confirmWindow();
   const message = {
     id: newMessageId(),
@@ -22421,32 +22480,32 @@ var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
 var UNREACHABLE = "TELEPATHY_UNREACHABLE";
-var requestAad = (path21, from, to) => `req ${path21} ${from}->${to}`;
-var responseAad = (path21, from, to, nonce) => `res ${path21} ${from}->${to} ${nonce}`;
+var requestAad = (path22, from, to) => `req ${path22} ${from}->${to}`;
+var responseAad = (path22, from, to, nonce) => `res ${path22} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
 var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
-async function call(target, path21, body, timeoutMs, signal) {
+async function call(target, path22, body, timeoutMs, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire = { device: self.id, name: self.name };
-  if (key) wire.sealed = seal(key, requestAad(path21, self.id, target.id), body);
+  if (key) wire.sealed = seal(key, requestAad(path22, self.id, target.id), body);
   else wire.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path21);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path22);
   const timeout = AbortSignal.timeout(timeoutMs);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path21}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path22}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path21, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
+    body: JSON.stringify(reverse ? { device: target.id, route: path22, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
-    return open2(key, responseAad(path21, self.id, target.id, wire.sealed.n), reply.sealed);
+    return open2(key, responseAad(path22, self.id, target.id, wire.sealed.n), reply.sealed);
   }
   return reply.body;
 }
@@ -22801,7 +22860,7 @@ function guideLines(agent, opts = {}) {
     "telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and more).",
     ...agent === "claude" ? [
       "- Your own tools reach other agents: ListAgents lists their sessions too (Codex, OpenCode\u2026), and SendMessage reaches them. telepathy delivers a SendMessage to another agent and stops the built-in call, so the result reads as an error though the message was sent: don't resend it. You don't need telepathy's list_peers or send_message for this.",
-      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message)."
+      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way; SendMessage to it is stopped with a pointer to send_message."
     ] : ["- list_peers shows the sessions you can reach; send_message delivers."],
     "- Message other sessions whenever it helps, for example one working in the same repo. Replies arrive as new messages: don't wait or poll.",
     ...agent === "claude" ? [] : ["- start_agent starts another agent (Codex, Claude Code, OpenCode\u2026) as your subagent, here or (with device) on another of your devices that allows it. Its final message comes back to you as a message with its transcript path."],
@@ -22829,46 +22888,9 @@ var guideText = (agent, opts = {}) => guideLines(agent, opts).join("\n");
 
 // src/agent/tools.ts
 import { execFileSync as execFileSync6, spawn as spawn3 } from "node:child_process";
-import fs18 from "node:fs";
+import fs17 from "node:fs";
 import path19 from "node:path";
 import { fileURLToPath } from "node:url";
-
-// src/cli/agy-auth.ts
-import fs16 from "node:fs";
-import os8 from "node:os";
-import path17 from "node:path";
-var AGY_CONSUMER_LOGIN_WARNING = [
-  "telepathy: refusing to drive Antigravity headless or ACP on a consumer login.",
-  "Google says wrapping `agy -p` or driving a consumer account from third-party software can suspend the account.",
-  'Set GEMINI_API_KEY and "modelProvider": "gemini" in ~/.gemini/antigravity-cli/settings.json, then try again.',
-  "An interactive `telepathy run antigravity` (the TUI) is unchanged."
-].join("\n");
-var AGY_API_KEY_MISSING = [
-  'telepathy: Antigravity settings use "modelProvider": "gemini", but GEMINI_API_KEY is not set.',
-  "Export GEMINI_API_KEY, or remove modelProvider to go back to an interactive account login.",
-  "Headless and ACP are not started."
-].join("\n");
-function agySettingsFile(env = process.env) {
-  const home = env.HOME?.trim() || os8.homedir();
-  return path17.join(home, ".gemini", "antigravity-cli", "settings.json");
-}
-function agyLoginType(env = process.env) {
-  let json2 = {};
-  try {
-    json2 = JSON.parse(fs16.readFileSync(agySettingsFile(env), "utf8"));
-  } catch {
-    json2 = {};
-  }
-  const modelProvider = typeof json2.modelProvider === "string" ? json2.modelProvider : void 0;
-  if (modelProvider === "gemini") return { type: "gemini-api", modelProvider };
-  return { type: "consumer", modelProvider };
-}
-function ensureAgyApiKey(env = process.env) {
-  const login = agyLoginType(env);
-  if (login.type !== "gemini-api") return { ok: false, warning: AGY_CONSUMER_LOGIN_WARNING };
-  if (!env.GEMINI_API_KEY?.trim()) return { ok: false, warning: AGY_API_KEY_MISSING };
-  return { ok: true };
-}
 
 // src/cli/harnesses.ts
 import { execFileSync as execFileSync4 } from "node:child_process";
@@ -22985,7 +23007,7 @@ var HARNESSES = [
     defaultMode: "acp",
     headless: "antigravity",
     deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
-    acp: { bin: "antigravity-acp", fallbacks: ["agy_acp_server.par"], args: [], adapter: true },
+    acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
     install: {
       kind: "commands",
       steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }],
@@ -23076,8 +23098,43 @@ function removeCleanWorktree(spec) {
   }
 }
 
+// src/agent/policy.ts
+import path17 from "node:path";
+var policyFile = (dir) => path17.join(dir, "policy.json");
+function readPolicy(dir) {
+  const stored2 = readJson(policyFile(dir));
+  return {
+    mode: stored2?.mode === "ask" ? "ask" : "auto",
+    allow: Array.isArray(stored2?.allow) ? stored2.allow.filter((entry) => typeof entry === "string" && !!entry.trim()) : [],
+    ...typeof stored2?.model === "string" && stored2.model ? { model: stored2.model } : {},
+    ...stored2?.at ? { at: stored2.at } : {}
+  };
+}
+function updatePolicy(dir, change) {
+  const policy = readPolicy(dir);
+  if (change.mode) policy.mode = change.mode;
+  if (change.allow) policy.allow = normalizeEntries(change.allow);
+  if (change.add) policy.allow = normalizeEntries([...policy.allow, ...change.add]);
+  if (change.model !== void 0) {
+    if (change.model.trim()) policy.model = change.model.trim();
+    else delete policy.model;
+  }
+  policy.at = (/* @__PURE__ */ new Date()).toISOString();
+  writeJsonAtomic(policyFile(dir), policy);
+  return policy;
+}
+function normalizeEntry(entry) {
+  let value = entry.trim();
+  const wrapped = /^(?:bash|shell)\((.*)\)$/i.exec(value);
+  if (wrapped) value = wrapped[1].trim();
+  return value.replace(/(?::\*|\s+\*|\*)$/, "").trim();
+}
+function normalizeEntries(entries) {
+  return [...new Set(entries.map(normalizeEntry).filter(Boolean))];
+}
+
 // src/agent/spec.ts
-import fs17 from "node:fs";
+import fs16 from "node:fs";
 import path18 from "node:path";
 var agentsDir = () => path18.join(stateDir(), "agents");
 var agentDir = (harness, slug) => path18.join(agentsDir(), `${harness}-${slug}`);
@@ -23097,7 +23154,7 @@ function hostAlive(state) {
 function listAgents() {
   let names;
   try {
-    names = fs17.readdirSync(agentsDir());
+    names = fs16.readdirSync(agentsDir());
   } catch {
     return [];
   }
@@ -23117,7 +23174,7 @@ var startWaitMs = () => envDurationMs("TELEPATHY_AGENT_START_MS", 9e4);
 function hostCommand(dir) {
   const here = path19.dirname(fileURLToPath(import.meta.url));
   for (const file2 of [path19.join(here, "agent.mjs"), path19.join(here, "..", "agent-main.ts")]) {
-    if (fs18.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
+    if (fs17.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
   }
   return { cmd: process.execPath, args: [...process.execArgv, process.argv[1] ?? "", "agent-host", dir] };
 }
@@ -23125,7 +23182,7 @@ var failed = (text) => ({ text, isError: true });
 function reserveSlug(harness, wanted, busy = () => false) {
   const taken = new Set(listPeers().filter((p) => p.agent === harness).map((p) => p.address.slice(harness.length + 1)));
   for (const entry of listAgents()) if (entry.spec.harness === harness && hostAlive(entry.state)) taken.add(entry.spec.slug);
-  const free = (slug) => !taken.has(slug) && !fs18.existsSync(path19.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
+  const free = (slug) => !taken.has(slug) && !fs17.existsSync(path19.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
   ensureDir(agentsDir());
   for (let n = 1; ; n++) {
     const slug = n === 1 ? wanted : `${wanted}-${n}`;
@@ -23134,7 +23191,7 @@ function reserveSlug(harness, wanted, busy = () => false) {
 }
 function claimDir(dir) {
   try {
-    fs18.mkdirSync(dir);
+    fs17.mkdirSync(dir);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") throw err;
@@ -23144,7 +23201,7 @@ function claimDir(dir) {
   if (!state) {
     let age = 0;
     try {
-      age = Date.now() - fs18.statSync(dir).mtimeMs;
+      age = Date.now() - fs17.statSync(dir).mtimeMs;
     } catch {
       return false;
     }
@@ -23152,13 +23209,13 @@ function claimDir(dir) {
   }
   const aside = `${dir}.old-${process.pid}-${Date.now().toString(36)}`;
   try {
-    fs18.renameSync(dir, aside);
+    fs17.renameSync(dir, aside);
   } catch {
     return false;
   }
-  fs18.rmSync(aside, { recursive: true, force: true });
+  fs17.rmSync(aside, { recursive: true, force: true });
   try {
-    fs18.mkdirSync(dir);
+    fs17.mkdirSync(dir);
     return true;
   } catch {
     return false;
@@ -23178,9 +23235,9 @@ function makeWorktree(cwd, harness, slug) {
   const base = git("rev-parse", "HEAD");
   const tree = path19.join(stateDir(), "worktrees", `${harness}-${slug}`);
   const branch = `telepathy/${slug}`;
-  fs18.mkdirSync(path19.dirname(tree), { recursive: true });
+  fs17.mkdirSync(path19.dirname(tree), { recursive: true });
   git("worktree", "add", "-b", branch, tree, base);
-  const inside = path19.relative(fs18.realpathSync(repo), fs18.realpathSync(cwd));
+  const inside = path19.relative(fs17.realpathSync(repo), fs17.realpathSync(cwd));
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path19.join(tree, inside) : tree };
 }
 var parentOf = (self) => ({ party: partyOf(self), cwd: self.cwd });
@@ -23196,15 +23253,11 @@ function launchAgent(parent, args) {
     const hint = known.acp.installHint ? ` Install it with \`${known.acp.installHint}\`.` : "";
     return fail(`Not started: ${agentLabel(harness)} needs \`${known.acp.bin}\` on PATH for ACP, and it is not there.${hint}`);
   }
-  if (harness === "antigravity") {
-    const auth = ensureAgyApiKey();
-    if (!auth.ok) return fail(`Not started: ${auth.warning}`);
-  }
   if (!args.prompt.trim()) return fail("Not started: the prompt is empty.");
   let cwd = path19.resolve(args.cwd ?? parent.cwd ?? process.cwd());
   let isDir = false;
   try {
-    isDir = fs18.statSync(cwd).isDirectory();
+    isDir = fs17.statSync(cwd).isDirectory();
   } catch {
     return fail(`Not started: ${cwd} does not exist.`);
   }
@@ -23223,7 +23276,7 @@ function launchAgent(parent, args) {
       cwd = made.cwd;
       worktree = { repo: made.repo, path: made.path, branch: made.branch, base: made.base };
     } catch (err) {
-      fs18.rmSync(dir, { recursive: true, force: true });
+      fs17.rmSync(dir, { recursive: true, force: true });
       return fail(`Not started: could not make a git worktree from ${cwd}: ${err.message.trim()}`);
     }
   }
@@ -23242,14 +23295,27 @@ function launchAgent(parent, args) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeSpec(dir, spec);
+  if (args.permissions) updatePolicy(dir, { mode: args.permissions.mode, allow: args.permissions.allow, model: args.permissions.model });
   const { cmd, args: argv } = hostCommand(dir);
-  const log = fs18.openSync(path19.join(dir, "host.log"), "a");
+  const log = fs17.openSync(path19.join(dir, "host.log"), "a");
   const child = spawn3(cmd, argv, { cwd, detached: true, stdio: ["ignore", log, log], env: process.env });
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs18.closeSync(log);
+  fs17.closeSync(log);
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
+}
+function decides(policy, noAutoMode, label) {
+  if (!noAutoMode) return "its harness's own auto mode decides, and what it still asks about comes to you";
+  if (policy.mode === "ask") return "it has no auto mode over ACP, and telepathy's is off: each permission request it makes comes to you";
+  const model = policy.model ? `model ${policy.model}` : "its cheapest model, medium effort";
+  return `it has no auto mode over ACP, so telepathy's is on: a reviewer session of ${label} (${model}) approves routine permission requests, and the rest come to you`;
+}
+var allowSentence = (policy) => policy.allow.length ? `Allowed without asking: ${policy.allow.join(", ")}.` : "";
+function policyLine(policy, noAutoMode, label) {
+  if (!policy) return "";
+  const who = noAutoMode ? decides(policy, noAutoMode, label) : "";
+  return [who ? `${who[0].toUpperCase()}${who.slice(1)}.` : "", allowSentence(policy)].filter(Boolean).join(" ");
 }
 function startedText(spec, state, where) {
   const settings = state.settings?.length ? state.settings.join(", ") : "its default settings";
@@ -23257,6 +23323,7 @@ function startedText(spec, state, where) {
     `Started ${where.address} [${where.ref}], ${agentLabel(spec.harness)} in ${spec.cwd}${where.on ? ` on ${where.on}` : ""}, with ${settings}.`,
     `Transcript: ${where.transcript}`,
     spec.worktree ? `It works in its own worktree on branch ${spec.worktree.branch}; an unchanged worktree is removed when it stops.` : "",
+    policyLine(state.policy, state.noAutoMode, agentLabel(spec.harness)),
     `It works in the background. When its turn ends, its final message arrives here as a message from it (kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to "${where.address}"; stop it with stop_agent when you no longer need it.`,
     ...state.notes ?? []
   ].filter(Boolean).join("\n");
@@ -23271,7 +23338,9 @@ async function startAgentTool(self, args) {
     const state = readState(dir);
     if (state?.status === "failed") return failed(`Not started: ${agentLabel(harness)} ${state.error ?? "failed to start"}.`.replace(/\.\.$/, "."));
     if (state?.status === "ready" && state.address && state.peerId) {
-      return { text: startedText(spec, state, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }) };
+      return {
+        text: startedText(spec, { ...state, policy: readPolicy(dir) }, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) })
+      };
     }
     const spawnError = launched.spawnError();
     if (spawnError) {
@@ -23331,19 +23400,43 @@ function answerPermissionTool(self, args) {
   if (!PERMISSION_ID.test(args.request)) return failed(`"${args.request}" is not a permission request id.`);
   const found = findChild(self, args.agent);
   if ("error" in found) return failed(found.error);
-  if (!fs18.existsSync(permissionRequestFile(found.dir, args.request))) {
-    return failed(`${args.agent} has no permission request "${args.request}".`);
-  }
+  const request = readJson(permissionRequestFile(found.dir, args.request));
+  if (!request) return failed(`${args.agent} has no permission request "${args.request}".`);
   const answer = permissionAnswerFile(found.dir, args.request);
-  if (fs18.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
+  if (fs17.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
   if (!hostAlive(found.state)) return failed(`${args.agent} is no longer running.`);
+  const remembered = args.allow && args.always ? rememberPrefixes(found.dir, request.prefixes) : "";
   writeJsonAtomic(answer, { allow: args.allow, at: (/* @__PURE__ */ new Date()).toISOString() });
-  return { text: `${args.allow ? "Allowed" : "Denied"} request ${args.request} for ${found.state?.address ?? args.agent}.` };
+  return { text: `${args.allow ? "Allowed" : "Denied"} request ${args.request} for ${found.state?.address ?? args.agent}.${remembered}` };
+}
+function rememberPrefixes(dir, prefixes) {
+  if (!prefixes?.length) return " Nothing was added to its allow list: that command has no prefix that is safe to allow on its own.";
+  const policy = updatePolicy(dir, { add: prefixes });
+  return ` From now on it runs ${prefixes.join(", ")} without asking (allowed: ${policy.allow.join(", ")}).`;
+}
+function permissionModeText(address, policy, noAutoMode, label) {
+  return `${address}: ${decides(policy, noAutoMode, label)}. ${allowSentence(policy) || "Nothing is allowed without asking."}`;
+}
+function setPermissionModeTool(self, args) {
+  const found = findChild(self, args.agent);
+  if ("error" in found) return failed(found.error);
+  if (!hostAlive(readState(found.dir))) return failed(`${agentAddress(found)} is not running.`);
+  const policy = updatePolicy(found.dir, { mode: args.mode, allow: args.allow, model: args.model });
+  return { text: permissionModeText(agentAddress(found), policy, readState(found.dir)?.noAutoMode, agentLabel(found.spec.harness)) };
 }
 
 // src/core/tools.ts
 var DEFAULT_WAIT_MS = 45e3;
 var MAX_WAIT_MS = 50 * 6e4;
+var PERMISSIONS = {
+  mode: external_exports.enum(["auto", "ask"]).optional().describe(
+    `Default "auto": the harness's own auto mode, or for one with none (Cursor, OpenCode, Kilo), telepathy's, where a reviewer session of the same harness approves routine permission requests and the rest come to you. "ask" turns that reviewer off, so each request comes to you. A harness's own auto mode stays on either way`
+  ),
+  allow: external_exports.array(external_exports.string()).optional().describe(
+    'Command prefixes it may run without asking ("git status", "npm test", "ls"; every part of a command has to be allowed, and `cd` needs no entry), or Edit, Read, Search, Fetch for every request of that kind. On set_permission_mode it replaces the list; [] clears it'
+  ),
+  model: external_exports.string().optional().describe("The reviewer's model, by id or a unique part of it. Default: the cheapest the harness offers, at medium effort")
+};
 var TOOLS = {
   list_peers: {
     title: "List reachable agent sessions",
@@ -23368,7 +23461,7 @@ var TOOLS = {
   },
   start_agent: {
     title: "Start an agent session",
-    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
+    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in auto mode: its harness's own, or, for one with none over ACP (Cursor, OpenCode, Kilo), telepathy's, where a reviewer session of the same harness approves routine permission requests. A request still left to decide comes to you: ask your user, then call answer_permission. permissions sets what it may do without asking. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
     args: {
       harness: external_exports.enum(startableHarnesses()).describe("Which coding agent to start"),
       description: external_exports.string().describe("A short (3-5 word) description of what it is for; also its name unless name is set"),
@@ -23378,7 +23471,16 @@ var TOOLS = {
       effort: external_exports.string().optional().describe("Reasoning effort, as the harness names it (low, medium, high, xhigh, max)"),
       cwd: external_exports.string().optional().describe("Folder to work in. Defaults to yours (on another device, yours when that folder exists there too)"),
       device: external_exports.string().optional().describe('Run it on another of your devices (as in "@<device>" addresses) instead of this one. That device must allow it: `telepathy bridge allow-agents <this device>` there'),
-      isolation: external_exports.enum(["worktree"]).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops')
+      isolation: external_exports.enum(["worktree"]).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops'),
+      permissions: external_exports.object(PERMISSIONS).optional().describe("What it may do without asking you. Leave it out for auto mode and no allow list. Set what your user agreed to")
+    }
+  },
+  set_permission_mode: {
+    title: "Change an agent's permissions",
+    description: "Change what an agent this session started may do without asking you, while it runs (start_agent's permissions sets it at the start): its allow list of command prefixes, and, for a harness with no auto mode of its own (Cursor, OpenCode, Kilo), whether telepathy's auto mode is on. Fields you leave out stay as they are. Set what your user agreed to, or ask them first.",
+    args: {
+      agent: external_exports.string().describe("The agent's address, as start_agent returned it"),
+      ...PERMISSIONS
     }
   },
   stop_agent: {
@@ -23394,7 +23496,8 @@ var TOOLS = {
     args: {
       agent: external_exports.string().describe("The agent's address, as in the request"),
       request: external_exports.string().describe("The request id, as in the request"),
-      allow: external_exports.boolean().describe("true to allow, false to deny")
+      allow: external_exports.boolean().describe("true to allow, false to deny"),
+      always: external_exports.boolean().optional().describe("With allow true: also let it run this request's commands (by the prefixes the request names) without asking from now on")
     }
   },
   wait_for_messages: {
@@ -23427,6 +23530,24 @@ function readMessagesTool(selfId, { id, limit }) {
     text: recent.length ? render("No new messages. Most recent received:", recent) : "No messages received yet.",
     structured: { messages: recent.map(stored) }
   };
+}
+
+// src/headless/peer.ts
+import fs18 from "node:fs";
+import path20 from "node:path";
+var headlessDir = () => path20.join(stateDir(), "headless");
+function listHeadlessRecords() {
+  let names = [];
+  try {
+    names = fs18.readdirSync(headlessDir());
+  } catch {
+    return [];
+  }
+  return names.filter((name) => name.endsWith(".json")).map((name) => readJson(path20.join(headlessDir(), name))).filter((record2) => !!record2 && typeof record2.pid === "number");
+}
+function appendTranscript(peerId2, text) {
+  const file2 = path20.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs18.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 
 // src/opencode.ts
@@ -23565,10 +23686,11 @@ function statusOf(event, isPrimary) {
   if (event.type === "session.status") return event.properties?.status?.type === "idle" ? "idle" : "busy";
   return void 0;
 }
-var skillsDir = path20.join(path20.dirname(path20.dirname(fileURLToPath2(import.meta.url))), "skills");
+var skillsDir = path21.join(path21.dirname(path21.dirname(fileURLToPath2(import.meta.url))), "skills");
 var out = (r) => r.isError ? `Error: ${r.text}` : r.text;
 var TelepathyPlugin = async ({ client, directory }) => {
-  const agent = /kilo/i.test(path20.basename(process.execPath)) ? "kilo" : "opencode";
+  if (process.env.TELEPATHY_DISABLED === "1") return {};
+  const agent = /kilo/i.test(path21.basename(process.execPath)) ? "kilo" : "opencode";
   const pid = process.pid;
   let id = peerId(agent, pid);
   registerPresence(agent, pid, { cwd: directory });
@@ -23799,12 +23921,17 @@ ${note}`;
         description: TOOLS.answer_permission.description,
         args: TOOLS.answer_permission.args,
         execute: async (args) => out(answerPermissionTool(self(), args))
+      },
+      telepathy_set_permission_mode: {
+        description: TOOLS.set_permission_mode.description,
+        args: TOOLS.set_permission_mode.args,
+        execute: async (args) => out(setPermissionModeTool(self(), external_exports.object(TOOLS.set_permission_mode.args).parse(args)))
       }
     }
   };
 };
 function readSkill() {
-  const file2 = path20.join(skillsDir, "using-telepathy", "SKILL.md");
+  const file2 = path21.join(skillsDir, "using-telepathy", "SKILL.md");
   try {
     const content = fs19.readFileSync(file2, "utf8");
     const description = /^description:\s*(.+)$/m.exec(content)?.[1]?.trim();
@@ -23815,13 +23942,17 @@ function readSkill() {
 }
 var jsonSchema = (args) => external_exports.toJSONSchema(external_exports.object(args));
 async function setupV2(ctx) {
+  if (process.env.TELEPATHY_DISABLED === "1") return async () => {
+  };
   const agent = "opencode";
   const pid = process.pid;
   const directory = ctx.location.directory;
   const idOf = (sessionID) => peerId(agent, sessionID);
   const sessions = /* @__PURE__ */ new Set();
+  const busy = /* @__PURE__ */ new Set();
   const parents = /* @__PURE__ */ new Map();
   const disposables = [];
+  const isAcpHosted = (id) => process.argv.includes("--stdio") || fs19.existsSync(path21.join(peerDir(id), "hosted.json"));
   debugLog("opencode", `plugin set up (OpenCode 2) in pid ${pid} for ${directory}`);
   const register = (sessionID) => {
     if (parents.has(sessionID)) return;
@@ -23830,18 +23961,24 @@ async function setupV2(ctx) {
     if (sessions.has(sessionID)) return;
     sessions.add(sessionID);
     registerPresence(agent, pid, { cwd: directory }, id);
-    registerListener(agent, pid, id);
-    writeStatus(id, "idle");
+    const lp = listenerPid(id);
+    if (!lp || lp === pid || !isAlive(lp)) registerListener(agent, pid, id);
+    if (!busy.has(sessionID)) writeStatus(id, "idle");
     watch(sessionID);
   };
   const delivering = /* @__PURE__ */ new Set();
+  const isBusy = (sessionID, id) => busy.has(sessionID) || readJson(path21.join(peerDir(id), "status.json"))?.status === "busy";
   async function deliver2(sessionID) {
-    if (delivering.has(sessionID) || !isDeliveryOwner(idOf(sessionID), pid)) return;
+    const id = idOf(sessionID);
+    if (isAcpHosted(id) && !isBusy(sessionID, id)) return;
+    if (delivering.has(sessionID) || !isDeliveryOwner(id, pid)) return;
     delivering.add(sessionID);
     try {
-      const messages = claimInbox(idOf(sessionID));
+      const messages = claimInbox(id);
       if (!messages.length) return;
-      await ctx.session.prompt({ sessionID, text: formatForContext(messages, { lead: false }), delivery: "steer" });
+      const text = formatForContext(messages, { lead: false });
+      await ctx.session.prompt({ sessionID, text, delivery: "steer" });
+      appendTranscript(id, text);
       debugLog("opencode", `delivered ${messages.map((m) => m.id).join(", ")} to session ${sessionID}`);
     } catch (err) {
       debugLog("opencode", `delivery to ${sessionID} failed: ${err.message}`);
@@ -23869,20 +24006,24 @@ async function setupV2(ctx) {
     }
   }, 2e3);
   timer2.unref?.();
-  let names = [];
-  try {
-    names = fs19.readdirSync(peersDir());
-  } catch {
-  }
-  for (const name of names) {
-    const session = name.startsWith(`${agent}-ses_`) ? readSession(name) : void 0;
-    if (!session?.sessionId || session.cwd !== directory || session.pid === pid || isPeerAlive(readPeer(name))) continue;
-    const sessionID = session.sessionId;
-    ctx.session.get({ sessionID }).then(
-      () => register(sessionID),
-      () => fs19.rmSync(peerDir(name), { recursive: true, force: true })
-      // deleted meanwhile
-    );
+  if (!process.argv.includes("--stdio")) {
+    const headlessIds = new Set(listHeadlessRecords().map((rec) => rec.peerId));
+    let names = [];
+    try {
+      names = fs19.readdirSync(peersDir());
+    } catch {
+    }
+    for (const name of names) {
+      if (headlessIds.has(name) || isAcpHosted(name)) continue;
+      const session = name.startsWith(`${agent}-ses_`) ? readSession(name) : void 0;
+      if (!session?.sessionId || session.cwd !== directory || session.pid === pid || isPeerAlive(readPeer(name))) continue;
+      const sessionID = session.sessionId;
+      ctx.session.get({ sessionID }).then(
+        () => register(sessionID),
+        () => fs19.rmSync(peerDir(name), { recursive: true, force: true })
+        // deleted meanwhile
+      );
+    }
   }
   disposables.push(ctx.session.hook("prompt", (event) => register(event.sessionID)));
   disposables.push(
@@ -23952,6 +24093,14 @@ async function setupV2(ctx) {
           content: out(answerPermissionTool(self(c.sessionID), external_exports.object(TOOLS.answer_permission.args).parse(input2)))
         })
       });
+      editor.add({
+        name: "telepathy_set_permission_mode",
+        description: TOOLS.set_permission_mode.description,
+        input: jsonSchema(TOOLS.set_permission_mode.args),
+        execute: async (input2, c) => ({
+          content: out(setPermissionModeTool(self(c.sessionID), external_exports.object(TOOLS.set_permission_mode.args).parse(input2)))
+        })
+      });
     })
   );
   disposables.push(
@@ -23983,13 +24132,18 @@ ${note}`;
       const id = idOf(sessionID);
       if (event.type === "session.deleted" && sessionID === data.sessionID) {
         sessions.delete(sessionID);
+        busy.delete(sessionID);
         watchers.get(sessionID)?.close();
         watchers.delete(sessionID);
         fs19.rmSync(peerDir(id), { recursive: true, force: true });
         continue;
       }
       const status = STATUS_EVENTS[event.type];
-      if (status && (status === "waiting" || status === "busy" || sessionID === data.sessionID)) writeStatus(id, status);
+      if (status && (status === "waiting" || status === "busy" || sessionID === data.sessionID)) {
+        if (status === "idle") busy.delete(sessionID);
+        else busy.add(sessionID);
+        writeStatus(id, status);
+      }
     }
   })().catch((err) => {
     if (!abort.signal.aborted) debugLog("opencode", `event stream ended: ${err.message}`);

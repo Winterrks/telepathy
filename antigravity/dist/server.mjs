@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.13.1" : "0.0.0-dev";
+    VERSION = true ? "0.14.0" : "0.0.0-dev";
   }
 });
 
@@ -704,7 +704,28 @@ function findAgent(hint) {
   }
   const claudePid = Number(process.env.CLAUDE_PID);
   if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
-  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid > 1 ? process.ppid : process.pid };
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list2 = children.get(info.ppid);
+    if (list2) list2.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out;
 }
 var cache, commandLine, argsCache, isStreamJsonClaude;
 var init_proc = __esm({
@@ -1033,12 +1054,21 @@ function sessionToken(sessionId) {
   return /^[A-Za-z0-9]/.test(safe) ? safe : void 0;
 }
 function sessionOwners(id) {
-  const owners = readJson(ownersFile(id)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson(ownersFile(id)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 function claimSessionOwner(id, pid) {
   const owners = sessionOwners(id);
   if (!owners.some((owner) => owner.pid === pid)) {
+    const ancestor = owners.findIndex((owner) => owner.pid !== pid && descendantPids(owner.pid).includes(pid));
+    if (ancestor >= 0) {
+      owners[ancestor] = { pid, procStart: procStart(pid), at: owners[ancestor].at };
+      writeJsonAtomic(ownersFile(id), owners);
+      return owners[0]?.pid === pid;
+    }
+    const descendant = owners.find((owner) => owner.pid !== pid && descendantPids(pid).includes(owner.pid));
+    if (descendant) return owners[0]?.pid === descendant.pid;
     owners.push({ pid, procStart: procStart(pid), at: (/* @__PURE__ */ new Date()).toISOString() });
     owners.sort((a, b) => a.at.localeCompare(b.at));
     writeJsonAtomic(ownersFile(id), owners);
@@ -1303,11 +1333,13 @@ function isPeerAlive(peer, now = Date.now()) {
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
     const pid = owner?.pid ?? peer.pid;
+    if (pid <= 1) return false;
     const started = owner?.procStart ?? readSession(peer.id)?.procStart;
     if (!isSameProcess(pid, started)) return false;
     if (peer.agent === "opencode" || peer.agent === "kilo") return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
     return true;
   }
+  if (peer.pid <= 1) return false;
   return isSameProcess(peer.pid, peer.procStart);
 }
 function readPeer(id) {
@@ -1720,12 +1752,18 @@ function openTag(msg, extra = {}) {
   const text = Object.entries(attrs).map(([key, value]) => `${key}="${tagAttr(value)}"`).join(" ");
   return `<${PEER_MESSAGE_TAG} ${text}>`;
 }
+function hostedParent(id) {
+  if (!id) return void 0;
+  const parent = readJson(path8.join(peerDir(id), "hosted.json"))?.parent;
+  return typeof parent === "string" && parent ? parent : void 0;
+}
 function formatAsUserTurn(msg, reply) {
+  const toParent = !reply && hostedParent(msg.to?.id) === msg.from.address ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.` : void 0;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
-    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+    `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` + (reply ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     "",
     escapeTelepathyTags(msg.body),
     closeTag
@@ -3585,6 +3623,24 @@ async function deliverLocal(from, to, body, self2, extra = {}) {
   const recipient = resolved.peer;
   const limited = self2 ? checkRate(self2.id, recipient.id, body) : void 0;
   if (limited) return { ok: false, error: limited };
+  const senderId = self2?.id ?? from.id;
+  if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
+    writeJsonAtomic(path19.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    const message2 = {
+      id: newMessageId(),
+      from,
+      to: partyOf(recipient),
+      body,
+      sentAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+    return {
+      ok: true,
+      message: message2,
+      recipient,
+      status: `Held for turn end: you are an agent ${recipient.address} started with start_agent, so telepathy delivers your final message when your turn ends. End your turn now with your final report as your last message; do not call send_message again.`,
+      delivery: { confirmed: true, attempts: [] }
+    };
+  }
   const plan = confirmWindow();
   const message = {
     id: newMessageId(),
@@ -3969,7 +4025,7 @@ var init_harnesses = __esm({
         defaultMode: "acp",
         headless: "antigravity",
         deliveryNote: "Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.",
-        acp: { bin: "antigravity-acp", fallbacks: ["agy_acp_server.par"], args: [], adapter: true },
+        acp: { bin: "agy", fallbacks: ["antigravity", "antigravity-acp", "agy_acp_server.par"], args: ["acp"], adapter: false },
         install: {
           kind: "commands",
           steps: [{ cmd: "agy", args: ["plugin", "install", `${REPO}/tree/main/antigravity`] }],
@@ -4029,7 +4085,7 @@ var init_harnesses = __esm({
 });
 
 // src/headless/peer.ts
-import fs30 from "node:fs";
+import fs29 from "node:fs";
 import path32 from "node:path";
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
@@ -4037,15 +4093,16 @@ function readHeadlessRecord(agent, slug) {
 function writeHeadlessRecord(record2) {
   writeJsonAtomic(headlessRecordPath(record2.agent, record2.slug), record2);
 }
-function writeHosted(peerId2) {
+function writeHosted(peerId2, parent) {
   writeJsonAtomic(path32.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
-    procStart: procStart(process.pid)
+    procStart: procStart(process.pid),
+    ...parent ? { parent } : {}
   });
 }
 function clearHosted(peerId2) {
   try {
-    fs30.rmSync(path32.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs29.rmSync(path32.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -4076,7 +4133,7 @@ var init_peer = __esm({
 });
 
 // src/grokbot/config.ts
-import fs31 from "node:fs";
+import fs30 from "node:fs";
 import path33 from "node:path";
 function urlProblem(raw) {
   let url2;
@@ -4099,7 +4156,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file2 = configPath(slug);
   try {
-    if ((fs31.statSync(file2).mode & 63) !== 0) return void 0;
+    if ((fs30.statSync(file2).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -4116,14 +4173,14 @@ function writeConfig(name, url2, key) {
 }
 function removeConfig(slug) {
   const file2 = configPath(slug);
-  if (!fs31.existsSync(file2)) return false;
-  fs31.rmSync(file2, { force: true });
+  if (!fs30.existsSync(file2)) return false;
+  fs30.rmSync(file2, { force: true });
   return true;
 }
 function listConfigs() {
   let names = [];
   try {
-    names = fs31.readdirSync(grokbotDir());
+    names = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
@@ -4132,14 +4189,14 @@ function listConfigs() {
 function looseConfigs() {
   let names = [];
   try {
-    names = fs31.readdirSync(grokbotDir());
+    names = fs30.readdirSync(grokbotDir());
   } catch {
     return [];
   }
   return names.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs31.statSync(path33.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs30.statSync(path33.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -4157,8 +4214,8 @@ var init_config = __esm({
 });
 
 // src/grokbot/host.ts
-import fs32 from "node:fs";
-import os12 from "node:os";
+import fs31 from "node:fs";
+import os11 from "node:os";
 import path34 from "node:path";
 import { fileURLToPath as fileURLToPath4 } from "node:url";
 async function postContext(config2, context) {
@@ -4195,7 +4252,7 @@ async function postContext(config2, context) {
 function grokbotArgv() {
   const here = path34.dirname(fileURLToPath4(import.meta.url));
   for (const file2 of [path34.join(here, "grokbot.mjs"), path34.join(here, "..", "grokbot-main.ts")]) {
-    if (fs32.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
+    if (fs31.existsSync(file2)) return [process.execPath, ...process.execArgv, file2];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
@@ -4203,11 +4260,11 @@ function takeLock(slug) {
   const file2 = path34.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs32.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs31.writeFileSync(file2, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs32.readFileSync(file2, "utf8"));
-          if (held.pid === process.pid) fs32.rmSync(file2, { force: true });
+          const held = JSON.parse(fs31.readFileSync(file2, "utf8"));
+          if (held.pid === process.pid) fs31.rmSync(file2, { force: true });
         } catch {
         }
       };
@@ -4215,12 +4272,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs32.readFileSync(file2, "utf8"));
+        held = JSON.parse(fs31.readFileSync(file2, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs32.rmSync(file2, { force: true });
+      fs31.rmSync(file2, { force: true });
     }
   }
   return void 0;
@@ -4230,7 +4287,7 @@ function cliCommand() {
   return grokbotArgv().map((arg, i) => i === grokbotArgv().length - 1 && arg === "grokbot" ? arg : `"${arg}"`).join(" ");
 }
 function contextFor(config2, messages, cli = cliCommand()) {
-  const host = os12.hostname().replace(/\.local$/, "");
+  const host = os11.hostname().replace(/\.local$/, "");
   const send = `${cli} send ${config2.slug}`;
   const note = noteTag(
     "wake",
@@ -4243,7 +4300,7 @@ function contextFor(config2, messages, cli = cliCommand()) {
 }
 function appendTranscript(peerId2, text) {
   const file2 = path34.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs32.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  fs31.appendFileSync(file2, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -4263,7 +4320,7 @@ async function runGrokbotHost(slug) {
   ensureDir(path34.dirname(logFile2));
   const log = (line) => {
     try {
-      fs32.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs31.appendFileSync(logFile2, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -4298,7 +4355,7 @@ async function runGrokbotHost(slug) {
         return;
       }
       const pendingFile = (msg) => path34.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs32.existsSync(pendingFile(msg)));
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs31.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now = Date.now();
@@ -4311,7 +4368,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs32.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs31.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config2, live, cli);
       const result = await postContext(config2, context);
@@ -4324,9 +4381,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs32.existsSync(path34.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs31.existsSync(path34.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript(hosted.peerId, formatAsUserTurn(msg));
-        if (fs32.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs31.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -4386,8 +4443,8 @@ __export(cli_exports, {
   grokbotCommand: () => grokbotCommand
 });
 import { spawn as spawn8 } from "node:child_process";
-import fs33 from "node:fs";
-import os13 from "node:os";
+import fs32 from "node:fs";
+import os12 from "node:os";
 import path35 from "node:path";
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -4436,12 +4493,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile2 = headlessLogPath("grok", slug);
-  fs33.mkdirSync(path35.dirname(logFile2), { recursive: true, mode: 448 });
-  const out = fs33.openSync(logFile2, "a", 384);
+  fs32.mkdirSync(path35.dirname(logFile2), { recursive: true, mode: 448 });
+  const out = fs32.openSync(logFile2, "a", 384);
   const [cmd, ...args] = grokbotArgv();
-  const home2 = os13.homedir();
+  const home2 = os12.homedir();
   const child = spawn8(cmd, [...args, "host", slug], {
-    cwd: fs33.existsSync(home2) ? home2 : stateDir(),
+    cwd: fs32.existsSync(home2) ? home2 : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -4449,7 +4506,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs33.closeSync(out);
+  fs32.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record2 = readHeadlessRecord("grok", slug);
@@ -4545,7 +4602,7 @@ async function grokbotCommand(argv) {
     const slug = needName(rest[0], "telepathy grokbot test <name>");
     const config2 = readConfig(slug);
     if (!config2) throw new Error(`grok:${slug} is not connected.`);
-    const host = os13.hostname().replace(/\.local$/, "");
+    const host = os12.hostname().replace(/\.local$/, "");
     const context = noteTag(
       "wake",
       `telepathy test from ${host}: this webhook reaches you. No reply is needed. Messages to grok:${slug} will arrive like this, and you answer them by running on ${host}: ${cliCommand()} send ${slug} <address> "<reply>".`
@@ -33046,7 +33103,7 @@ function guideLines(agent, opts = {}) {
     "telepathy: message other coding-agent sessions on this machine (Claude Code, Codex, Antigravity, OpenCode and more).",
     ...agent === "claude" ? [
       "- Your own tools reach other agents: ListAgents lists their sessions too (Codex, OpenCode\u2026), and SendMessage reaches them. telepathy delivers a SendMessage to another agent and stops the built-in call, so the result reads as an error though the message was sent: don't resend it. You don't need telepathy's list_peers or send_message for this.",
-      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way (SendMessage reaches it too, but then the report comes as a message)."
+      "- To give a task to another coding agent instead of a Claude subagent, use telepathy's start_agent" + (opts.taskHarnesses?.length ? ` (on this machine: ${opts.taskHarnesses.join(", ")})` : "") + ". With device set, it runs on another of your devices, one that allows it. In the terminal it is a background task: its report comes back when it is done, and TaskStop stops it. For a follow-up to it, use telepathy's send_message: the next report comes back the same way; SendMessage to it is stopped with a pointer to send_message."
     ] : ["- list_peers shows the sessions you can reach; send_message delivers."],
     "- Message other sessions whenever it helps, for example one working in the same repo. Replies arrive as new messages: don't wait or poll.",
     ...agent === "claude" ? [] : ["- start_agent starts another agent (Codex, Claude Code, OpenCode\u2026) as your subagent, here or (with device) on another of your devices that allows it. Its final message comes back to you as a message with its transcript path."],
@@ -33447,55 +33504,16 @@ init_messages();
 init_peers();
 
 // src/agent/tools.ts
-import { execFileSync as execFileSync6, spawn as spawn3 } from "node:child_process";
-import fs20 from "node:fs";
-import path22 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-
-// src/cli/agy-auth.ts
-import fs18 from "node:fs";
-import os9 from "node:os";
-import path20 from "node:path";
-var AGY_CONSUMER_LOGIN_WARNING = [
-  "telepathy: refusing to drive Antigravity headless or ACP on a consumer login.",
-  "Google says wrapping `agy -p` or driving a consumer account from third-party software can suspend the account.",
-  'Set GEMINI_API_KEY and "modelProvider": "gemini" in ~/.gemini/antigravity-cli/settings.json, then try again.',
-  "An interactive `telepathy run antigravity` (the TUI) is unchanged."
-].join("\n");
-var AGY_API_KEY_MISSING = [
-  'telepathy: Antigravity settings use "modelProvider": "gemini", but GEMINI_API_KEY is not set.',
-  "Export GEMINI_API_KEY, or remove modelProvider to go back to an interactive account login.",
-  "Headless and ACP are not started."
-].join("\n");
-function agySettingsFile(env = process.env) {
-  const home2 = env.HOME?.trim() || os9.homedir();
-  return path20.join(home2, ".gemini", "antigravity-cli", "settings.json");
-}
-function agyLoginType(env = process.env) {
-  let json2 = {};
-  try {
-    json2 = JSON.parse(fs18.readFileSync(agySettingsFile(env), "utf8"));
-  } catch {
-    json2 = {};
-  }
-  const modelProvider = typeof json2.modelProvider === "string" ? json2.modelProvider : void 0;
-  if (modelProvider === "gemini") return { type: "gemini-api", modelProvider };
-  return { type: "consumer", modelProvider };
-}
-function ensureAgyApiKey(env = process.env) {
-  const login = agyLoginType(env);
-  if (login.type !== "gemini-api") return { ok: false, warning: AGY_CONSUMER_LOGIN_WARNING };
-  if (!env.GEMINI_API_KEY?.trim()) return { ok: false, warning: AGY_API_KEY_MISSING };
-  return { ok: true };
-}
-
-// src/agent/tools.ts
 init_harnesses();
 init_agents();
 init_messages();
 init_paths();
 init_peers();
 init_proc();
+import { execFileSync as execFileSync6, spawn as spawn3 } from "node:child_process";
+import fs19 from "node:fs";
+import path22 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/agent/worktree.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
@@ -33515,13 +33533,49 @@ function removeCleanWorktree(spec) {
   }
 }
 
+// src/agent/policy.ts
+init_paths();
+import path20 from "node:path";
+var policyFile = (dir) => path20.join(dir, "policy.json");
+function readPolicy(dir) {
+  const stored2 = readJson(policyFile(dir));
+  return {
+    mode: stored2?.mode === "ask" ? "ask" : "auto",
+    allow: Array.isArray(stored2?.allow) ? stored2.allow.filter((entry) => typeof entry === "string" && !!entry.trim()) : [],
+    ...typeof stored2?.model === "string" && stored2.model ? { model: stored2.model } : {},
+    ...stored2?.at ? { at: stored2.at } : {}
+  };
+}
+function updatePolicy(dir, change) {
+  const policy = readPolicy(dir);
+  if (change.mode) policy.mode = change.mode;
+  if (change.allow) policy.allow = normalizeEntries(change.allow);
+  if (change.add) policy.allow = normalizeEntries([...policy.allow, ...change.add]);
+  if (change.model !== void 0) {
+    if (change.model.trim()) policy.model = change.model.trim();
+    else delete policy.model;
+  }
+  policy.at = (/* @__PURE__ */ new Date()).toISOString();
+  writeJsonAtomic(policyFile(dir), policy);
+  return policy;
+}
+function normalizeEntry(entry) {
+  let value = entry.trim();
+  const wrapped = /^(?:bash|shell)\((.*)\)$/i.exec(value);
+  if (wrapped) value = wrapped[1].trim();
+  return value.replace(/(?::\*|\s+\*|\*)$/, "").trim();
+}
+function normalizeEntries(entries) {
+  return [...new Set(entries.map(normalizeEntry).filter(Boolean))];
+}
+
 // src/agent/tools.ts
 init_sandbox_launch();
 
 // src/agent/spec.ts
 init_paths();
 init_proc();
-import fs19 from "node:fs";
+import fs18 from "node:fs";
 import path21 from "node:path";
 var agentsDir = () => path21.join(stateDir(), "agents");
 var agentDir = (harness, slug) => path21.join(agentsDir(), `${harness}-${slug}`);
@@ -33541,7 +33595,7 @@ function hostAlive(state) {
 function listAgents() {
   let names;
   try {
-    names = fs19.readdirSync(agentsDir());
+    names = fs18.readdirSync(agentsDir());
   } catch {
     return [];
   }
@@ -33561,7 +33615,7 @@ var startWaitMs = () => envDurationMs("TELEPATHY_AGENT_START_MS", 9e4);
 function hostCommand(dir) {
   const here = path22.dirname(fileURLToPath2(import.meta.url));
   for (const file2 of [path22.join(here, "agent.mjs"), path22.join(here, "..", "agent-main.ts")]) {
-    if (fs20.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
+    if (fs19.existsSync(file2)) return { cmd: process.execPath, args: [...process.execArgv, file2, dir] };
   }
   return { cmd: process.execPath, args: [...process.execArgv, process.argv[1] ?? "", "agent-host", dir] };
 }
@@ -33569,7 +33623,7 @@ var failed = (text) => ({ text, isError: true });
 function reserveSlug(harness, wanted, busy = () => false) {
   const taken = new Set(listPeers().filter((p) => p.agent === harness).map((p) => p.address.slice(harness.length + 1)));
   for (const entry of listAgents()) if (entry.spec.harness === harness && hostAlive(entry.state)) taken.add(entry.spec.slug);
-  const free = (slug) => !taken.has(slug) && !fs20.existsSync(path22.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
+  const free = (slug) => !taken.has(slug) && !fs19.existsSync(path22.join(stateDir(), "worktrees", `${harness}-${slug}`)) && !busy(slug);
   ensureDir(agentsDir());
   for (let n = 1; ; n++) {
     const slug = n === 1 ? wanted : `${wanted}-${n}`;
@@ -33578,7 +33632,7 @@ function reserveSlug(harness, wanted, busy = () => false) {
 }
 function claimDir(dir) {
   try {
-    fs20.mkdirSync(dir);
+    fs19.mkdirSync(dir);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") throw err;
@@ -33588,7 +33642,7 @@ function claimDir(dir) {
   if (!state) {
     let age = 0;
     try {
-      age = Date.now() - fs20.statSync(dir).mtimeMs;
+      age = Date.now() - fs19.statSync(dir).mtimeMs;
     } catch {
       return false;
     }
@@ -33596,13 +33650,13 @@ function claimDir(dir) {
   }
   const aside = `${dir}.old-${process.pid}-${Date.now().toString(36)}`;
   try {
-    fs20.renameSync(dir, aside);
+    fs19.renameSync(dir, aside);
   } catch {
     return false;
   }
-  fs20.rmSync(aside, { recursive: true, force: true });
+  fs19.rmSync(aside, { recursive: true, force: true });
   try {
-    fs20.mkdirSync(dir);
+    fs19.mkdirSync(dir);
     return true;
   } catch {
     return false;
@@ -33622,9 +33676,9 @@ function makeWorktree(cwd, harness, slug) {
   const base = git("rev-parse", "HEAD");
   const tree = path22.join(stateDir(), "worktrees", `${harness}-${slug}`);
   const branch = `telepathy/${slug}`;
-  fs20.mkdirSync(path22.dirname(tree), { recursive: true });
+  fs19.mkdirSync(path22.dirname(tree), { recursive: true });
   git("worktree", "add", "-b", branch, tree, base);
-  const inside = path22.relative(fs20.realpathSync(repo), fs20.realpathSync(cwd));
+  const inside = path22.relative(fs19.realpathSync(repo), fs19.realpathSync(cwd));
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path22.join(tree, inside) : tree };
 }
 var parentOf = (self2) => ({ party: partyOf(self2), cwd: self2.cwd });
@@ -33640,15 +33694,11 @@ function launchAgent(parent, args) {
     const hint = known.acp.installHint ? ` Install it with \`${known.acp.installHint}\`.` : "";
     return fail(`Not started: ${agentLabel(harness)} needs \`${known.acp.bin}\` on PATH for ACP, and it is not there.${hint}`);
   }
-  if (harness === "antigravity") {
-    const auth = ensureAgyApiKey();
-    if (!auth.ok) return fail(`Not started: ${auth.warning}`);
-  }
   if (!args.prompt.trim()) return fail("Not started: the prompt is empty.");
   let cwd = path22.resolve(args.cwd ?? parent.cwd ?? process.cwd());
   let isDir = false;
   try {
-    isDir = fs20.statSync(cwd).isDirectory();
+    isDir = fs19.statSync(cwd).isDirectory();
   } catch {
     return fail(`Not started: ${cwd} does not exist.`);
   }
@@ -33667,7 +33717,7 @@ function launchAgent(parent, args) {
       cwd = made.cwd;
       worktree = { repo: made.repo, path: made.path, branch: made.branch, base: made.base };
     } catch (err) {
-      fs20.rmSync(dir, { recursive: true, force: true });
+      fs19.rmSync(dir, { recursive: true, force: true });
       return fail(`Not started: could not make a git worktree from ${cwd}: ${err.message.trim()}`);
     }
   }
@@ -33686,14 +33736,27 @@ function launchAgent(parent, args) {
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
   writeSpec(dir, spec);
+  if (args.permissions) updatePolicy(dir, { mode: args.permissions.mode, allow: args.permissions.allow, model: args.permissions.model });
   const { cmd, args: argv } = hostCommand(dir);
-  const log = fs20.openSync(path22.join(dir, "host.log"), "a");
+  const log = fs19.openSync(path22.join(dir, "host.log"), "a");
   const child = spawn3(cmd, argv, { cwd, detached: true, stdio: ["ignore", log, log], env: process.env });
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs20.closeSync(log);
+  fs19.closeSync(log);
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
+}
+function decides(policy, noAutoMode, label) {
+  if (!noAutoMode) return "its harness's own auto mode decides, and what it still asks about comes to you";
+  if (policy.mode === "ask") return "it has no auto mode over ACP, and telepathy's is off: each permission request it makes comes to you";
+  const model = policy.model ? `model ${policy.model}` : "its cheapest model, medium effort";
+  return `it has no auto mode over ACP, so telepathy's is on: a reviewer session of ${label} (${model}) approves routine permission requests, and the rest come to you`;
+}
+var allowSentence = (policy) => policy.allow.length ? `Allowed without asking: ${policy.allow.join(", ")}.` : "";
+function policyLine(policy, noAutoMode, label) {
+  if (!policy) return "";
+  const who = noAutoMode ? decides(policy, noAutoMode, label) : "";
+  return [who ? `${who[0].toUpperCase()}${who.slice(1)}.` : "", allowSentence(policy)].filter(Boolean).join(" ");
 }
 function startedText(spec, state, where) {
   const settings = state.settings?.length ? state.settings.join(", ") : "its default settings";
@@ -33701,6 +33764,7 @@ function startedText(spec, state, where) {
     `Started ${where.address} [${where.ref}], ${agentLabel(spec.harness)} in ${spec.cwd}${where.on ? ` on ${where.on}` : ""}, with ${settings}.`,
     `Transcript: ${where.transcript}`,
     spec.worktree ? `It works in its own worktree on branch ${spec.worktree.branch}; an unchanged worktree is removed when it stops.` : "",
+    policyLine(state.policy, state.noAutoMode, agentLabel(spec.harness)),
     `It works in the background. When its turn ends, its final message arrives here as a message from it (kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to "${where.address}"; stop it with stop_agent when you no longer need it.`,
     ...state.notes ?? []
   ].filter(Boolean).join("\n");
@@ -33715,7 +33779,9 @@ async function startAgentTool(self2, args) {
     const state = readState(dir);
     if (state?.status === "failed") return failed(`Not started: ${agentLabel(harness)} ${state.error ?? "failed to start"}.`.replace(/\.\.$/, "."));
     if (state?.status === "ready" && state.address && state.peerId) {
-      return { text: startedText(spec, state, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }) };
+      return {
+        text: startedText(spec, { ...state, policy: readPolicy(dir) }, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) })
+      };
     }
     const spawnError = launched.spawnError();
     if (spawnError) {
@@ -33775,20 +33841,44 @@ function answerPermissionTool(self2, args) {
   if (!PERMISSION_ID.test(args.request)) return failed(`"${args.request}" is not a permission request id.`);
   const found = findChild(self2, args.agent);
   if ("error" in found) return failed(found.error);
-  if (!fs20.existsSync(permissionRequestFile(found.dir, args.request))) {
-    return failed(`${args.agent} has no permission request "${args.request}".`);
-  }
+  const request = readJson(permissionRequestFile(found.dir, args.request));
+  if (!request) return failed(`${args.agent} has no permission request "${args.request}".`);
   const answer = permissionAnswerFile(found.dir, args.request);
-  if (fs20.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
+  if (fs19.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
   if (!hostAlive(found.state)) return failed(`${args.agent} is no longer running.`);
+  const remembered = args.allow && args.always ? rememberPrefixes(found.dir, request.prefixes) : "";
   writeJsonAtomic(answer, { allow: args.allow, at: (/* @__PURE__ */ new Date()).toISOString() });
-  return { text: `${args.allow ? "Allowed" : "Denied"} request ${args.request} for ${found.state?.address ?? args.agent}.` };
+  return { text: `${args.allow ? "Allowed" : "Denied"} request ${args.request} for ${found.state?.address ?? args.agent}.${remembered}` };
+}
+function rememberPrefixes(dir, prefixes) {
+  if (!prefixes?.length) return " Nothing was added to its allow list: that command has no prefix that is safe to allow on its own.";
+  const policy = updatePolicy(dir, { add: prefixes });
+  return ` From now on it runs ${prefixes.join(", ")} without asking (allowed: ${policy.allow.join(", ")}).`;
+}
+function permissionModeText(address, policy, noAutoMode, label) {
+  return `${address}: ${decides(policy, noAutoMode, label)}. ${allowSentence(policy) || "Nothing is allowed without asking."}`;
+}
+function setPermissionModeTool(self2, args) {
+  const found = findChild(self2, args.agent);
+  if ("error" in found) return failed(found.error);
+  if (!hostAlive(readState(found.dir))) return failed(`${agentAddress(found)} is not running.`);
+  const policy = updatePolicy(found.dir, { mode: args.mode, allow: args.allow, model: args.model });
+  return { text: permissionModeText(agentAddress(found), policy, readState(found.dir)?.noAutoMode, agentLabel(found.spec.harness)) };
 }
 
 // src/core/tools.ts
 var DEFAULT_WAIT_MS = 45e3;
 var MAX_WAIT_MS = 50 * 6e4;
 var ALREADY_LISTENING = "A listener is already delivering this session's messages. Leave it running; wait_for_messages would take messages that listener prints and block the turn.";
+var PERMISSIONS = {
+  mode: external_exports.enum(["auto", "ask"]).optional().describe(
+    `Default "auto": the harness's own auto mode, or for one with none (Cursor, OpenCode, Kilo), telepathy's, where a reviewer session of the same harness approves routine permission requests and the rest come to you. "ask" turns that reviewer off, so each request comes to you. A harness's own auto mode stays on either way`
+  ),
+  allow: external_exports.array(external_exports.string()).optional().describe(
+    'Command prefixes it may run without asking ("git status", "npm test", "ls"; every part of a command has to be allowed, and `cd` needs no entry), or Edit, Read, Search, Fetch for every request of that kind. On set_permission_mode it replaces the list; [] clears it'
+  ),
+  model: external_exports.string().optional().describe("The reviewer's model, by id or a unique part of it. Default: the cheapest the harness offers, at medium effort")
+};
 var TOOLS = {
   list_peers: {
     title: "List reachable agent sessions",
@@ -33813,7 +33903,7 @@ var TOOLS = {
   },
   start_agent: {
     title: "Start an agent session",
-    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
+    description: "Start a new coding-agent session (Codex, Claude Code, OpenCode, Copilot\u2026) as your subagent, in its harness's ACP mode: on this machine, or with device on another of your devices that allows it. It works in the background with telepathy's tools and returns at once with its address and transcript path. Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. Continue it with send_message to its address; stop it with stop_agent when you no longer need it. It runs in auto mode: its harness's own, or, for one with none over ACP (Cursor, OpenCode, Kilo), telepathy's, where a reviewer session of the same harness approves routine permission requests. A request still left to decide comes to you: ask your user, then call answer_permission. permissions sets what it may do without asking. In Claude Code's terminal it is a background task instead: its report is the task's result, TaskStop stops it, and a permission request goes to your user in a dialog.",
     args: {
       harness: external_exports.enum(startableHarnesses()).describe("Which coding agent to start"),
       description: external_exports.string().describe("A short (3-5 word) description of what it is for; also its name unless name is set"),
@@ -33823,7 +33913,16 @@ var TOOLS = {
       effort: external_exports.string().optional().describe("Reasoning effort, as the harness names it (low, medium, high, xhigh, max)"),
       cwd: external_exports.string().optional().describe("Folder to work in. Defaults to yours (on another device, yours when that folder exists there too)"),
       device: external_exports.string().optional().describe('Run it on another of your devices (as in "@<device>" addresses) instead of this one. That device must allow it: `telepathy bridge allow-agents <this device>` there'),
-      isolation: external_exports.enum(["worktree"]).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops')
+      isolation: external_exports.enum(["worktree"]).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops'),
+      permissions: external_exports.object(PERMISSIONS).optional().describe("What it may do without asking you. Leave it out for auto mode and no allow list. Set what your user agreed to")
+    }
+  },
+  set_permission_mode: {
+    title: "Change an agent's permissions",
+    description: "Change what an agent this session started may do without asking you, while it runs (start_agent's permissions sets it at the start): its allow list of command prefixes, and, for a harness with no auto mode of its own (Cursor, OpenCode, Kilo), whether telepathy's auto mode is on. Fields you leave out stay as they are. Set what your user agreed to, or ask them first.",
+    args: {
+      agent: external_exports.string().describe("The agent's address, as start_agent returned it"),
+      ...PERMISSIONS
     }
   },
   stop_agent: {
@@ -33839,7 +33938,8 @@ var TOOLS = {
     args: {
       agent: external_exports.string().describe("The agent's address, as in the request"),
       request: external_exports.string().describe("The request id, as in the request"),
-      allow: external_exports.boolean().describe("true to allow, false to deny")
+      allow: external_exports.boolean().describe("true to allow, false to deny"),
+      always: external_exports.boolean().optional().describe("With allow true: also let it run this request's commands (by the prefixes the request names) without asking from now on")
     }
   },
   wait_for_messages: {
@@ -33887,7 +33987,7 @@ init_messages();
 init_paths();
 init_peers();
 init_tags();
-import fs21 from "node:fs";
+import fs20 from "node:fs";
 var INBOX_URI = "telepathy://inbox";
 function attachGrokDelivery(server, currentId) {
   server.registerResource(
@@ -33978,7 +34078,7 @@ function attachGrokDelivery(server, currentId) {
     if (watched !== selfId) announced.clear();
     watched = selfId;
     try {
-      watcher = fs21.watch(inboxDir(selfId), () => void announce());
+      watcher = fs20.watch(inboxDir(selfId), () => void announce());
       watcher.on("error", () => {
         try {
           watcher?.close();
@@ -34007,7 +34107,7 @@ init_version();
 init_client();
 init_remote();
 init_state();
-import fs22 from "node:fs";
+import fs21 from "node:fs";
 import path23 from "node:path";
 function agentDevice(name) {
   const device = findDevice(name.trim().toLowerCase());
@@ -34057,7 +34157,7 @@ function findRemoteChild(self2, name) {
   if (target && device) q = target.query;
   let names;
   try {
-    names = fs22.readdirSync(childrenDir());
+    names = fs21.readdirSync(childrenDir());
   } catch {
     return void 0;
   }
@@ -34084,13 +34184,16 @@ async function startRemoteAgentTool(self2, deviceName, args) {
     const state = agent.state;
     if (state?.status === "failed") return failed2(`Not started: ${agentLabel(agent.harness)} ${state.error ?? "failed to start"} on ${device.slug}.`);
     if (state?.status === "ready" && state.peerId) {
+      const asked = !!args.permissions;
+      const old = asked && !agent.policy ? `
+${device.slug} runs an older telepathy, which has no permission mode or allow list.` : "";
       return {
-        text: startedText(agent, state, {
+        text: startedText(agent, { ...state, policy: agent.policy }, {
           address,
           ref: `${state.peerId}@${device.slug}`,
           transcript: `${agent.transcript} on ${device.slug}`,
           on: device.slug
-        })
+        }) + old
       };
     }
     if (state && !agent.alive) break;
@@ -34111,16 +34214,28 @@ async function stopRemoteAgentTool(self2, child) {
   const kept = reply.agent.state?.worktreeKept && reply.agent.worktree ? ` Its worktree ${reply.agent.worktree.path} (branch ${reply.agent.worktree.branch}) on ${device.slug} has changes and was kept.` : "";
   return { text: `Stopped ${address}. Transcript: ${reply.agent.transcript} on ${device.slug}.${kept}` };
 }
-async function answerRemotePermission(self2, child, request, allow) {
+async function answerRemotePermission(self2, child, request, allow, always) {
   const device = agentDevice(child.device);
   if ("error" in device) return failed2(device.error.replace(/^Not started: /, ""));
-  const reply = await agentsRequest(device, self2, { op: "answer", address: child.address, request, allow });
+  const reply = await agentsRequest(device, self2, { op: "answer", address: child.address, request, allow, ...always ? { always } : {} });
   if (!reply.ok) return failed2(reply.error);
-  return { text: `${allow ? "Allowed" : "Denied"} request ${request} for ${childAddress(child)}.` };
+  const remembered = allow && always ? reply.text ? ` ${reply.text}` : ` Nothing was added to its allow list: ${device.slug} runs an older telepathy.` : "";
+  return { text: `${allow ? "Allowed" : "Denied"} request ${request} for ${childAddress(child)}.${remembered}` };
+}
+async function setRemotePermissionMode(self2, child, args) {
+  const device = agentDevice(child.device);
+  if ("error" in device) return failed2(device.error.replace(/^Not started: /, ""));
+  const { agent: _name, ...change } = args;
+  const reply = await agentsRequest(device, self2, { op: "policy", address: child.address, ...change });
+  if (!reply.ok) {
+    return failed2(reply.error === "malformed request" ? `${device.slug} runs an older telepathy, which has no permission mode. Update it with \`telepathy update\` there.` : reply.error);
+  }
+  if (!reply.agent.policy) return failed2(`${device.slug} runs an older telepathy, which has no permission mode.`);
+  return { text: permissionModeText(childAddress(child), reply.agent.policy, reply.agent.state?.noAutoMode, `${agentLabel(child.harness)} on ${device.slug}`) };
 }
 
 // src/agent/task.ts
-import fs23 from "node:fs";
+import fs22 from "node:fs";
 init_harnesses();
 init_agents();
 init_paths();
@@ -34138,7 +34253,7 @@ var PENDING = /^\d{6}\.json$/;
 function claimEvent(dir) {
   let names;
   try {
-    names = fs23.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
+    names = fs22.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
   } catch {
     return void 0;
   }
@@ -34146,7 +34261,7 @@ function claimEvent(dir) {
     const from = path24.join(eventsDir(dir), name);
     const to = from.replace(/\.json$/, ".taken");
     try {
-      fs23.renameSync(from, to);
+      fs22.renameSync(from, to);
     } catch {
       continue;
     }
@@ -34158,9 +34273,29 @@ function claimEvent(dir) {
 var openSeq = 0;
 function openTask(dir, taskId, procStart2) {
   ensureDir(openDir(dir));
+  forgetLostTasks(dir);
   const file2 = path24.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
   writeJsonAtomic(file2, { taskId, pid: process.pid, procStart: procStart2 });
-  return () => fs23.rmSync(file2, { force: true });
+  return () => fs22.rmSync(file2, { force: true });
+}
+function markers(dir) {
+  let names;
+  try {
+    names = fs22.readdirSync(openDir(dir));
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const file2 = path24.join(openDir(dir), name);
+    const marker = readJson(file2);
+    if (!marker?.pid) return [];
+    const lapsed = marker.until !== void 0 && marker.until < Date.now();
+    return [{ file: file2, live: !lapsed && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart) }];
+  });
+}
+var taskOpen = (dir) => markers(dir).some((m) => m.live);
+function forgetLostTasks(dir) {
+  for (const marker of markers(dir)) if (!marker.live) fs22.rmSync(marker.file, { force: true });
 }
 
 // src/agent/mcp-tasks.ts
@@ -34168,7 +34303,7 @@ init_agents();
 init_deliver();
 init_paths();
 init_remote();
-import fs24 from "node:fs";
+import fs23 from "node:fs";
 import path25 from "node:path";
 var TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 var POLL_MS = 2e3;
@@ -34193,6 +34328,12 @@ var wire = (task) => ({
   ...task.result ? { result: task.result } : {},
   ...task.error ? { error: task.error } : {},
   ...task.inputRequests ? { inputRequests: task.inputRequests } : {}
+});
+var AGENT_TASK_META = "com.anthropic/agent-task";
+var answerOf = (task) => ({
+  resultType: "task",
+  ...wire(task),
+  ...task.note ? { _meta: { [AGENT_TASK_META]: { modelImmediateResponse: task.note } } } : {}
 });
 function freeId(base) {
   let id = base;
@@ -34223,8 +34364,11 @@ function localSource(entry, taskId, procStart2) {
       const state = readState(dir);
       return { status: state?.status, error: state?.error, alive: hostAlive(state) };
     },
-    answered: (request) => fs24.existsSync(permissionAnswerFile(dir, request)),
-    answer: (request, allow) => writeJsonAtomic(permissionAnswerFile(dir, request), { allow, at: stamp() }),
+    answered: (request) => fs23.existsSync(permissionAnswerFile(dir, request)),
+    answer: (request, allow, always) => {
+      if (allow && always) rememberPrefixes(dir, readJson(permissionRequestFile(dir, request))?.prefixes);
+      writeJsonAtomic(permissionAnswerFile(dir, request), { allow, at: stamp() });
+    },
     stop: () => void stopAgentEntry(entry, 0),
     close
   };
@@ -34269,9 +34413,9 @@ function remoteSource(self2, device, child, taskId, agent) {
     next: () => events.shift(),
     state: () => ({ status: last?.state?.status, error: last?.state?.error, alive: last?.alive ?? false, lost }),
     answered: (request) => !!last && last.permission !== request,
-    answer: (request, allow) => {
+    answer: (request, allow, always) => {
       if (last) last = { ...last, permission: void 0 };
-      void agentsRequest(device, self2, { op: "answer", address: child.address, request, allow });
+      void agentsRequest(device, self2, { op: "answer", address: child.address, request, allow, ...always ? { always } : {} });
     },
     stop: () => void agentsRequest(device, self2, { op: "stop", address: child.address }, 2e4),
     close: () => {
@@ -34282,11 +34426,14 @@ function remoteSource(self2, device, child, taskId, agent) {
     }
   };
 }
-var ALLOW_SCHEMA = {
+var allowSchema = (prefixes) => ({
   type: "object",
-  properties: { allow: { type: "boolean", title: "Allow", description: "Let the agent go ahead" } },
+  properties: {
+    allow: { type: "boolean", title: "Allow", description: "Let the agent go ahead" },
+    ...prefixes?.length ? { always: { type: "boolean", title: `Don't ask again for ${prefixes.join(", ")}`, description: "With Allow: this agent runs these without asking from now on", default: false } } : {}
+  },
   required: ["allow"]
-};
+});
 function refresh(task) {
   if (terminal(task.status)) return;
   const source = task.source;
@@ -34300,7 +34447,15 @@ function refresh(task) {
     const text = `${event.body}
 
 (${label} agent ${source.address()}; transcript: ${source.transcript()})`;
-    settle2(task, "completed", { result: { content: [{ type: "text", text }] }, statusMessage: `${source.address()} reported.` });
+    if (event.failed) {
+      settle2(task, "failed", {
+        result: { content: [{ type: "text", text }] },
+        error: { code: -32e3, message: text },
+        statusMessage: `${source.address()} failed.`
+      });
+    } else {
+      settle2(task, "completed", { result: { content: [{ type: "text", text }] }, statusMessage: `${source.address()} reported.` });
+    }
     return;
   }
   if (event?.kind === "permission" && event.request) {
@@ -34310,7 +34465,7 @@ function refresh(task) {
       statusMessage: event.body,
       lastUpdatedAt: stamp(),
       inputRequests: {
-        [event.request]: { method: "elicitation/create", params: { mode: "form", message: event.body, requestedSchema: ALLOW_SCHEMA } }
+        [event.request]: { method: "elicitation/create", params: { mode: "form", message: event.body, requestedSchema: allowSchema(event.prefixes) } }
       }
     });
     return;
@@ -34344,13 +34499,13 @@ async function startAgentTask(self2, args, procStart2) {
     const taskId2 = freeId(childAddress(launched2.child));
     const source = remoteSource(self2, launched2.device, launched2.child, taskId2, launched2.agent);
     const task2 = createTask(taskId2, source, `${source.label} is starting on ${launched2.device.slug}: ${args.description}`);
-    return { resultType: "task", ...wire(task2) };
+    return answerOf(task2);
   }
   const launched = launchAgent(parentOf(self2), args);
   if (!launched.ok) return { text: launched.text, isError: true };
   const taskId = freeId(launched.address);
   const task = createTask(taskId, localSource({ dir: launched.dir, spec: launched.spec }, taskId, procStart2), `${agentLabel(launched.spec.harness)} is starting: ${args.description}`);
-  return { resultType: "task", ...wire(task) };
+  return answerOf(task);
 }
 async function continueAgentTask(self2, to, message, procStart2) {
   const opened = remoteTarget(to) ? await openRemoteFollowUp(self2, to) : openLocalFollowUp(self2, to, procStart2);
@@ -34362,11 +34517,48 @@ async function continueAgentTask(self2, to, message, procStart2) {
     task.source.close();
     return { text: `Not delivered to ${address}: ${sent.error}`, isError: true };
   }
-  return { resultType: "task", ...wire(task) };
+  return answerOf(task);
+}
+async function openFollowTask(self2, name, procStart2) {
+  const opened = await openFollow(self2, name, procStart2);
+  if (!opened) return void 0;
+  const { task, address } = opened;
+  return {
+    answer: (done) => {
+      task.note = `${done}
+${address} is a background task again: its next permission request goes to your user in a dialog, and its report is this task's result.`;
+      return answerOf(task);
+    },
+    cancel: () => {
+      tasks.delete(task.taskId);
+      task.source.close();
+    }
+  };
+}
+async function openFollow(self2, name, procStart2) {
+  const found = findChild(self2, name);
+  if (!("error" in found)) {
+    const state = readState(found.dir);
+    if (!hostAlive(state) || state?.status !== "ready" || !state.working || taskOpen(found.dir)) return void 0;
+    const address = agentAddress(found);
+    const taskId2 = freeId(address);
+    return { task: createTask(taskId2, localSource(found, taskId2, procStart2), `${agentLabel(found.spec.harness)} is working: ${found.spec.description}`), address };
+  }
+  const child = findRemoteChild(self2, name);
+  const device = child ? findDevice(child.device) : void 0;
+  if (!child || !device) return void 0;
+  const look = await agentsRequest(device, self2, { op: "poll", address: child.address }, 1e4);
+  if (!look.ok || !look.agent.alive || !look.agent.state?.working || look.agent.followed !== false) return void 0;
+  const taskId = freeId(childAddress(child));
+  const first = await agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, leaseMs: LEASE_MS }, 1e4);
+  if (!first.ok) return void 0;
+  const task = createTask(taskId, remoteSource(self2, device, child, taskId, first.agent), `${agentLabel(child.harness)} is working: ${child.description}`);
+  return { task, address: childAddress(child) };
 }
 function openLocalFollowUp(self2, to, procStart2) {
   const found = findChild(self2, to);
   if ("error" in found || !hostAlive(readState(found.dir)) || readState(found.dir)?.status !== "ready") return void 0;
+  if (taskOpen(found.dir)) return void 0;
   const address = agentAddress(found);
   const taskId = freeId(address);
   const task = createTask(taskId, localSource(found, taskId, procStart2), `${agentLabel(found.spec.harness)} is working on your message`);
@@ -34376,14 +34568,16 @@ async function openRemoteFollowUp(self2, to) {
   const child = findRemoteChild(self2, to);
   const device = child ? findDevice(child.device) : void 0;
   if (!child || !device) return void 0;
-  const taskId = freeId(childAddress(child));
+  const address = childAddress(child);
+  if (Array.from(tasks.values()).some((t) => !terminal(t.status) && t.source.address() === address)) return void 0;
+  const taskId = freeId(address);
   const first = await agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, leaseMs: LEASE_MS }, 1e4);
   if (!first.ok || !first.agent.alive || first.agent.state?.status !== "ready") {
     if (first.ok) void agentsRequest(device, self2, { op: "poll", address: child.address, task: taskId, close: true });
     return void 0;
   }
   const task = createTask(taskId, remoteSource(self2, device, child, taskId, first.agent), `${agentLabel(child.harness)} is working on your message`);
-  return { task, address: childAddress(child) };
+  return { task, address };
 }
 function adopt(self2, taskId, procStart2) {
   const base = taskId.replace(/#\d+$/, "");
@@ -34408,7 +34602,7 @@ function answerTaskRequest(method, params, self2, procStart2) {
       if (key !== task.request) continue;
       const response = raw?.result ?? raw;
       const allow = response?.action === "accept" && response.content?.allow !== false;
-      task.source.answer(key, allow);
+      task.source.answer(key, allow, allow && response.content?.always === true);
       Object.assign(task, { status: "working", inputRequests: void 0, request: void 0, lastUpdatedAt: stamp() });
     }
     return { result: { resultType: "complete" } };
@@ -34432,7 +34626,7 @@ init_installs();
 init_paths();
 init_proc();
 import { spawn as spawn7 } from "node:child_process";
-import fs29 from "node:fs";
+import fs28 from "node:fs";
 import path31 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
@@ -34440,19 +34634,19 @@ import { fileURLToPath as fileURLToPath3 } from "node:url";
 init_installs();
 init_sandbox_launch();
 import { execFileSync as execFileSync9 } from "node:child_process";
-import fs28 from "node:fs";
+import fs27 from "node:fs";
 import path30 from "node:path";
 
 // src/update-all.ts
 import { spawn as spawn6 } from "node:child_process";
-import fs27 from "node:fs";
-import os11 from "node:os";
+import fs26 from "node:fs";
+import os10 from "node:os";
 import path29 from "node:path";
 init_agents();
 
 // src/core/codex-hooks.ts
 import { spawn as spawn5 } from "node:child_process";
-import os10 from "node:os";
+import os9 from "node:os";
 
 // src/acp/rpc.ts
 var LineRpc = class {
@@ -34530,7 +34724,7 @@ var LineRpc = class {
 init_paths();
 init_sandbox_launch();
 import { execFileSync as execFileSync7, spawn as spawn4 } from "node:child_process";
-import fs25 from "node:fs";
+import fs24 from "node:fs";
 import path26 from "node:path";
 var USER_APPROVED = 64;
 var probeMs = () => envDurationMs("TELEPATHY_GATEKEEPER_PROBE_MS", 15e3);
@@ -34538,8 +34732,8 @@ function executablePath(cmd, env = process.env) {
   const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path26.delimiter).filter(Boolean).map((dir) => path26.join(dir, cmd));
   for (const file2 of candidates) {
     try {
-      fs25.accessSync(file2, fs25.constants.X_OK);
-      if (fs25.statSync(file2).isFile()) return fs25.realpathSync(file2);
+      fs24.accessSync(file2, fs24.constants.X_OK);
+      if (fs24.statSync(file2).isFile()) return fs24.realpathSync(file2);
     } catch {
     }
   }
@@ -34612,7 +34806,7 @@ async function withAppServer(fn) {
   if (blocked) throw new Error(blocked);
   const held = await gatekeeperHold("codex");
   if (held) throw new Error(heldNote("codex", held));
-  const child = spawn5("codex", ["app-server"], { cwd: os10.homedir(), stdio: ["pipe", "pipe", "ignore"] });
+  const child = spawn5("codex", ["app-server"], { cwd: os9.homedir(), stdio: ["pipe", "pipe", "ignore"] });
   child.stdin.on("error", () => {
   });
   const rpc = new LineRpc(
@@ -34643,7 +34837,7 @@ async function withAppServer(fn) {
 }
 var isTelepathy = (hook) => typeof hook.pluginId === "string" && hook.pluginId.startsWith("telepathy@");
 async function listHooks(rpc) {
-  const result = await rpc.request("hooks/list", { cwds: [os10.homedir()] });
+  const result = await rpc.request("hooks/list", { cwds: [os9.homedir()] });
   const seen = /* @__PURE__ */ new Map();
   for (const entry of result?.data ?? []) {
     for (const raw of entry.hooks ?? []) {
@@ -34688,7 +34882,7 @@ init_installs();
 // src/core/kimi-plugin.ts
 init_installs();
 import { execFileSync as execFileSync8 } from "node:child_process";
-import fs26 from "node:fs";
+import fs25 from "node:fs";
 import path27 from "node:path";
 var ID = "telepathy";
 var DEFAULT_SOURCE = "https://github.com/Winterrks/telepathy";
@@ -34730,7 +34924,7 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version2 = JSON.parse(fs26.readFileSync(path27.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version2 = JSON.parse(fs25.readFileSync(path27.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -34738,10 +34932,10 @@ function readManifestVersion(root) {
 }
 function writeInstalled(plugins) {
   const dir = path27.join(kimiHome(), "plugins");
-  fs26.mkdirSync(dir, { recursive: true });
+  fs25.mkdirSync(dir, { recursive: true });
   const final = path27.join(dir, "installed.json");
-  fs26.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs26.renameSync(`${final}.tmp`, final);
+  fs25.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs25.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -34765,8 +34959,8 @@ async function installKimiPlugin(options = {}) {
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
     const parent = path27.dirname(managed);
-    fs26.mkdirSync(parent, { recursive: true });
-    const staging = fs26.mkdtempSync(path27.join(parent, `${ID}-`));
+    fs25.mkdirSync(parent, { recursive: true });
+    const staging = fs25.mkdtempSync(path27.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -34774,22 +34968,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs26.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      fs25.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
       execFileSync8("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version2 = readManifestVersion(staging);
       if (!version2) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs26.renameSync(managed, previous);
+        fs25.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs26.renameSync(staging, managed);
+      fs25.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs26.realpathSync(managed),
+        root: fs25.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -34800,16 +34994,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs26.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs25.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version2 ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version2} (${ref.value}, ${sha.slice(0, 12)})`, version: version2, changed: true };
     } catch (err) {
-      fs26.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs26.renameSync(previous, managed);
+      fs25.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs25.renameSync(previous, managed);
       throw err;
     } finally {
-      fs26.rmSync(archive, { force: true });
-      fs26.rmSync(staging, { recursive: true, force: true });
+      fs25.rmSync(archive, { force: true });
+      fs25.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -34872,7 +35066,7 @@ function stepsFor(install) {
       return "cache";
   }
 }
-async function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
+async function runHarnessCommand({ cmd, args }, cwd = os10.homedir()) {
   const blocked = sandboxSpawnBlock(cmd);
   if (blocked) return { ok: false, output: blocked };
   if (cmd === "codex" && inTestSandbox()) {
@@ -34905,35 +35099,35 @@ async function runHarnessCommand({ cmd, args }, cwd = os11.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path29.join(process.env.XDG_CACHE_HOME || path29.join(os11.homedir(), ".cache"), install.agent, "packages");
+  const packages = path29.join(process.env.XDG_CACHE_HOME || path29.join(os10.homedir(), ".cache"), install.agent, "packages");
   const relative = path29.relative(packages, install.dir).split(path29.sep);
   const entry = path29.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
   const aside = path29.join(path29.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs27.renameSync(entry, aside);
+  fs26.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs27.rmSync(aside, { recursive: true, force: true });
+    fs26.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs27.rmSync(entry, { recursive: true, force: true });
-  fs27.renameSync(aside, entry);
+  fs26.rmSync(entry, { recursive: true, force: true });
+  fs26.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path29.join(process.env.XDG_CACHE_HOME || path29.join(os11.homedir(), ".cache"), "opencode");
+  const opencodeCache = path29.join(process.env.XDG_CACHE_HOME || path29.join(os10.homedir(), ".cache"), "opencode");
   const npm = path29.join(opencodeCache, "npm");
   const entry = path29.join(npm, path29.relative(npm, install.dir).split(path29.sep)[0] ?? "");
   const aside = path29.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs27.renameSync(entry, aside);
+  fs26.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC2] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs27.rmSync(aside, { recursive: true, force: true });
+    fs26.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs27.rmSync(entry, { recursive: true, force: true });
-  fs27.renameSync(aside, entry);
+  fs26.rmSync(entry, { recursive: true, force: true });
+  fs26.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -35064,7 +35258,7 @@ function globalCliDir() {
   }
   const dir = path30.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs28.readFileSync(path30.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs27.readFileSync(path30.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -35072,7 +35266,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version2 = JSON.parse(fs28.readFileSync(path30.join(dir, "package.json"), "utf8")).version;
+    const version2 = JSON.parse(fs27.readFileSync(path30.join(dir, "package.json"), "utf8")).version;
     return typeof version2 === "string" ? version2 : void 0;
   } catch {
     return void 0;
@@ -35127,7 +35321,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs29.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs28.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -35138,7 +35332,7 @@ function autoUpdateEntry() {
   const dir = path31.dirname(fileURLToPath3(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
     const candidate = path31.join(dir, name);
-    if (fs29.existsSync(candidate)) return candidate;
+    if (fs28.existsSync(candidate)) return candidate;
   }
   return fileURLToPath3(import.meta.url);
 }
@@ -35161,6 +35355,7 @@ function scheduleAutoUpdate(reason, options = {}) {
 
 // src/server.ts
 async function startMcpServer() {
+  if (process.env.TELEPATHY_DISABLED === "1") return;
   const argv = process.argv.slice(2);
   const flag = (name) => argvFlag(argv, name);
   const { agent, pid: agentPid } = findAgent(parseAgent(flag("--agent")));
@@ -35250,6 +35445,16 @@ async function startMcpServer() {
     return id;
   }
   const ownProcStart = procStart(process.pid);
+  async function followAgain(self2, name, ctx, act) {
+    const follow = agent === "claude" && clientTakesTasks(ctx) ? await openFollowTask(self2, name, ownProcStart) : void 0;
+    const done = await act();
+    if (!follow) return text(done);
+    if (done.isError) {
+      follow.cancel();
+      return text(done);
+    }
+    return follow.answer(done.text);
+  }
   const text = ({ text: text2, isError, structured }) => ({
     content: [{ type: "text", text: text2 }],
     ...structured ? { structuredContent: structured } : {},
@@ -35373,7 +35578,26 @@ ${notes.join("\n")}` } : result;
       async (args, ctx) => {
         const self2 = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
         const elsewhere = "error" in findChild(self2, args.agent) ? findRemoteChild(self2, args.agent) : void 0;
-        return text(elsewhere ? await answerRemotePermission(self2, elsewhere, args.request, args.allow) : answerPermissionTool(self2, args));
+        return followAgain(
+          self2,
+          args.agent,
+          ctx,
+          () => elsewhere ? answerRemotePermission(self2, elsewhere, args.request, args.allow, args.always) : answerPermissionTool(self2, args)
+        );
+      }
+    );
+    server.registerTool(
+      "set_permission_mode",
+      {
+        title: TOOLS.set_permission_mode.title,
+        description: TOOLS.set_permission_mode.description,
+        inputSchema: external_exports.object(TOOLS.set_permission_mode.args),
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false }
+      },
+      async (args, ctx) => {
+        const self2 = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+        const elsewhere = "error" in findChild(self2, args.agent) ? findRemoteChild(self2, args.agent) : void 0;
+        return followAgain(self2, args.agent, ctx, () => elsewhere ? setRemotePermissionMode(self2, elsewhere, args) : setPermissionModeTool(self2, args));
       }
     );
     if (agent === "grok") {

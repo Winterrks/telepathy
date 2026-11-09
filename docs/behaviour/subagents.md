@@ -17,15 +17,18 @@ start_agent(harness: "codex", description: "Review auth changes", prompt: "Revie
 - **Results:** the call returns at once. Each time the agent's turn ends, its final message (the last stretch of text
   after its last tool call) arrives at the parent as a `<telepathy-peer-message kind="agent-result" transcript="…">`,
   under the same delivery confirm as any message. Continue it with `send_message`; its next turn reports back the same way.
+  Messages from its parent tell the subagent not to reply with `send_message`; if it still calls `send_message` to its
+  parent during a turn, that text is held and included in the turn's final report instead of sent twice.
 - **Transcript:** `~/.telepathy/agents/<harness>-<name>/transcript.md`, with the task, each message it got, its text,
   and its tool calls.
-- **Mode, model, effort:** set over ACP from what the harness offers on `session/new`. The agent runs in its harness's
-  auto mode (`auto`, Copilot's `autopilot`, Devin's `smart`; never a bypass or yolo mode). `model` matches an id or a
+- **Mode, model, effort:** set over ACP from what the harness offers on `session/new`. The agent runs in auto mode:
+  its harness's own (`auto`, Copilot's `autopilot`, Devin's `smart`; never a bypass or yolo mode), or telepathy's
+  for a harness with none over ACP (Cursor, OpenCode, Kilo; see [Fewer permission requests](#fewer-permission-requests)). `model` matches an id or a
   unique part of one (`opus`, `gpt-5.5`); `effort` is the harness's own name for it. A model that does not exist is an
   error that lists what is there; an effort the harness has no setting for is noted.
-- **Permissions:** a request the harness still makes, or every request when it has no auto mode (OpenCode, Kilo,
-  Cursor), goes to the parent as a `kind="permission"` message. The parent asks its user and calls
-  `answer_permission`. No answer within 10 minutes is a denial.
+- **Permissions:** a request the harness's auto mode still makes, or one telepathy's reviewer leaves to the parent,
+  goes to the parent as a `kind="permission"` message. The parent asks its user and calls `answer_permission`. No
+  answer within 10 minutes is a denial. To be asked less, see [Fewer permission requests](#fewer-permission-requests).
 - **Isolation:** `isolation: "worktree"` gives it a git worktree and a `telepathy/<name>` branch under
   `~/.telepathy/worktrees`. At stop, an unchanged worktree is removed with its branch; a changed one is kept.
 - **Lifetime:** until `stop_agent`, or until the session that started it ends: within 15 seconds for a Claude Code
@@ -33,6 +36,40 @@ start_agent(harness: "codex", description: "Review auth changes", prompt: "Revie
   reload) is not the session ending.
 - **Harnesses:** every one with an ACP mode (see `telepathy run --list`). Claude Code and Codex need their ACP adapters.
   A harness that needs a sign-in it cannot do itself (`kimi login`, `grok login`) fails to start with that reason.
+
+## Fewer permission requests
+
+A harness with no auto mode over ACP asks about every command. Cursor's ACP server reads only `--force` (run
+everything) and treats its Auto-review setting as Allowlist, so a Cursor agent asks about each shell command
+that is not on Cursor's own allowlist. telepathy's auto mode stands in for the missing one, and is on by default.
+Three things decide what still reaches the parent, each per agent:
+
+- **`always`:** `answer_permission(..., allow: true, always: true)`, or "Don't ask again" in the Claude Code
+  dialog, allows that request's commands from now on. The request names them: `git status` for `git status -s`,
+  `gh run list` for `gh run list --repo …`, `ls` for `ls -la`. A command that runs other code (`node x.js`,
+  `bash -c …`, `FOO=1 npm test`) or that can't be split safely (`$(…)`, a redirect to a file, a heredoc) names
+  none.
+- **An allow list:** `permissions: { allow: ["git status", "npm test", "ls"] }` on `start_agent`, or
+  `set_permission_mode(agent, allow: [...])` while it runs, which replaces the list. An entry is a command prefix in
+  whole words (`Bash(git status:*)` and `Shell(git)` are read the same way), or `Edit`, `Read`, `Search` or `Fetch`
+  for every request of that kind. A command goes ahead only when each part of it (split at `&&`, `||`, `;`, `|`) is
+  allowed. `cd <dir>` and `git -C <dir>` need no entry. `$(…)`, backticks, `>` to a file and `&` never match.
+- **telepathy's auto mode:** for a harness with no auto mode of its own, on unless `start_agent` has
+  `permissions: { mode: "ask" }` or `set_permission_mode(agent, mode: "ask")` turns it off. A second session of the
+  same harness, started in the background on the agent's first request, judges each request the allow list doesn't
+  cover. It answers ALLOW for routine work inside the agent's folder (reading, git status and commits, building,
+  testing, pushing its own branch) and ASK for anything else (pushes to main, force pushes, secrets, posting
+  anywhere, system settings, sudo, other machines). ASK, no clear answer, a failure, or no answer within 90 seconds
+  (`TELEPATHY_REVIEW_TIMEOUT_MS`) sends the request to the parent as before, with the reviewer's reason. The
+  reviewer never denies, and nothing approves everything. A harness with an auto mode of its own runs in it
+  whatever `mode` says, and what it still asks about goes to the parent unreviewed.
+
+The reviewer runs in a read-only mode (Cursor's `ask`, others' `plan`), on the harness's cheapest model by name
+(`nano`, then `lite`, then `mini`, `haiku` or `flash`) at medium effort, or on the `model` in `permissions`.
+It runs without telepathy: no MCP server, and `TELEPATHY_DISABLED=1` keeps the harness's own telepathy plugin out,
+so it is no session anyone can message. Each permission request it makes is refused. It starts again after 20
+reviews, so their context stays small, and is tried again 5 minutes after it fails to start. The agent's transcript
+records each request as allowed by the list, allowed by the reviewer, or asked.
 
 ## In Claude Code: a background task
 
@@ -45,14 +82,24 @@ start_agent(harness: "opencode", description: "Build bridge API", prompt: "Add t
 ⏺ MCP task opencode:build-bridge-api (plugin:telepathy:bridge/start_agent) completed.
 ```
 
-- **The report** is the task's result: Claude gets it when the agent's turn ends, and starts on it if it was idle.
-- **Follow-ups:** `send_message` to the agent returns a task the same way (`opencode:build-bridge-api#2`), whose
-  result is its next report.
+- **The report** is the task's result: Claude gets it when the agent's turn ends, and starts on it if it was idle. A
+  turn that fails with an error and no final message settles the task as `failed`.
+- **Follow-ups:** `send_message` to an idle agent returns a task the same way (`opencode:build-bridge-api#2`), whose
+  result is its next report. A `send_message` while a task already follows the running turn steers that turn without
+  opening a second competing task. Calling Claude's built-in `SendMessage` on an agent started with `start_agent` is
+  stopped with a pointer to telepathy's `send_message` so follow-ups run as background tasks.
 - **Stopping:** `TaskStop`, or `x` in `/tasks`, cancels the task, and that stops the agent. Ending the session stops
   every agent it started, working or idle, like Claude's own agents. `/reload-plugins` doesn't: the restarted server
   takes the open tasks up again.
 - **Permissions:** a permission request the agent makes opens a dialog for you (Allow, then Accept or Decline). It
-  is your answer, not Claude's.
+  is your answer, not Claude's. When the request names commands, the dialog also offers "Don't ask again" for them.
+- **A lost task:** Claude Code matches a task to the server that answered it, by that server's command and
+  environment. A plugin update changes the plugin's folder, so after `/reload-plugins` Claude Code stops polling the
+  tasks it had, without a notice. The agent keeps working. Its next request or report waits 30 seconds for a
+  restarted server to take the task up (a reload with no update does), then comes as a message, and so does what
+  follows. The next `answer_permission` or `set_permission_mode` for that agent while it works answers with a new
+  task that follows it, and tells Claude so. Claude Code's own entry for the old task stays in `/tasks` until the
+  session ends.
 - **Where:** MCP tasks need Claude Code's terminal (v2.1.304 or later, protocol revision 2026-07-28), and are in
   public beta there. Elsewhere (`claude -p`, the VS Code extension, the desktop app, other agents), `start_agent`
   works as described above: it returns at once and the report comes as a message.

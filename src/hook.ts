@@ -37,6 +37,9 @@ import { statusFromHooks, writeStatus } from './core/status.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 import { argvFlag } from './core/argv.ts';
 import { harnessAgentType } from './agent/task.ts';
+import { agentAddress, findChild } from './agent/tools.ts';
+import { childAddress, findRemoteChild } from './agent/remote.ts';
+import { hostAlive, readState } from './agent/spec.ts';
 import { antigravitySurface, expandHomePath, type AntigravitySurface } from './core/antigravity.ts';
 
 /**
@@ -449,7 +452,7 @@ function nativeListingBlock(agent: Agent, selfId: string): string | undefined {
  * ever changes, a rewrite would be ignored, so fall back to a note next to the result.
  */
 function listAgents(agentPid: number, input: HookInput): void {
-  const block = nativeListingBlock('claude', peerId('claude', agentPid));
+  const block = nativeListingBlock('claude', boundSelf('claude', agentPid, input).id);
   if (!block) return;
   const response = input.tool_response as { listing?: unknown } | undefined;
   if (typeof response?.listing === 'string') {
@@ -506,10 +509,23 @@ async function interceptSendMessage(agent: Agent, agentPid: number, input: HookI
     denyTool('Not sent: sessions of other agents only accept messages with text; notify_when_idle subscriptions are not supported for them.');
     return;
   }
+  const self = boundSelf(agent, agentPid, input);
+  if (agent === 'claude') {
+    const local = findChild(self, to);
+    const localAddr = !('error' in local) && hostAlive(readState(local.dir)) ? agentAddress(local) : undefined;
+    const remote = !localAddr ? findRemoteChild(self, to) : undefined;
+    const childAddr = localAddr ?? (remote ? childAddress(remote) : undefined);
+    if (childAddr) {
+      denyTool(
+        `Not sent: ${childAddr} is an agent you started with start_agent. Call telepathy's send_message tool (to: "${childAddr}") so its turn runs as a background task.`,
+      );
+      return;
+    }
+  }
   const ownsClock = beginToolCall();
   let result: Awaited<ReturnType<typeof sendMessage>>;
   try {
-    result = await sendMessage(boundSelf(agent, agentPid, input), to, message);
+    result = await sendMessage(self, to, message);
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -549,6 +565,8 @@ function redirectAgent(input: HookInput): void {
 }
 
 async function main(): Promise<void> {
+  // A session telepathy started without itself, such as a permission reviewer (src/agent/reviewer.ts).
+  if (process.env.TELEPATHY_DISABLED === '1') return;
   if (process.argv.includes('--telepathy-auto-update')) {
     const { runAutoUpdate } = await import('./auto-update.ts');
     await runAutoUpdate();

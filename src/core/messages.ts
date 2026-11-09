@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { archiveDir, ensureDir, inboxDir, readJson, withdrawnDir, writeJsonAtomic } from './paths.ts';
+import { archiveDir, ensureDir, inboxDir, peerDir, readJson, withdrawnDir, writeJsonAtomic } from './paths.ts';
 import { agentLabel, type Peer, peerRef } from './peers.ts';
 import type { Agent } from './proc.ts';
 import { escapeTelepathyTags, noteTag, PEER_MESSAGE_TAG, tagAttr } from './tags.ts';
@@ -233,18 +233,29 @@ function openTag(msg: Message, extra: Record<string, string> = {}): string {
 
 const closeTag = `</${PEER_MESSAGE_TAG}>`;
 
+/** If `peerId` is a `start_agent` subagent, the address of the parent session that started it. */
+export function hostedParent(id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  const parent = readJson<{ parent?: unknown }>(path.join(peerDir(id), 'hosted.json'))?.parent;
+  return typeof parent === 'string' && parent ? parent : undefined;
+}
+
 /**
  * Text handed to an agent as a user turn (Codex's queue, an in-process plugin's injected prompt). It shows
  * up where the user's own prompts do, so the tag and the first line say plainly that another agent wrote it,
  * mirroring how Claude Code labels cross-session messages.
  */
 export function formatAsUserTurn(msg: Message, reply?: string): string {
+  const toParent =
+    !reply && hostedParent(msg.to?.id) === msg.from.address
+      ? `Do not call send_message to reply to ${escapeTelepathyTags(msg.from.address)}: end your turn with your final report as your last message, and telepathy will deliver it.`
+      : undefined;
   return [
     openTag(msg),
     `Message from ${describeSender(msg.from)}.`,
     messageMarker(msg.id),
     `It was sent by another AI agent through the telepathy plugin, not typed by your user. ` +
-      (reply ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
+      (reply ?? toParent ?? `To reply, call the telepathy send_message tool with to: "${escapeTelepathyTags(msg.from.address)}".`),
     '',
     escapeTelepathyTags(msg.body),
     closeTag,

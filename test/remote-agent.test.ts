@@ -151,7 +151,7 @@ describe('start_agent on another device', () => {
     const session = claudeConnection(env());
     try {
       await session.request('server/discover');
-      await session.call('start_agent', { harness: 'kimi', description: 'Remote tidy', prompt: 'Tidy.', device: 'beta' });
+      await session.call('start_agent', { harness: 'kimi', description: 'Remote tidy', prompt: 'Tidy.', device: 'beta', permissions: { mode: 'ask' } });
       const asking = await session.settle('kimi:remote-tidy@beta');
       assert.equal(asking.status, 'input_required', JSON.stringify(asking));
       const [[request, input]] = Object.entries(asking.inputRequests as Record<string, { params: Record<string, any> }>);

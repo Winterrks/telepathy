@@ -29,9 +29,9 @@ What these mean is under [Supported agents](README.md#supported-agents).
 
 | Piece | Mechanism |
 |---|---|
-| OpenCode receives | The plugin runs inside OpenCode. OpenCode 2: `session.prompt` with `delivery: "steer"`, which starts a turn or joins the running one. OpenCode 1.x: `client.session.promptAsync` once the session goes idle |
+| OpenCode receives | The plugin runs inside OpenCode. OpenCode 2: `session.prompt` with `delivery: "steer"`, which starts a turn or joins the running one (under an ACP host, idle turns go through ACP `session/prompt` and mid-turn messages steer via the plugin). OpenCode 1.x: `client.session.promptAsync` once the session goes idle |
 
 How an OpenCode session binds its id (`--session`, `--continue`, a fresh TUI) is under
 [A resumed session keeps its telepathy id and name](../sessions.md#a-resumed-session-keeps-its-telepathy-id-and-name).
-OpenCode has no auto mode, so a subagent's permission requests come to its parent
-([Subagents](../subagents.md)).
+OpenCode has no auto mode, so a subagent runs in telepathy's: a reviewer session approves routine permission
+requests, and the rest come to its parent ([Fewer permission requests](../subagents.md#fewer-permission-requests)).

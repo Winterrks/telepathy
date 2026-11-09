@@ -4,7 +4,8 @@ import type { Party } from '../core/messages.ts';
 import { ensureDir, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { listPeers } from '../core/peers.ts';
 import { procStart } from '../core/proc.ts';
-import { claimEvent, endLease, leaseTask, type TaskEvent } from '../agent/task.ts';
+import { type PermissionPolicy, readPolicy, updatePolicy } from '../agent/policy.ts';
+import { claimEvent, endLease, leaseTask, type TaskEvent, taskOpen } from '../agent/task.ts';
 import {
   type AgentEntry,
   type AgentSpec,
@@ -13,11 +14,12 @@ import {
   listAgents,
   PERMISSION_ID,
   permissionAnswerFile,
+  type PermissionRequest,
   permissionRequestFile,
   readState,
   transcriptFile,
 } from '../agent/spec.ts';
-import { launchAgent, openPermission, type StartArgs, stopAgentEntry } from '../agent/tools.ts';
+import { launchAgent, openPermission, rememberPrefixes, type StartArgs, stopAgentEntry } from '../agent/tools.ts';
 import { bridgeDir } from './state.ts';
 
 /**
@@ -56,8 +58,10 @@ export type AgentRequest =
       leaseMs?: number;
     }
   | { op: 'poll'; address: string; /** The MCP task following it: renews its lease and takes the next event. */ task?: string; leaseMs?: number; close?: boolean }
-  | { op: 'answer'; address: string; request: string; allow: boolean }
-  | { op: 'stop'; address: string };
+  | { op: 'answer'; address: string; request: string; allow: boolean; /** Allow the request's command prefixes from now on. */ always?: boolean }
+  | { op: 'stop'; address: string }
+  /** set_permission_mode. A bridge before it answers `malformed request`. */
+  | { op: 'policy'; address: string; mode?: 'ask' | 'auto'; allow?: string[]; model?: string };
 
 /** One agent as the device that started it sees it. Paths are on this device. */
 export interface AgentInfo {
@@ -74,6 +78,10 @@ export interface AgentInfo {
   alive: boolean;
   /** The permission request still waiting for an answer, if any. */
   permission?: string;
+  /** What it may do without asking (src/agent/policy.ts). Absent from a bridge before start_agent's permissions. */
+  policy?: PermissionPolicy;
+  /** A task follows it: a server's or a device's poll is open on it. */
+  followed?: boolean;
 }
 
 export type AgentReply = { ok: true; agent: AgentInfo; event?: TaskEvent; text?: string } | { ok: false; error: string };
@@ -93,6 +101,8 @@ const info = (entry: AgentEntry): AgentInfo => {
     state,
     alive: hostAlive(state),
     permission: openPermission(entry.dir)?.id,
+    policy: readPolicy(entry.dir),
+    followed: taskOpen(entry.dir),
   };
 };
 
@@ -163,11 +173,21 @@ export async function serveAgentRequest(
 
   if (request.op === 'answer') {
     if (typeof request.request !== 'string' || !PERMISSION_ID.test(request.request)) return { ok: false, error: `"${request.request}" is not a permission request id.` };
-    if (!fs.existsSync(permissionRequestFile(entry.dir, request.request))) return { ok: false, error: `It has no permission request "${request.request}".` };
+    const asked = readJson<PermissionRequest>(permissionRequestFile(entry.dir, request.request));
+    if (!asked) return { ok: false, error: `It has no permission request "${request.request}".` };
     const answer = permissionAnswerFile(entry.dir, request.request);
     if (fs.existsSync(answer)) return { ok: false, error: `Request "${request.request}" was already answered.` };
     if (!hostAlive(readState(entry.dir))) return { ok: false, error: 'It is no longer running.' };
+    const remembered = request.allow === true && request.always === true ? rememberPrefixes(entry.dir, asked.prefixes) : '';
     writeJsonAtomic(answer, { allow: request.allow === true, at: new Date().toISOString() });
+    return { ok: true, agent: info(entry), ...(remembered ? { text: remembered.trim() } : {}) };
+  }
+
+  if (request.op === 'policy') {
+    if (!hostAlive(readState(entry.dir))) return { ok: false, error: 'It is not running.' };
+    const mode = request.mode === 'auto' || request.mode === 'ask' ? request.mode : undefined;
+    const allow = Array.isArray(request.allow) ? request.allow.filter((e): e is string => typeof e === 'string') : undefined;
+    updatePolicy(entry.dir, { mode, allow, model: typeof request.model === 'string' ? request.model : undefined });
     return { ok: true, agent: info(entry) };
   }
 

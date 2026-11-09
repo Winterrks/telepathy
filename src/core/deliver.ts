@@ -8,6 +8,7 @@ import { remoteTarget, sendRemote } from '../bridge/remote.ts';
 import {
   archiveMessage,
   formatAsUserTurn,
+  hostedParent,
   MAX_MESSAGE_CHARS,
   type Message,
   newMessageId,
@@ -147,6 +148,27 @@ export async function deliverLocal(
 
   const limited = self ? checkRate(self.id, recipient.id, body) : undefined;
   if (limited) return { ok: false, error: limited };
+
+  const senderId = self?.id ?? from.id;
+  if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
+    writeJsonAtomic(path.join(peerDir(senderId), 'parent-report.json'), { body, at: new Date().toISOString() });
+    const message: Message = {
+      id: newMessageId(),
+      from,
+      to: partyOf(recipient),
+      body,
+      sentAt: new Date().toISOString(),
+    };
+    return {
+      ok: true,
+      message,
+      recipient,
+      status:
+        `Held for turn end: you are an agent ${recipient.address} started with start_agent, so telepathy ` +
+        `delivers your final message when your turn ends. End your turn now with your final report as your last message; do not call send_message again.`,
+      delivery: { confirmed: true, attempts: [] },
+    };
+  }
 
   const plan = confirmWindow();
   const message: Message = {

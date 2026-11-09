@@ -25,6 +25,8 @@ export const FORWARDED_ENV = [
   'TELEPATHY_AUTO_UPDATE_ENTRY',
   'TELEPATHY_CODEX_PROCS',
   'TELEPATHY_PS_BIN',
+  // Set for a session telepathy starts without itself (a permission reviewer): its plugin server stays out.
+  'TELEPATHY_DISABLED',
   'CODEX_HOME',
 ] as const;
 

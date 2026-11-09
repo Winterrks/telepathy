@@ -18,6 +18,7 @@ import {
   isDeliveryOwner,
   linkedPeerId,
   listenerPid,
+  type Peer,
   peerId,
   readPeer,
   readSession,
@@ -42,10 +43,10 @@ import {
   type ToolResult,
 } from './core/tools.ts';
 import { attachGrokDelivery } from './grok-delivery.ts';
-import { answerPermissionTool, findChild, startAgentTool, stopAgentTool } from './agent/tools.ts';
-import { answerRemotePermission, findRemoteChild, startRemoteAgentTool, stopRemoteAgentTool } from './agent/remote.ts';
+import { answerPermissionTool, findChild, setPermissionModeTool, startAgentTool, stopAgentTool } from './agent/tools.ts';
+import { answerRemotePermission, findRemoteChild, setRemotePermissionMode, startRemoteAgentTool, stopRemoteAgentTool } from './agent/remote.ts';
 import { installedTaskHarnesses } from './agent/task.ts';
-import { answerTaskRequest, clientTakesTasks, continueAgentTask, startAgentTask } from './agent/mcp-tasks.ts';
+import { answerTaskRequest, clientTakesTasks, continueAgentTask, openFollowTask, startAgentTask } from './agent/mcp-tasks.ts';
 import { VERSION } from './core/version.ts';
 import { scheduleAutoUpdate } from './auto-update.ts';
 
@@ -54,6 +55,8 @@ import { scheduleAutoUpdate } from './auto-update.ts';
  * calls it only for `telepathy mcp`, so importing this module does not take over stdio.
  */
 export async function startMcpServer(): Promise<void> {
+// A process telepathy started without itself, such as a permission reviewer (src/agent/reviewer.ts): no session here.
+if (process.env.TELEPATHY_DISABLED === '1') return;
 const argv = process.argv.slice(2);
 const flag = (name: string) => argvFlag(argv, name);
 const { agent, pid: agentPid } = findAgent(parseAgent(flag('--agent')));
@@ -180,6 +183,21 @@ function selfIdFor(meta: Record<string, unknown> | undefined): string {
 }
 
 const ownProcStart = procStart(process.pid);
+
+/**
+ * In Claude Code's terminal, a call about an agent whose working turn no task follows (its task was lost when this
+ * server restarted under a plugin update) answers with a task that follows it again; see openFollowTask.
+ */
+async function followAgain(self: Peer, name: string, ctx: unknown, act: () => ToolResult | Promise<ToolResult>) {
+  const follow = agent === 'claude' && clientTakesTasks(ctx) ? await openFollowTask(self, name, ownProcStart) : undefined;
+  const done = await act();
+  if (!follow) return text(done);
+  if (done.isError) {
+    follow.cancel();
+    return text(done);
+  }
+  return follow.answer(done.text) as unknown as ReturnType<typeof text>;
+}
 const text = ({ text, isError, structured }: ToolResult) => ({
   content: [{ type: 'text' as const, text }],
   ...(structured ? { structuredContent: structured } : {}),
@@ -320,7 +338,24 @@ server.registerTool(
   async (args, ctx) => {
     const self = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
     const elsewhere = 'error' in findChild(self, args.agent) ? findRemoteChild(self, args.agent) : undefined;
-    return text(elsewhere ? await answerRemotePermission(self, elsewhere, args.request, args.allow) : answerPermissionTool(self, args));
+    return followAgain(self, args.agent, ctx, () =>
+      elsewhere ? answerRemotePermission(self, elsewhere, args.request, args.allow, args.always) : answerPermissionTool(self, args),
+    );
+  },
+);
+
+server.registerTool(
+  'set_permission_mode',
+  {
+    title: TOOLS.set_permission_mode.title,
+    description: TOOLS.set_permission_mode.description,
+    inputSchema: z.object(TOOLS.set_permission_mode.args),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+  },
+  async (args, ctx) => {
+    const self = selfPeer(agent, agentPid, selfIdFor(ctx.mcpReq._meta));
+    const elsewhere = 'error' in findChild(self, args.agent) ? findRemoteChild(self, args.agent) : undefined;
+    return followAgain(self, args.agent, ctx, () => (elsewhere ? setRemotePermissionMode(self, elsewhere, args) : setPermissionModeTool(self, args)));
   },
 );
 

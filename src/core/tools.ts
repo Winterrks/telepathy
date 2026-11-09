@@ -41,6 +41,26 @@ export interface StoredMessage {
   body: string;
 }
 
+/** What a subagent may do without asking: start_agent's `permissions`, and set_permission_mode's fields. */
+const PERMISSIONS = {
+  mode: z
+    .enum(['auto', 'ask'])
+    .optional()
+    .describe(
+      "Default \"auto\": the harness's own auto mode, or for one with none (Cursor, OpenCode, Kilo), telepathy's, where a reviewer " +
+        'session of the same harness approves routine permission requests and the rest come to you. "ask" turns that reviewer off, ' +
+        "so each request comes to you. A harness's own auto mode stays on either way",
+    ),
+  allow: z
+    .array(z.string())
+    .optional()
+    .describe(
+      'Command prefixes it may run without asking ("git status", "npm test", "ls"; every part of a command has to be allowed, and ' +
+        '`cd` needs no entry), or Edit, Read, Search, Fetch for every request of that kind. On set_permission_mode it replaces the list; [] clears it',
+    ),
+  model: z.string().optional().describe("The reviewer's model, by id or a unique part of it. Default: the cheapest the harness offers, at medium effort"),
+};
+
 export const TOOLS = {
   list_peers: {
     title: 'List reachable agent sessions',
@@ -74,7 +94,8 @@ export const TOOLS = {
       "It works in the background with telepathy's tools and returns at once with its address and transcript path. " +
       'Each time its turn ends, its final message comes back to you as a message from it, with the transcript path: do not wait or poll. ' +
       'Continue it with send_message to its address; stop it with stop_agent when you no longer need it. ' +
-      "It runs in its harness's auto mode. A permission request it still makes comes to you: ask your user, then call answer_permission. " +
+      "It runs in auto mode: its harness's own, or, for one with none over ACP (Cursor, OpenCode, Kilo), telepathy's, where a reviewer session of the same harness approves routine permission requests. " +
+      'A request still left to decide comes to you: ask your user, then call answer_permission. permissions sets what it may do without asking. ' +
       'In Claude Code\'s terminal it is a background task instead: its report is the task\'s result, TaskStop stops it, and a permission request goes to your user in a dialog.',
     args: {
       harness: z.enum(startableHarnesses() as [string, ...string[]]).describe('Which coding agent to start'),
@@ -89,6 +110,21 @@ export const TOOLS = {
         .optional()
         .describe('Run it on another of your devices (as in "@<device>" addresses) instead of this one. That device must allow it: `telepathy bridge allow-agents <this device>` there'),
       isolation: z.enum(['worktree']).optional().describe('"worktree" gives it its own git worktree and branch; an unchanged one is removed when it stops'),
+      permissions: z
+        .object(PERMISSIONS)
+        .optional()
+        .describe("What it may do without asking you. Leave it out for auto mode and no allow list. Set what your user agreed to"),
+    },
+  },
+  set_permission_mode: {
+    title: "Change an agent's permissions",
+    description:
+      "Change what an agent this session started may do without asking you, while it runs (start_agent's permissions sets it " +
+      "at the start): its allow list of command prefixes, and, for a harness with no auto mode of its own (Cursor, OpenCode, " +
+      "Kilo), whether telepathy's auto mode is on. Fields you leave out stay as they are. Set what your user agreed to, or ask them first.",
+    args: {
+      agent: z.string().describe("The agent's address, as start_agent returned it"),
+      ...PERMISSIONS,
     },
   },
   stop_agent: {
@@ -106,6 +142,10 @@ export const TOOLS = {
       agent: z.string().describe('The agent\'s address, as in the request'),
       request: z.string().describe('The request id, as in the request'),
       allow: z.boolean().describe('true to allow, false to deny'),
+      always: z
+        .boolean()
+        .optional()
+        .describe("With allow true: also let it run this request's commands (by the prefixes the request names) without asking from now on"),
     },
   },
   wait_for_messages: {

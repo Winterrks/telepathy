@@ -85,7 +85,7 @@ describe('antigravity sessions', () => {
 
   before(() => {
     sb = makeSandbox();
-    for (const key of ['HOME', 'TELEPATHY_HOME', 'GEMINI_API_KEY', 'TELEPATHY_LATEST_VERSION', 'XDG_CACHE_HOME', 'XDG_DATA_HOME']) {
+    for (const key of ['HOME', 'TELEPATHY_HOME', 'GEMINI_API_KEY', 'ANTIGRAVITY_AGENTAPI_EXE', 'TELEPATHY_LATEST_VERSION', 'XDG_CACHE_HOME', 'XDG_DATA_HOME']) {
       saved[key] = process.env[key];
     }
     process.env.HOME = sb.env.HOME;
@@ -94,6 +94,7 @@ describe('antigravity sessions', () => {
     process.env.XDG_DATA_HOME = sb.env.XDG_DATA_HOME;
     process.env.TELEPATHY_LATEST_VERSION = '0.9.0';
     delete process.env.GEMINI_API_KEY;
+    delete process.env.ANTIGRAVITY_AGENTAPI_EXE;
   });
 
   after(async () => {

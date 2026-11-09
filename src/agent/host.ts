@@ -2,21 +2,23 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { startAcpSession, type AcpSession } from '../acp/host.ts';
-import { harnessByAgent, resolvedAcpBin } from '../cli/harnesses.ts';
+import { acpArgs, harnessByAgent, resolvedAcpBin } from '../cli/harnesses.ts';
 import { launchEnv, pluginInstalled } from '../cli/launch.ts';
 import { type Agent, agentLabel, agentSpec, AGENT_IDS } from '../core/agents.ts';
 import { deliverLocal } from '../core/deliver.ts';
 import { sendRemote } from '../bridge/remote.ts';
 import { isOnline, knownDevices } from '../bridge/state.ts';
 import { formatAsUserTurn, type Message, newMessageId, type Party } from '../core/messages.ts';
-import { ensureDir, envDurationMs, readJson, writeJsonAtomic } from '../core/paths.ts';
-import { isPeerAlive, readPeer } from '../core/peers.ts';
+import { ensureDir, envDurationMs, peerDir, readJson, writeJsonAtomic } from '../core/paths.ts';
+import { isPeerAlive, notePeerExit, readPeer } from '../core/peers.ts';
 import { procStart } from '../core/proc.ts';
 import { removeCleanWorktree } from './worktree.ts';
 import { writeStatus } from '../core/status.ts';
-import { claimPluginSession, clearHosted, registerHostedPeer, startInboxPump, writeHeadlessRecord } from '../headless/peer.ts';
+import { claimPluginSession, clearHosted, registerHostedPeer, startInboxPump, writeHeadlessRecord, writeHosted } from '../headless/peer.ts';
 import { applySettings } from './configure.ts';
-import { offerEvent, takeBack, type TaskEvent, taskOpen, taskPickupMs } from './task.ts';
+import { allowedBy, readPolicy, requestInfo, suggestPrefixes } from './policy.ts';
+import { createReviewer, type Reviewer } from './reviewer.ts';
+import { forgetLostTasks, offerEvent, takeBack, type TaskEvent, taskFollow, taskPickupMs } from './task.ts';
 import {
   type AgentSpec,
   type AgentState,
@@ -185,8 +187,22 @@ export async function runAgent(dir: string): Promise<number> {
     return sent as Promise<boolean>;
   };
 
+  const takeHeldReport = (): string | undefined => {
+    if (!peerId) return undefined;
+    const file = path.join(peerDir(peerId), 'parent-report.json');
+    const held = readJson<{ body?: string }>(file);
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // already gone
+    }
+    return held?.body?.trim() || undefined;
+  };
+
   const onTurnEnd = (result: { stopReason?: string; error?: string }) => {
-    const final = segment.trim();
+    const rawFinal = segment.trim();
+    const held = takeHeldReport();
+    const final = !held ? rawFinal : !rawFinal ? held : rawFinal.includes(held) ? rawFinal : `${held}\n\n${rawFinal}`;
     segment = '';
     segmentOpen = false;
     write(`\n\n— turn ended${result.error ? `: ${result.error}` : result.stopReason ? `: ${result.stopReason}` : ''}\n`);
@@ -196,8 +212,9 @@ export async function runAgent(dir: string): Promise<number> {
         ? `The turn stopped: ${result.stopReason}.`
         : '';
     const body = [final || '(The turn ended without a final message.)', why].filter(Boolean).join('\n\n');
+    const failed = !!result.error && !final;
     if (stopRequested) return;
-    void offerToTask({ kind: 'result', body }).then((taken) => {
+    void offerToTask({ kind: 'result', body, ...(failed ? { failed: true } : {}) }).then((taken) => {
       if (taken) write(`\n\n> Reported to ${spec.parent.address} as its task's result.\n`);
       else void tellParent(body, 'agent-result');
     });
@@ -205,40 +222,92 @@ export async function runAgent(dir: string): Promise<number> {
 
   /**
    * While the parent's server has an MCP task open on this agent (start_agent or a follow-up in Claude Code), the
-   * report or permission request is the task's to take: see src/agent/task.ts. Otherwise, or when no poll takes
-   * it in time, it goes to the parent as a message.
+   * report or permission request is the task's to take: see src/agent/task.ts. A task whose server went away
+   * without closing it may be taken up again by the restarted server, so it gets the same wait. Otherwise, or when
+   * no poll takes it in time, it goes to the parent as a message.
    */
   const offerToTask = async (event: Omit<TaskEvent, 'at'>): Promise<boolean> => {
-    if (!taskOpen(dir)) return false;
+    if (taskFollow(dir) === 'none') return false;
     const file = offerEvent(dir, event);
     const deadline = Date.now() + taskPickupMs();
     while (Date.now() < deadline && !stopping) {
       if (!fs.existsSync(file)) return true;
       await new Promise((resolve) => setTimeout(resolve, 200).unref());
     }
-    return !takeBack(file);
+    if (!takeBack(file)) return true;
+    // Nobody took the lost task up again (a plugin update changes the server Claude Code checks a task against):
+    // the next event goes as a message at once, until a call about this agent opens a task again.
+    if (taskFollow(dir) === 'lost') {
+      forgetLostTasks(dir);
+      write(`\n\n> Its task in ${spec.parent.address} was lost when that session's telepathy server restarted; this went as a message.\n`);
+    }
+    return false;
   };
 
-  const askPermission = async (_params: unknown, what: string): Promise<boolean> => {
+  /** telepathy's own auto mode for this agent, started on its first review (src/agent/reviewer.ts). */
+  let reviewer: Reviewer | undefined;
+  const review = () =>
+    (reviewer ??= createReviewer(
+      spec,
+      { bin, args: acpArgs(harness.acp!, bin), env: launchEnv(spec.harness) },
+      () => self?.address ?? `${spec.harness}:${spec.slug}`,
+      (line) => log.write(line.endsWith('\n') ? line : `${line}\n`),
+    ));
+
+  const askPermission = async (params: unknown, what: string): Promise<boolean> => {
     if (!self) return false;
+    // What the parent already allowed (set_permission_mode, or "always" on an earlier answer) goes ahead.
+    const info = requestInfo(params, what);
+    const policy = readPolicy(dir);
+    const allowed = allowedBy(policy, info, [spec.cwd, ...(spec.worktree ? [spec.worktree.path] : [])]);
+    if (allowed) {
+      write(`\n\n- allowed without asking: ${what} (allowed: ${allowed})`);
+      return true;
+    }
+    let reviewed = '';
+    // The reviewer stands in for an auto mode the harness lacks; one that has its own already decided to ask.
+    if (policy.mode === 'auto' && state.noAutoMode) {
+      write(`\n\n- reviewing: ${what}`);
+      const verdict = await review().review(info, policy.model);
+      if (stopping) return false;
+      if (verdict.allow) {
+        write(`\n  - allowed by the reviewer: ${verdict.reason}`);
+        return true;
+      }
+      write(`\n  - the reviewer left it to ${spec.parent.address}: ${verdict.reason}`);
+      reviewed = `The reviewer did not approve it on its own: ${verdict.reason.replace(/\.$/, '')}.\n`;
+    }
+    const prefixes = suggestPrefixes(info);
     const id = `p-${Date.now().toString(36)}-${crypto.randomBytes(2).toString('hex')}`;
     ensureDir(permissionsDir(dir));
-    writeJsonAtomic(permissionRequestFile(dir, id), { id, label: what, at: new Date().toISOString() });
+    writeJsonAtomic(permissionRequestFile(dir, id), {
+      id,
+      label: what,
+      at: new Date().toISOString(),
+      ...(info.command ? { command: info.command } : {}),
+      ...(prefixes.length ? { prefixes } : {}),
+    });
     write(`\n\n- permission requested: ${what} (asked ${spec.parent.address}, request ${id})`);
     let undeliverable = false;
     const minutes = Math.round(permissionWaitMs() / 60_000);
+    const listed = prefixes.map((p) => `"${p}"`).join(', ');
     const asMessage = () =>
       tellParent(
-        `${self!.address} asks for permission: ${what}.\n` +
-          `Ask your user, then call answer_permission with agent "${self!.address}", request "${id}" and allow true or false. ` +
-          `Without an answer within ${minutes} minutes it is denied.`,
+        `${self!.address} asks for permission: ${what}.\n${reviewed}` +
+          `Ask your user, then call answer_permission with agent "${self!.address}", request "${id}" and allow true or false` +
+          (prefixes.length ? ` (with always true, ${listed} won't be asked about again)` : '') +
+          `. Without an answer within ${minutes} minutes it is denied. To be asked less: set_permission_mode allows commands by prefix` +
+          (state.noAutoMode && policy.mode === 'ask' ? ", or turns telepathy's auto mode back on, where a reviewer approves routine requests." : '.'),
         'permission',
       ).then((ok) => {
         if (!ok) undeliverable = true;
       });
-    void offerToTask({ kind: 'permission', body: `${self.address} asks for permission: ${what}.`, request: id }).then((taken) =>
-      taken ? undefined : asMessage(),
-    );
+    void offerToTask({
+      kind: 'permission',
+      body: `${self.address} asks for permission: ${what}.${reviewed ? `\n${reviewed.trim()}` : ''}`,
+      request: id,
+      ...(prefixes.length ? { prefixes } : {}),
+    }).then((taken) => (taken ? undefined : asMessage()));
     const deadline = Date.now() + permissionWaitMs();
     while (Date.now() < deadline && !undeliverable) {
       const answer = readJson<PermissionAnswer>(permissionAnswerFile(dir, id));
@@ -263,7 +332,7 @@ export async function runAgent(dir: string): Promise<number> {
     session = await startAcpSession({
       agent: spec.harness,
       bin,
-      args: harness.acp.args,
+      args: acpArgs(harness.acp, bin),
       cwd: spec.cwd,
       headless: true,
       env: launchEnv(spec.harness, spec.slug),
@@ -278,6 +347,10 @@ export async function runAgent(dir: string): Promise<number> {
       askPermission,
       onTurnSettled: () => {
         if (peerId) writeStatus(peerId, 'idle');
+        if (state.working) {
+          state.working = false;
+          save();
+        }
       },
     });
   } catch (err) {
@@ -288,6 +361,7 @@ export async function runAgent(dir: string): Promise<number> {
   try {
     const applied = await applySettings(session.request, session.sessionId, session.created, { model: spec.model, effort: spec.effort });
     state.settings = applied.settings;
+    if (!applied.auto) state.noAutoMode = true;
     notes.push(...applied.notes);
   } catch (err) {
     session.close();
@@ -300,6 +374,7 @@ export async function runAgent(dir: string): Promise<number> {
     pluginPeer && session.child.pid
       ? claimPluginSession(spec.harness, session.child.pid, session.sessionId, spec.cwd, spec.slug)
       : registerHostedPeer(spec.harness, spec.cwd, spec.slug).peerId;
+  writeHosted(peerId, spec.parent.address);
   const peer = readPeer(peerId);
   self = { id: peerId, agent: spec.harness, name: peer?.name ?? spec.slug, address: peer?.address ?? `${spec.harness}:${spec.slug}` };
   writeStatus(peerId, 'idle');
@@ -318,10 +393,27 @@ export async function runAgent(dir: string): Promise<number> {
   Object.assign(state, { status: 'ready', peerId, address: self.address, sessionId: session.sessionId, notes });
   save();
 
-  const stopPump = startInboxPump(peerId, (text, stillPending, withdrawn) => {
-    write(`\n\n## Message · ${now()}\n\n${text}`);
-    return session.prompt(text, stillPending, withdrawn);
-  });
+  const setWorking = (value: boolean) => {
+    if (!!state.working === value) return;
+    state.working = value;
+    save();
+  };
+  /** A turn is running from now on, unless the agent never takes this prompt. */
+  const submit = (text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void) => {
+    setWorking(true);
+    writeStatus(peerId, 'busy');
+    const accepted = session.prompt(text, stillPending, withdrawn, onStart);
+    void accepted.then((ok) => {
+      if (!ok && !session.busy()) {
+        setWorking(false);
+        writeStatus(peerId, 'idle');
+      }
+    });
+    return accepted;
+  };
+  const stopPump = startInboxPump(peerId, (text, stillPending, withdrawn) =>
+    submit(text, stillPending, withdrawn, () => write(`\n\n## Message · ${now()}\n\n${text}`)),
+  );
 
   const task: Message = {
     id: newMessageId(),
@@ -337,7 +429,7 @@ export async function runAgent(dir: string): Promise<number> {
   };
   const taskText = formatAsUserTurn(task);
   write(`\n\n## Task from ${spec.parent.address} · ${now()}\n\n${taskText}`);
-  void session.prompt(taskText);
+  void submit(taskText);
 
   // The parent session has ended (not just its MCP server, which a plugin reload restarts): stop with it. A parent
   // on another device is looked for in that device's listing; while the device is out of reach, nobody can tell,
@@ -372,10 +464,13 @@ export async function runAgent(dir: string): Promise<number> {
 
   await session.exited;
   stopping = true;
+  reviewer?.close();
   clearInterval(watch);
   stopPump();
   await pushes.catch(() => undefined);
-  if (!pluginPeer) clearHosted(peerId);
+  clearHosted(peerId);
+  notePeerExit(peerId);
+  fs.rmSync(peerDir(peerId), { recursive: true, force: true });
   if (spec.worktree) state.worktreeKept = !removeCleanWorktree(spec);
   write(`\n\n— stopped at ${new Date().toISOString()}${state.worktreeKept ? `; its worktree ${spec.worktree?.path} (branch ${spec.worktree?.branch}) has changes and was kept` : ''}\n`);
   await new Promise<void>((resolve) => out.end(() => resolve()));

@@ -2,7 +2,6 @@ import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ensureAgyApiKey } from '../cli/agy-auth.ts';
 import { canonicalRunAgent, harnessByAgent, harnesses, resolvedAcpBin } from '../cli/harnesses.ts';
 import { type Agent, agentLabel } from '../core/agents.ts';
 import { type Party, partyOf } from '../core/messages.ts';
@@ -10,6 +9,7 @@ import { ensureDir, envDurationMs, readJson, stateDir, writeJsonAtomic } from '.
 import { listPeers, type Peer, slugify } from '../core/peers.ts';
 import { isAlive } from '../core/proc.ts';
 import { removeCleanWorktree } from './worktree.ts';
+import { type PermissionPolicy, readPolicy, updatePolicy } from './policy.ts';
 import { sandboxSpawnBlock } from '../core/sandbox-launch.ts';
 import type { ToolResult } from '../core/tools.ts';
 import {
@@ -58,6 +58,8 @@ export interface StartArgs {
   effort?: string;
   cwd?: string;
   isolation?: 'worktree';
+  /** Its permission policy from the start (src/agent/policy.ts); set_permission_mode changes it later. */
+  permissions?: { mode?: 'ask' | 'auto'; allow?: string[]; model?: string };
 }
 
 const failed = (text: string): ToolResult => ({ text, isError: true });
@@ -169,10 +171,6 @@ export function launchAgent(parent: AgentParent, args: StartArgs): Launched {
     const hint = known.acp.installHint ? ` Install it with \`${known.acp.installHint}\`.` : '';
     return fail(`Not started: ${agentLabel(harness)} needs \`${known.acp.bin}\` on PATH for ACP, and it is not there.${hint}`);
   }
-  if (harness === 'antigravity') {
-    const auth = ensureAgyApiKey();
-    if (!auth.ok) return fail(`Not started: ${auth.warning}`);
-  }
   if (!args.prompt.trim()) return fail('Not started: the prompt is empty.');
 
   let cwd = path.resolve(args.cwd ?? parent.cwd ?? process.cwd());
@@ -217,6 +215,7 @@ export function launchAgent(parent: AgentParent, args: StartArgs): Launched {
     createdAt: new Date().toISOString(),
   };
   writeSpec(dir, spec);
+  if (args.permissions) updatePolicy(dir, { mode: args.permissions.mode, allow: args.permissions.allow, model: args.permissions.model });
   const { cmd, args: argv } = hostCommand(dir);
   const log = fs.openSync(path.join(dir, 'host.log'), 'a');
   const child = spawn(cmd, argv, { cwd, detached: true, stdio: ['ignore', log, log], env: process.env });
@@ -228,10 +227,30 @@ export function launchAgent(parent: AgentParent, args: StartArgs): Launched {
   return { ok: true, dir, spec, address: `${harness}:${slug}`, child, spawnError: () => spawnError };
 }
 
+/**
+ * Who decides its permission requests. Auto mode is the harness's own where it has one over ACP, and telepathy's
+ * reviewer only where it has none; `ask` turns that reviewer off. The allow list comes first either way.
+ */
+function decides(policy: PermissionPolicy, noAutoMode: boolean | undefined, label: string): string {
+  if (!noAutoMode) return "its harness's own auto mode decides, and what it still asks about comes to you";
+  if (policy.mode === 'ask') return "it has no auto mode over ACP, and telepathy's is off: each permission request it makes comes to you";
+  const model = policy.model ? `model ${policy.model}` : 'its cheapest model, medium effort';
+  return `it has no auto mode over ACP, so telepathy's is on: a reviewer session of ${label} (${model}) approves routine permission requests, and the rest come to you`;
+}
+
+const allowSentence = (policy: PermissionPolicy) => (policy.allow.length ? `Allowed without asking: ${policy.allow.join(', ')}.` : '');
+
+/** start_agent's line on permissions: nothing for a harness in its own auto mode with no allow list. */
+export function policyLine(policy: PermissionPolicy | undefined, noAutoMode: boolean | undefined, label: string): string {
+  if (!policy) return '';
+  const who = noAutoMode ? decides(policy, noAutoMode, label) : '';
+  return [who ? `${who[0].toUpperCase()}${who.slice(1)}.` : '', allowSentence(policy)].filter(Boolean).join(' ');
+}
+
 /** What start_agent says once the agent is ready. `address` is how the caller reaches it. */
 export function startedText(
   spec: Pick<AgentSpec, 'harness' | 'cwd' | 'worktree'>,
-  state: AgentState,
+  state: AgentState & { policy?: PermissionPolicy },
   where: { address: string; ref: string; transcript: string; on?: string },
 ): string {
   const settings = state.settings?.length ? state.settings.join(', ') : 'its default settings';
@@ -239,6 +258,7 @@ export function startedText(
     `Started ${where.address} [${where.ref}], ${agentLabel(spec.harness)} in ${spec.cwd}${where.on ? ` on ${where.on}` : ''}, with ${settings}.`,
     `Transcript: ${where.transcript}`,
     spec.worktree ? `It works in its own worktree on branch ${spec.worktree.branch}; an unchanged worktree is removed when it stops.` : '',
+    policyLine(state.policy, state.noAutoMode, agentLabel(spec.harness)),
     `It works in the background. When its turn ends, its final message arrives here as a message from it ` +
       `(kind="agent-result") with that transcript path. Don't wait or poll for it. Continue it with send_message to ` +
       `"${where.address}"; stop it with stop_agent when you no longer need it.`,
@@ -259,7 +279,9 @@ export async function startAgentTool(self: Peer, args: StartArgs): Promise<ToolR
     const state = readState(dir);
     if (state?.status === 'failed') return failed(`Not started: ${agentLabel(harness)} ${state.error ?? 'failed to start'}.`.replace(/\.\.$/, '.'));
     if (state?.status === 'ready' && state.address && state.peerId) {
-      return { text: startedText(spec, state, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }) };
+      return {
+        text: startedText(spec, { ...state, policy: readPolicy(dir) }, { address: state.address, ref: state.peerId, transcript: transcriptFile(dir) }),
+      };
     }
     const spawnError = launched.spawnError();
     if (spawnError) {
@@ -352,16 +374,43 @@ export function openPermission(dir: string): PermissionRequest | undefined {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-export function answerPermissionTool(self: Peer, args: { agent: string; request: string; allow: boolean }): ToolResult {
+export function answerPermissionTool(self: Peer, args: { agent: string; request: string; allow: boolean; always?: boolean }): ToolResult {
   if (!PERMISSION_ID.test(args.request)) return failed(`"${args.request}" is not a permission request id.`);
   const found = findChild(self, args.agent);
   if ('error' in found) return failed(found.error);
-  if (!fs.existsSync(permissionRequestFile(found.dir, args.request))) {
-    return failed(`${args.agent} has no permission request "${args.request}".`);
-  }
+  const request = readJson<PermissionRequest>(permissionRequestFile(found.dir, args.request));
+  if (!request) return failed(`${args.agent} has no permission request "${args.request}".`);
   const answer = permissionAnswerFile(found.dir, args.request);
   if (fs.existsSync(answer)) return failed(`Request "${args.request}" was already answered.`);
   if (!hostAlive(found.state)) return failed(`${args.agent} is no longer running.`);
+  const remembered = args.allow && args.always ? rememberPrefixes(found.dir, request.prefixes) : '';
   writeJsonAtomic(answer, { allow: args.allow, at: new Date().toISOString() });
-  return { text: `${args.allow ? 'Allowed' : 'Denied'} request ${args.request} for ${found.state?.address ?? args.agent}.` };
+  return { text: `${args.allow ? 'Allowed' : 'Denied'} request ${args.request} for ${found.state?.address ?? args.agent}.${remembered}` };
+}
+
+/** `always` on an answer: the request's command prefixes go on the agent's allow list. Says what happened. */
+export function rememberPrefixes(dir: string, prefixes: string[] | undefined): string {
+  if (!prefixes?.length) return ' Nothing was added to its allow list: that command has no prefix that is safe to allow on its own.';
+  const policy = updatePolicy(dir, { add: prefixes });
+  return ` From now on it runs ${prefixes.join(', ')} without asking (allowed: ${policy.allow.join(', ')}).`;
+}
+
+export interface PermissionModeArgs {
+  agent: string;
+  mode?: 'ask' | 'auto';
+  allow?: string[];
+  model?: string;
+}
+
+/** What set_permission_mode says the agent may now do. */
+export function permissionModeText(address: string, policy: PermissionPolicy, noAutoMode: boolean | undefined, label: string): string {
+  return `${address}: ${decides(policy, noAutoMode, label)}. ${allowSentence(policy) || 'Nothing is allowed without asking.'}`;
+}
+
+export function setPermissionModeTool(self: Peer, args: PermissionModeArgs): ToolResult {
+  const found = findChild(self, args.agent);
+  if ('error' in found) return failed(found.error);
+  if (!hostAlive(readState(found.dir))) return failed(`${agentAddress(found)} is not running.`);
+  const policy = updatePolicy(found.dir, { mode: args.mode, allow: args.allow, model: args.model });
+  return { text: permissionModeText(agentAddress(found), policy, readState(found.dir)?.noAutoMode, agentLabel(found.spec.harness)) };
 }

@@ -10,7 +10,7 @@ import type { AgentInfo, AgentReply, AgentRequest } from '../bridge/agents.ts';
 import { call } from '../bridge/client.ts';
 import { findDevice, remoteTarget } from '../bridge/remote.ts';
 import { isOnline, knownDevices, type RemoteDevice } from '../bridge/state.ts';
-import { type StartArgs, startedText, startWaitMs } from './tools.ts';
+import { type PermissionModeArgs, permissionModeText, type StartArgs, startedText, startWaitMs } from './tools.ts';
 
 /**
  * start_agent on another device: the request goes to that device's bridge (src/bridge/agents.ts), which starts
@@ -137,13 +137,15 @@ export async function startRemoteAgentTool(self: Peer, deviceName: string, args:
     const state = agent.state;
     if (state?.status === 'failed') return failed(`Not started: ${agentLabel(agent.harness)} ${state.error ?? 'failed to start'} on ${device.slug}.`);
     if (state?.status === 'ready' && state.peerId) {
+      const asked = !!args.permissions;
+      const old = asked && !agent.policy ? `\n${device.slug} runs an older telepathy, which has no permission mode or allow list.` : '';
       return {
-        text: startedText(agent, state, {
+        text: startedText(agent, { ...state, policy: agent.policy }, {
           address,
           ref: `${state.peerId}@${device.slug}`,
           transcript: `${agent.transcript} on ${device.slug}`,
           on: device.slug,
-        }),
+        }) + old,
       };
     }
     if (state && !agent.alive) break;
@@ -168,10 +170,23 @@ export async function stopRemoteAgentTool(self: Peer, child: RemoteChild): Promi
   return { text: `Stopped ${address}. Transcript: ${reply.agent.transcript} on ${device.slug}.${kept}` };
 }
 
-export async function answerRemotePermission(self: Peer, child: RemoteChild, request: string, allow: boolean): Promise<ToolResult> {
+export async function answerRemotePermission(self: Peer, child: RemoteChild, request: string, allow: boolean, always?: boolean): Promise<ToolResult> {
   const device = agentDevice(child.device);
   if ('error' in device) return failed(device.error.replace(/^Not started: /, ''));
-  const reply = await agentsRequest(device, self, { op: 'answer', address: child.address, request, allow });
+  const reply = await agentsRequest(device, self, { op: 'answer', address: child.address, request, allow, ...(always ? { always } : {}) });
   if (!reply.ok) return failed(reply.error);
-  return { text: `${allow ? 'Allowed' : 'Denied'} request ${request} for ${childAddress(child)}.` };
+  const remembered = allow && always ? (reply.text ? ` ${reply.text}` : ` Nothing was added to its allow list: ${device.slug} runs an older telepathy.`) : '';
+  return { text: `${allow ? 'Allowed' : 'Denied'} request ${request} for ${childAddress(child)}.${remembered}` };
+}
+
+export async function setRemotePermissionMode(self: Peer, child: RemoteChild, args: PermissionModeArgs): Promise<ToolResult> {
+  const device = agentDevice(child.device);
+  if ('error' in device) return failed(device.error.replace(/^Not started: /, ''));
+  const { agent: _name, ...change } = args;
+  const reply = await agentsRequest(device, self, { op: 'policy', address: child.address, ...change });
+  if (!reply.ok) {
+    return failed(reply.error === 'malformed request' ? `${device.slug} runs an older telepathy, which has no permission mode. Update it with \`telepathy update\` there.` : reply.error);
+  }
+  if (!reply.agent.policy) return failed(`${device.slug} runs an older telepathy, which has no permission mode.`);
+  return { text: permissionModeText(childAddress(child), reply.agent.policy, reply.agent.state?.noAutoMode, `${agentLabel(child.harness)} on ${device.slug}`) };
 }

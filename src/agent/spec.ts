@@ -53,6 +53,10 @@ export interface AgentState {
   notes?: string[];
   /** True when the worktree had changes at stop and was kept. */
   worktreeKept?: boolean;
+  /** A turn is running: a call about it can open a task that follows that turn (src/agent/mcp-tasks.ts). */
+  working?: boolean;
+  /** The harness has no auto mode over ACP: every permission request it makes comes to the parent, or its reviewer. */
+  noAutoMode?: boolean;
 }
 
 export const agentsDir = () => path.join(stateDir(), 'agents');
@@ -108,6 +112,10 @@ export interface PermissionRequest {
   id: string;
   label: string;
   at: string;
+  /** The shell command, for a request to run one. */
+  command?: string;
+  /** Command prefixes an answer with `always` allows from now on. */
+  prefixes?: string[];
 }
 
 export interface PermissionAnswer {

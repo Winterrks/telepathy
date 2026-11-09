@@ -7,7 +7,7 @@ import { configuredEnv, ensureDir, inboxDir, peerDir, peersDir, readJson, stateD
 import { VERSION } from './version.ts';
 import { type CodexTuiProc, codexTuiLaunch, codexTuiProcesses, isCodexExecCommand, processCwd } from './codex-launch.ts';
 import { codexThreadLoaded } from './codex-threads.ts';
-import { commandLine, isSameProcess, procStart } from './proc.ts';
+import { commandLine, descendantPids, isSameProcess, procStart } from './proc.ts';
 
 export { agentLabel };
 
@@ -143,14 +143,25 @@ const rememberedFile = (agent: Agent, sessionId: string) =>
 
 /** Live processes that have claimed this session, oldest claimant first. The first one owns delivery. */
 export function sessionOwners(id: string): OwnerRecord[] {
-  const owners = readJson<OwnerRecord[]>(ownersFile(id)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson<OwnerRecord[]>(ownersFile(id)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  // An ACP launcher or npm wrapper (`opencode acp`, `.bin/copilot`) and the child it spawned for the same
+  // session are one launch tree, not a duplicate session: the inner process is the one running the plugin.
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 
 /** Records `pid` as a claimant. Returns whether this process is the one that owns delivery. */
 export function claimSessionOwner(id: string, pid: number): boolean {
   const owners = sessionOwners(id);
   if (!owners.some((owner) => owner.pid === pid)) {
+    const ancestor = owners.findIndex((owner) => owner.pid !== pid && descendantPids(owner.pid).includes(pid));
+    if (ancestor >= 0) {
+      owners[ancestor] = { pid, procStart: procStart(pid), at: owners[ancestor].at };
+      writeJsonAtomic(ownersFile(id), owners);
+      return owners[0]?.pid === pid;
+    }
+    const descendant = owners.find((owner) => owner.pid !== pid && descendantPids(pid).includes(owner.pid));
+    if (descendant) return owners[0]?.pid === descendant.pid;
     owners.push({ pid, procStart: procStart(pid), at: new Date().toISOString() });
     owners.sort((a, b) => a.at.localeCompare(b.at));
     writeJsonAtomic(ownersFile(id), owners);
@@ -615,12 +626,14 @@ export function isPeerAlive(peer: Peer | undefined, now = Date.now()): boolean {
   if (isSessionKeyed(peer)) {
     const owner = sessionOwners(peer.id)[0];
     const pid = owner?.pid ?? peer.pid;
+    if (pid <= 1) return false;
     const started = owner?.procStart ?? readSession(peer.id)?.procStart;
     if (!isSameProcess(pid, started)) return false;
     // OpenCode and Kilo keep every session the service ever opened. A session counts only while it is in use.
     if (peer.agent === 'opencode' || peer.agent === 'kilo') return now - lastActivity(peer.id) < SERVICE_SESSION_ACTIVE_MS;
     return true;
   }
+  if (peer.pid <= 1) return false;
   return isSameProcess(peer.pid, peer.procStart);
 }
 

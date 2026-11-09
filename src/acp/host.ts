@@ -41,6 +41,8 @@ export interface AcpLaunch {
   onTurnEnd?: (result: { stopReason?: string; error?: string }) => void;
   /** Answers each permission request in place of the terminal or the headless default. */
   askPermission?: (params: unknown, label: string) => Promise<boolean>;
+  /** False: start it without telepathy's MCP server, as for a permission reviewer (src/agent/reviewer.ts). */
+  mcp?: boolean;
 }
 
 export interface AcpSession {
@@ -56,7 +58,7 @@ export interface AcpSession {
   /** Stop reading stdin so a dead agent does not wait for Ctrl-D. */
   releaseStdin(): void;
   /** Resolves once the agent has accepted the turn, which may be before the turn finishes. */
-  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean): Promise<boolean>;
+  prompt(text: string, stillPending?: () => boolean, withdrawn?: () => boolean, onStart?: () => void): Promise<boolean>;
   /**
    * True when `resumeSessionId` was loaded. False when that load failed or returned a different id,
    * including a Copilot session that was stopped before it ever had a turn.
@@ -305,7 +307,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
   const blocked = sandboxSpawnBlock(options.bin, options.env ?? process.env);
   if (blocked) throw new Error(blocked);
   const mcpEnv = options.env ?? process.env;
-  const cliMcp = copilotCliMcp(options.agent, mcpEnv);
+  const cliMcp = options.mcp === false ? undefined : copilotCliMcp(options.agent, mcpEnv);
   // A new process group so Ctrl-C reaches this host, which sends session/cancel, and not the adapter.
   const child = spawn(options.bin, insertBeforeDoubleDash(options.args, cliMcp?.args ?? []), {
     cwd: options.cwd,
@@ -533,8 +535,9 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
     const stdioOk = advertisesStdioMcp(initialized);
     // Copilot's server is on the command line. Other agents get it on session/new only when they
     // advertise stdio. Otherwise the session still starts, without telepathy's tools.
-    const mcpServers = harnessProvidesMcp(options.agent) || cliMcp || !stdioOk ? [] : telepathyMcpServers(options.agent, mcpEnv);
-    if (!harnessProvidesMcp(options.agent) && !cliMcp && !stdioOk) {
+    const mcpServers =
+      options.mcp === false || harnessProvidesMcp(options.agent) || cliMcp || !stdioOk ? [] : telepathyMcpServers(options.agent, mcpEnv);
+    if (options.mcp !== false && !harnessProvidesMcp(options.agent) && !cliMcp && !stdioOk) {
       options.emit(
         `${options.bin} does not accept stdio MCP servers, and telepathy has no command-line way to add one. This session has no telepathy tools.`,
       );
@@ -592,7 +595,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
       busy: () => activeTurns > 0,
       cancelTurn,
       releaseStdin,
-      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean): Promise<boolean> {
+      prompt(text: string, stillPending: () => boolean = () => true, withdrawn?: () => boolean, onStart?: () => void): Promise<boolean> {
         // Callers that only know "still in the inbox" keep the old cancel. The inbox pump passes
         // `withdrawn` so a hook claim is not treated as a recall.
         const recalled = withdrawn ?? (() => !stillPending());
@@ -605,12 +608,40 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
           resolveAccepted = resolve;
         });
         let settled = false;
+        let started = false;
+        const noteStart = () => {
+          if (started) return;
+          started = true;
+          onStart?.();
+        };
+        let queueWatch: ReturnType<typeof setInterval> | undefined;
         const finish = (ok: boolean) => {
           if (settled) return;
           settled = true;
+          if (queueWatch) {
+            clearInterval(queueWatch);
+            queueWatch = undefined;
+          }
           resolveAccepted(ok);
         };
+        // While waiting behind a running turn, a hook or in-process plugin (such as OpenCode 2's `steer`) may
+        // claim the message mid-turn, or the sender may withdraw it. Release the inbox pump right away instead
+        // of holding it until the running turn finishes.
+        queueWatch = setInterval(() => {
+          if (settled) return;
+          if (recalled()) {
+            finish(false);
+          } else if (!stillPending()) {
+            noteStart();
+            finish(false);
+          }
+        }, 25);
+        queueWatch.unref?.();
         const job = tail.then(async () => {
+          if (queueWatch) {
+            clearInterval(queueWatch);
+            queueWatch = undefined;
+          }
           activeTurns += 1;
           cancelledThisTurn = false;
           const previous = onUpdate;
@@ -630,6 +661,7 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
           }, 25);
           try {
             if (!stillPending() || recalled()) {
+              if (!recalled() && !stillPending()) noteStart();
               finish(false);
               return;
             }
@@ -647,9 +679,11 @@ export async function startAcpSession(options: AcpLaunch): Promise<AcpSession> {
             };
             sent = true;
             if (!stillPending() || recalled()) {
+              if (!recalled() && !stillPending()) noteStart();
               finish(false);
               return;
             }
+            noteStart();
             const outcome = (await rpc.request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] })) as { stopReason?: unknown } | undefined;
             turnResult = { stopReason: typeof outcome?.stopReason === 'string' ? outcome.stopReason : undefined };
             if (recalled()) {

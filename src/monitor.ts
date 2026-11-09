@@ -17,6 +17,8 @@ import { findAgent, isAlive, isSameProcess, parseAgent } from './core/proc.ts';
  * plugin monitors don't run (the Claude app's Code tab) start it as a background command, whose completion wakes
  * the session, and start it again after handling the message.
  */
+// A session telepathy started without itself, such as a permission reviewer (src/agent/reviewer.ts).
+if (process.env.TELEPATHY_DISABLED === '1') process.exit(0);
 const argv = process.argv.slice(2);
 const once = argv.includes('--once');
 // `--rewake` is the idle-wake hook for a session with no inbox socket. It waits like `--once` and exits 2 so

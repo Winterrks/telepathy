@@ -17,6 +17,8 @@ Others, each described where it applies:
 | `TELEPATHY_AUTO_UPDATE=0` | Turns auto-update off, whatever `telepathy config` says ([Auto-update](telepathy-command.md#auto-update)) |
 | `TELEPATHY_BRIDGE_PORT` | The bridge's port, 47380 by default, the same on every device ([Devices](devices.md)) |
 | `TELEPATHY_BRIDGE_RESTART_WAIT_MS` | How long the bridge waits for your other devices before it restarts into an update. Default 10 minutes ([Devices](devices.md)) |
+| `TELEPATHY_REVIEW_TIMEOUT_MS` | How long a subagent's permission reviewer has to answer before the request goes to the parent. Default 90 seconds ([Fewer permission requests](subagents.md#fewer-permission-requests)) |
+| `TELEPATHY_DISABLED=1` | telepathy's hooks, MCP server and plugins do nothing in that process. telepathy sets it for the permission reviewer it starts ([Fewer permission requests](subagents.md#fewer-permission-requests)) |
 | `TELEPATHY_AGENT_UNREACHABLE_MS` | How long an agent started from another device keeps running while that device is out of reach. Default 10 minutes ([On another device](subagents.md#on-another-device)) |
 | `TELEPATHY_GATEKEEPER_PROBE_MS` | How long `setup` and `update` wait for `--version` from a program that still has an unapproved quarantine flag before they treat it as held by macOS. Default 15 seconds ([Setup](telepathy-command.md#setup)) |
 | `TELEPATHY_GROKBOT_DEBOUNCE_MS` | How long a connected Grok Bot's host waits for more messages to share one run. Default 400, at most 1.5 seconds after the first ([A routine webhook](agents/grok.md#a-routine-webhook-telepathy-grokbot)) |

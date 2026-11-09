@@ -158,21 +158,62 @@ describe('start_agent as an MCP task (Claude Code)', () => {
     const session = claudeConnection(env({ FAKE_ACP_NO_AUTO: '1', FAKE_ACP_PERMISSION: '1' }));
     try {
       await session.request('server/discover');
-      await session.call('start_agent', { harness: 'kimi', description: 'Tidy logs', prompt: 'Tidy the logs.' });
+      await session.call('start_agent', { harness: 'kimi', description: 'Tidy logs', prompt: 'Tidy the logs.', permissions: { mode: 'ask' } });
       const asking = await session.settle('kimi:tidy-logs');
       assert.equal(asking.status, 'input_required');
       const [[request, input]] = Object.entries(asking.inputRequests as Record<string, { method: string; params: Record<string, any> }>);
       assert.equal(input.method, 'elicitation/create');
       assert.match(input.params.message, /^kimi:tidy-logs asks for permission: shell/);
-      assert.deepEqual(Object.keys(input.params.requestedSchema.properties), ['allow']);
-      await session.request('tasks/update', { taskId: 'kimi:tidy-logs', inputResponses: { [request]: { action: 'accept', content: { allow: true } } } });
+      assert.deepEqual(Object.keys(input.params.requestedSchema.properties), ['allow', 'always']);
+      assert.equal(input.params.requestedSchema.properties.always.title, "Don't ask again for ls");
+      await session.request('tasks/update', { taskId: 'kimi:tidy-logs', inputResponses: { [request]: { action: 'accept', content: { allow: true, always: true } } } });
       const done = await session.settle('kimi:tidy-logs');
       assert.equal(done.status, 'completed');
       assert.match(done.result.content[0].text, /^Final report 1: /);
       assert.deepEqual(messages().filter((m) => m.from?.address === 'kimi:tidy-logs'), [], 'nothing came as a message');
+      const policy = JSON.parse(fs.readFileSync(path.join(sb.home, 'agents', 'kimi-tidy-logs', 'policy.json'), 'utf8'));
+      assert.deepEqual(policy.allow, ['ls'], '"always" in the dialog allows it from now on');
       await session.call('stop_agent', { name: 'kimi:tidy-logs' });
     } finally {
       await session.close();
+    }
+  });
+
+  test('a task lost to a server Claude Code no longer polls: its request waits, comes as a message, and answering it follows the agent again', async () => {
+    const lostEnv = env({ FAKE_ACP_NO_AUTO: '1', FAKE_ACP_PERMISSION: '1', FAKE_ACP_PERMISSION_DELAY_MS: '1500', TELEPATHY_TASK_PICKUP_MS: '1500' });
+    const first = claudeConnection(lostEnv);
+    await first.request('server/discover');
+    await first.call('start_agent', { harness: 'kimi', description: 'Lost task', prompt: 'x', permissions: { mode: 'ask' } });
+    await waitFor(() => fs.existsSync(path.join(sb.home, 'agents', 'kimi-lost-task', 'state.json')) && state('kimi:lost-task').status === 'ready', 20_000);
+    // A plugin update restarts the server under a new path: Claude Code stops polling the task, and no server adopts it.
+    await first.close();
+    const ask = await waitFor(() => messages().find((m) => m.kind === 'permission' && m.from.address === 'kimi:lost-task'), 20_000);
+    const transcript = () => fs.readFileSync(path.join(sb.home, 'agents', 'kimi-lost-task', 'transcript.md'), 'utf8');
+    assert.match(transcript(), /> Its task in claude:[^ ]+ was lost when that session's telepathy server restarted; this went as a message\./);
+    const request = /request "([^"]+)"/.exec(ask.body)![1];
+
+    const second = claudeConnection(lostEnv);
+    try {
+      await second.request('server/discover');
+      const answered = await second.call('answer_permission', { agent: 'kimi:lost-task', request, allow: true });
+      assert.equal(answered.result?.resultType, 'task');
+      assert.equal(answered.result?.taskId, 'kimi:lost-task');
+      assert.match(
+        answered.result?._meta?.['com.anthropic/agent-task']?.modelImmediateResponse,
+        new RegExp(`^Allowed request ${request} for kimi:lost-task\\.\\nkimi:lost-task is a background task again: its next permission request goes to your user in a dialog, and its report is this task's result\\.$`),
+      );
+      const done = await second.settle('kimi:lost-task');
+      assert.equal(done.status, 'completed');
+      assert.match(done.result.content[0].text, /^Final report 1: /);
+      assert.deepEqual(messages().filter((m) => m.kind === 'agent-result' && m.from.address === 'kimi:lost-task'), [], 'the report went to the task');
+
+      // An idle agent, or one a task already follows, is answered the usual way.
+      const set = await second.call('set_permission_mode', { agent: 'kimi:lost-task', mode: 'auto' });
+      assert.equal(set.result?.resultType, 'complete');
+      assert.match(set.result?.content[0].text, /^kimi:lost-task: it has no auto mode over ACP, so telepathy's is on: a reviewer session of Kimi Code/);
+      await second.call('stop_agent', { name: 'kimi:lost-task' });
+    } finally {
+      await second.close();
     }
   });
 
@@ -209,6 +250,52 @@ describe('start_agent as an MCP task (Claude Code)', () => {
       assert.equal(hook('codex'), undefined, "the user's own agent keeps its name");
     } finally {
       fs.rmSync(path.join(config, 'agents'), { recursive: true, force: true });
+    }
+  });
+
+  test('a failed turn settles the task as failed, a mid-turn send_message does not open a duplicate task, and SendMessage points to send_message', async () => {
+    const failing = claudeConnection(env({ FAKE_ACP_REJECT: '1' }));
+    try {
+      await failing.request('server/discover');
+      const started = await failing.call('start_agent', { harness: 'opencode', description: 'Rejecting turn', prompt: 'x' });
+      assert.equal(started.result?.taskId, 'opencode:rejecting-turn');
+      const settled = await failing.settle('opencode:rejecting-turn');
+      assert.equal(settled.status, 'failed');
+      assert.match(settled.statusMessage, /^opencode:rejecting-turn failed\.$/);
+      assert.match(settled.error?.message, /The turn failed: rejected\./);
+      await failing.call('stop_agent', { name: 'opencode:rejecting-turn' });
+    } finally {
+      await failing.close();
+    }
+
+    const session = claudeConnection(env({ FAKE_ACP_DELAY_MS: '1500' }));
+    try {
+      await session.request('server/discover');
+      await session.call('start_agent', { harness: 'opencode', description: 'Busy steer', prompt: 'Work on part 1.' });
+      await waitFor(() => fs.existsSync(path.join(sb.home, 'agents', 'opencode-busy-steer', 'state.json')) && state('opencode:busy-steer').status === 'ready', 20_000);
+
+      // Claude's native SendMessage to a start_agent subagent is denied without sending so Claude uses telepathy's send_message.
+      const nativeSend = spawnSync(process.execPath, [path.join(DIST, 'hook.mjs'), '--agent', 'claude', 'send-message'], {
+        input: JSON.stringify({ session_id: 'boss', cwd: ROOT, tool_name: 'SendMessage', tool_input: { to: 'opencode:busy-steer', message: 'hi' } }),
+        env: env(),
+        encoding: 'utf8',
+      });
+      const out = JSON.parse(nativeSend.stdout).hookSpecificOutput;
+      assert.equal(out.permissionDecision, 'deny');
+      assert.match(
+        out.permissionDecisionReason,
+        /^Not sent: opencode:busy-steer is an agent you started with start_agent\. Call telepathy's send_message tool \(to: "opencode:busy-steer"\) so its turn runs as a background task\.$/,
+      );
+
+      // While task #1 is still open on the running turn, send_message delivers without opening a competing #2 task.
+      const midTurn = await session.call('send_message', { to: 'opencode:busy-steer', message: 'Also check part 2.' });
+      assert.equal(midTurn.result?.resultType, 'complete');
+      assert.match(midTurn.result?.content[0].text, /^Message delivered to opencode:busy-steer/);
+      const first = await session.settle('opencode:busy-steer');
+      assert.equal(first.status, 'completed');
+      await session.call('stop_agent', { name: 'opencode:busy-steer' });
+    } finally {
+      await session.close();
     }
   });
 });

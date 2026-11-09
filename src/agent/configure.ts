@@ -116,6 +116,8 @@ export function pickEffort(choices: Choice[], wanted: string): string | undefine
 export interface Applied {
   settings: string[];
   notes: string[];
+  /** The harness has an auto mode over ACP, and it is on. */
+  auto: boolean;
 }
 
 type Request = (method: string, params: unknown) => Promise<unknown>;
@@ -137,8 +139,6 @@ export async function applySettings(
     if (offer.mode?.configId) await setOption(offer.mode.configId, auto);
     else await request('session/set_mode', { sessionId, modeId: auto });
     settings.push(`mode ${tail(auto)}`);
-  } else {
-    notes.push('This harness has no auto mode, so each permission request it makes comes to you.');
   }
 
   let modelValue: string | undefined;
@@ -169,5 +169,71 @@ export async function applySettings(
       notes.push(`This harness has no effort setting over ACP, so effort "${wanted.effort}" was not applied.`);
     }
   }
-  return { settings, notes };
+  return { settings, notes, auto: !!auto };
+}
+
+/** Names that say a model is a small, cheap one, cheapest first. */
+const CHEAP = [/\bnano\b/, /flash[-_ ]?lite|\blite\b/, /\bmini\b|haiku|\bflash\b/, /\bsmall\b|\bfast\b|\bspark\b/];
+const LARGE = /opus|\bpro\b|ultra|\bmax\b/;
+
+/** The cheapest model the harness offers, judged by its name; undefined when no name says so. */
+export function cheapestModel(choices: Choice[]): string | undefined {
+  let best: { value: string; rank: number } | undefined;
+  for (const choice of choices) {
+    const text = `${base(choice.value)} ${choice.name ?? ''}`.toLowerCase();
+    if (LARGE.test(text)) continue;
+    const rank = CHEAP.findIndex((re) => re.test(text));
+    if (rank >= 0 && (!best || rank < best.rank)) best = { value: choice.value, rank };
+  }
+  return best?.value;
+}
+
+/** A mode that reads but doesn't edit or run anything: Cursor's `ask`, others' `plan` or `read-only`. */
+export function readOnlyMode(choices: Choice[]): string | undefined {
+  for (const wanted of ['ask', 'read-only', 'readonly', 'plan', 'chat']) {
+    const hit = choices.find((c) => tail(c.value) === wanted || c.name?.toLowerCase() === wanted);
+    if (hit) return hit.value;
+  }
+  return undefined;
+}
+
+/** `gemini-3.8-flash[reasoning_effort=high]` at another effort: Cursor takes its parameters on the model id. */
+const withEffort = (value: string, effort: string) => value.replace(/([[,](?:effort|reasoning_effort|reasoning)=)[^,\]]*/, `$1${effort}`);
+
+/**
+ * The reviewer's settings (src/agent/reviewer.ts): a read-only mode, then the model asked for or the cheapest one,
+ * at medium effort. A setting the harness refuses is left at its default rather than failing the review.
+ */
+export async function applyReviewerSettings(request: Request, sessionId: string, created: unknown, wantedModel?: string): Promise<string[]> {
+  const offer = readOffer(created);
+  const settings: string[] = [];
+  const setOption = (configId: string, value: string) => request('session/set_config_option', { sessionId, configId, value });
+  const attempt = async (what: string, run: () => Promise<unknown>) => {
+    try {
+      await run();
+      settings.push(what);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const mode = offer.mode ? readOnlyMode(offer.mode.choices) : undefined;
+  if (mode && offer.mode) {
+    const configId = offer.mode.configId;
+    await attempt(`mode ${tail(mode)}`, () => (configId ? setOption(configId, mode) : request('session/set_mode', { sessionId, modeId: mode })));
+  }
+  const choices = offer.model?.choices ?? [];
+  const model = wantedModel ? pickModel(choices, wantedModel, 'medium').value : cheapestModel(choices);
+  if (model && offer.model) {
+    const configId = offer.model.configId;
+    const set = (value: string) => (configId ? setOption(configId, value) : request('session/set_model', { sessionId, modelId: value }));
+    const medium = offer.effort ? model : withEffort(model, 'medium');
+    if (!(medium !== model && (await attempt(`model ${medium}`, () => set(medium))))) await attempt(`model ${model}`, () => set(model));
+  }
+  if (offer.effort) {
+    const effort = offer.effort;
+    const value = pickEffort(effort.choices, 'medium');
+    if (value) await attempt(`effort ${value}`, () => setOption(effort.configId, value));
+  }
+  return settings;
 }

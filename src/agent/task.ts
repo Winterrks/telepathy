@@ -64,8 +64,12 @@ export function harnessAgentType(type: unknown, cwd?: string): { harness: Agent;
 export interface TaskEvent {
   kind: 'result' | 'permission';
   body: string;
+  /** True when the turn failed with an error and produced no final message. */
+  failed?: boolean;
   /** The permission request's id. */
   request?: string;
+  /** Command prefixes the request uses, which the answer can allow from now on (src/agent/policy.ts). */
+  prefixes?: string[];
   at: string;
 }
 
@@ -133,6 +137,8 @@ let openSeq = 0;
 /** The server opens a task on an agent. Returns the call that closes it. */
 export function openTask(dir: string, taskId: string, procStart: string | undefined): () => void {
   ensureDir(openDir(dir));
+  // A server that went away without closing its tasks is superseded by this one.
+  forgetLostTasks(dir);
   const file = path.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
   writeJsonAtomic(file, { taskId, pid: process.pid, procStart } satisfies OpenMarker);
   return () => fs.rmSync(file, { force: true });
@@ -149,19 +155,38 @@ export function leaseTask(dir: string, taskId: string, procStart: string | undef
 
 export const endLease = (dir: string, taskId: string) => fs.rmSync(leaseFile(dir, taskId), { force: true });
 
-/** A task is open on this agent in a server that is still running, or under a lease that has not lapsed. */
-export function taskOpen(dir: string): boolean {
+function markers(dir: string): { file: string; live: boolean }[] {
   let names: string[];
   try {
     names = fs.readdirSync(openDir(dir));
   } catch {
-    return false;
+    return [];
   }
-  return names.some((name) => {
-    const marker = readJson<OpenMarker>(path.join(openDir(dir), name));
-    if (marker?.until !== undefined && marker.until < Date.now()) return false;
-    return !!marker?.pid && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart);
+  return names.flatMap((name) => {
+    const file = path.join(openDir(dir), name);
+    const marker = readJson<OpenMarker>(file);
+    if (!marker?.pid) return [];
+    const lapsed = marker.until !== undefined && marker.until < Date.now();
+    return [{ file, live: !lapsed && isAlive(marker.pid) && isSameProcess(marker.pid, marker.procStart) }];
   });
+}
+
+/** A task is open on this agent in a server that is still running, or under a lease that has not lapsed. */
+export const taskOpen = (dir: string): boolean => markers(dir).some((m) => m.live);
+
+/**
+ * How a task follows this agent: `open`, or `lost` when the server that followed it went away without closing it
+ * (a plugin reload, a crash, a lease that lapsed). Claude Code may take a lost task up again from the restarted
+ * server, so the host holds an event for it as long as for an open one before sending it as a message.
+ */
+export function taskFollow(dir: string): 'open' | 'lost' | 'none' {
+  const all = markers(dir);
+  return all.some((m) => m.live) ? 'open' : all.length ? 'lost' : 'none';
+}
+
+/** Drops the markers of servers that are gone: nobody took their tasks up again. */
+export function forgetLostTasks(dir: string): void {
+  for (const marker of markers(dir)) if (!marker.live) fs.rmSync(marker.file, { force: true });
 }
 
 /** A reply to a permission request, as a user would put it: allow or deny. */

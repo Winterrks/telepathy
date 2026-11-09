@@ -161,7 +161,7 @@ const HARNESSES: Harness[] = [
     headless: 'antigravity',
     deliveryNote:
       'Antigravity CLI delivers at the next turn (no idle inject). The App is woken by the telepathy sidecar. The IDE has no idle wake yet.',
-    acp: { bin: 'antigravity-acp', fallbacks: ['agy_acp_server.par'], args: [], adapter: true },
+    acp: { bin: 'agy', fallbacks: ['antigravity', 'antigravity-acp', 'agy_acp_server.par'], args: ['acp'], adapter: false },
     install: {
       kind: 'commands',
       steps: [{ cmd: 'agy', args: ['plugin', 'install', `${REPO}/tree/main/antigravity`] }],
@@ -245,9 +245,14 @@ export function resolvedAcpBin(acp: AcpLaunch, env: NodeJS.ProcessEnv = process.
   return [acp.bin, ...(acp.fallbacks ?? [])].find((bin) => onPath(bin, env));
 }
 
+export function acpArgs(acp: AcpLaunch, bin?: string): string[] {
+  if (bin === 'antigravity-acp' || bin === 'agy_acp_server.par') return [];
+  return acp.args;
+}
+
 export function acpCommand(acp: AcpLaunch, env: NodeJS.ProcessEnv = process.env): string {
   const bin = resolvedAcpBin(acp, env) ?? acp.bin;
-  return `${bin} ${acp.args.join(' ')}`.trim();
+  return `${bin} ${acpArgs(acp, bin).join(' ')}`.trim();
 }
 
 export function detectedHarnesses(env: NodeJS.ProcessEnv = process.env): Harness[] {

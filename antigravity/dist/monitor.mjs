@@ -249,7 +249,28 @@ function findAgent(hint) {
   }
   const claudePid = Number(process.env.CLAUDE_PID);
   if (hint === "claude" && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: "claude", pid: claudePid };
-  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid > 1 ? process.ppid : process.pid };
+}
+function descendantPids(root) {
+  if (!Number.isInteger(root) || root <= 0) return [];
+  const table = processTable(0);
+  const children = /* @__PURE__ */ new Map();
+  for (const info of table.values()) {
+    const list = children.get(info.ppid);
+    if (list) list.push(info.pid);
+    else children.set(info.ppid, [info.pid]);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const stack = [root];
+  while (stack.length) {
+    const pid = stack.pop();
+    if (pid === void 0 || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    out.push(pid);
+    for (const child of children.get(pid) ?? []) stack.push(child);
+  }
+  return out;
 }
 
 // src/core/peers.ts
@@ -257,8 +278,9 @@ var peerId = (agent2, key) => `${agent2}-${key}`;
 var ownersFile = (id2) => path4.join(peerDir(id2), "owners.json");
 var linkFile = (agent2, pid) => path4.join(peerDir(peerId(agent2, pid)), "link.json");
 function sessionOwners(id2) {
-  const owners = readJson(ownersFile(id2)) ?? [];
-  return owners.filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  const live = (readJson(ownersFile(id2)) ?? []).filter((owner) => isSameProcess(owner.pid, owner.procStart));
+  if (live.length <= 1) return live;
+  return live.filter((owner) => !live.some((other) => other.pid !== owner.pid && descendantPids(owner.pid).includes(other.pid)));
 }
 function isDeliveryOwner(id2, pid) {
   const owners = sessionOwners(id2);
@@ -404,6 +426,7 @@ function argvFlag(argv2, name) {
 }
 
 // src/monitor.ts
+if (process.env.TELEPATHY_DISABLED === "1") process.exit(0);
 var argv = process.argv.slice(2);
 var once = argv.includes("--once");
 var rewake = argv.includes("--rewake");

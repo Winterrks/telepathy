@@ -164,7 +164,7 @@ export function findAgent(hint: Agent): AgentProcess {
   const claudePid = Number(process.env.CLAUDE_PID);
   if (hint === 'claude' && Number.isInteger(claudePid) && isAlive(claudePid)) return { agent: 'claude', pid: claudePid };
 
-  return { agent: agentFromEnv() ?? hint, pid: process.ppid };
+  return { agent: agentFromEnv() ?? hint, pid: process.ppid > 1 ? process.ppid : process.pid };
 }
 
 /** This process and every descendant, from one process table. The root is included even when `ps` missed it. */

@@ -31,7 +31,10 @@ message each other.
   self-contained task. It returns at once; each time that agent's turn ends, its final message arrives as a message
   with `kind="agent-result"` and its transcript path. Don't wait or poll. Continue it with `send_message`, and
   `stop_agent` it when you're done. A `kind="permission"` message is it asking for permission: ask your user, then
-  `answer_permission`. Never answer one on your own. In Claude Code's terminal, `start_agent` is a background task
+  `answer_permission`. Never answer one on your own. Agents run in auto mode: their harness's own, or for one with
+  none (Cursor, OpenCode, Kilo) telepathy's, where a reviewer session approves routine requests. To be asked less,
+  do what your user agreed to: `permissions` on `start_agent` sets an allow list of command prefixes;
+  `always: true` on an answer adds the commands that request names; `set_permission_mode` changes either while it runs. In Claude Code's terminal, `start_agent` is a background task
   instead: its report is the task's result, `send_message` to it is a task for the next report, `TaskStop` stops it
   while it works, and its permission requests go to your user in a dialog. It ends with your session.
 - **Other devices:** with `telepathy bridge` running, `list_peers` also lists sessions on your other devices.

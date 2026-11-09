@@ -234,7 +234,7 @@ test('help, version, list, and an unknown agent', () => {
     assert.equal(version.stdout.trim(), '0.0.0-dev');
     const list = run(['run', '--list'], w.env);
     assert.equal(list.status, 0);
-    assert.match(list.stdout, /antigravity\s+acp\s+antigravity-acp/);
+    assert.match(list.stdout, /antigravity\s+acp\s+agy acp/);
     assert.match(list.stdout, /grok\s+acp\s+grok agent stdio/);
     assert.match(list.stdout, /hermes\s+passthrough/);
     assert.match(list.stdout, /headless: antigravity/);

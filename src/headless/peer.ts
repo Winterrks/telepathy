@@ -111,10 +111,11 @@ export function rememberHarnessSession(peerId: string, harnessSessionId: string)
   writeJsonAtomic(harnessSessionFile(peerId), { id: harnessSessionId });
 }
 
-export function writeHosted(peerId: string): void {
+export function writeHosted(peerId: string, parent?: string): void {
   writeJsonAtomic(path.join(peerDir(peerId), 'hosted.json'), {
     pid: process.pid,
     procStart: procStart(process.pid),
+    ...(parent ? { parent } : {}),
   });
 }
 
@@ -226,7 +227,7 @@ export function namedPeerId(agent: Agent, name: string): { peerId: string; slug:
   return { peerId: sessionPeerId(agent, process.pid, `h-${slug}`), slug };
 }
 
-function appendTranscript(peerId: string, text: string): void {
+export function appendTranscript(peerId: string, text: string): void {
   const file = path.join(ensureDir(peerDir(peerId)), 'delivery-transcript.jsonl');
   fs.appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), text }) + '\n');
 }

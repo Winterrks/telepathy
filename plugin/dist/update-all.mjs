@@ -704,7 +704,7 @@ function heldNote(cmd, file) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.13.1" : "0.0.0-dev";
+var VERSION = true ? "0.14.0" : "0.0.0-dev";
 
 // src/core/codex-hooks.ts
 var timeoutMs = () => {

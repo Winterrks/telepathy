@@ -90,7 +90,7 @@ describe('telepathy plugin', () => {
     for (const agent of ['claude', 'codex'] as const) {
       const client = await connect(agent, spawnAgent().pid);
       const { tools } = await client.listTools();
-      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'start_agent', 'stop_agent']);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'set_permission_mode', 'start_agent', 'stop_agent']);
       assert.equal(client.getServerCapabilities()?.resources, undefined);
       assert.equal(client.getServerCapabilities()?.logging, undefined);
       const instructions = client.getInstructions() ?? '';
@@ -888,7 +888,7 @@ describe('telepathy plugin', () => {
     test('registers native tools, and wakes the active session with promptAsync once it is idle', async () => {
       const oc = startOpenCode('/w/ui');
       const ready = await oc.take('ready');
-      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission']);
+      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission', 'telepathy_set_permission_mode']);
       const pid = ready.ready as number;
 
       oc.send({ op: 'chat', sessionID: 'ses_main' });
@@ -1188,7 +1188,7 @@ describe('telepathy plugin', () => {
     test('each session of the service is a peer of its own, woken through session.prompt', async () => {
       const oc = startService(['/w/api', '/w/web']);
       const ready = await oc.take('ready');
-      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission']);
+      assert.deepEqual(ready.tools, ['telepathy_list_peers', 'telepathy_send_message', 'telepathy_read_messages', 'telepathy_start_agent', 'telepathy_stop_agent', 'telepathy_answer_permission', 'telepathy_set_permission_mode']);
       assert.deepEqual(ready.skills, ['using-telepathy']);
       await oc.run({ op: 'prompt', sessionID: 'ses_A', directory: '/w/api' });
       await oc.run({ op: 'prompt', sessionID: 'ses_B', directory: '/w/web' });
@@ -1259,6 +1259,32 @@ describe('telepathy plugin', () => {
       runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/app' });
       const res = runHook(sb, 'claude', claudeAgent.pid, 'files', { session_id: 's', cwd: '/w/app', tool_name: 'Read', tool_input: { file_path: '/w/app/ui/glass.swift' } });
       assert.match(JSON.parse(res.stdout).hookSpecificOutput.additionalContext, /Another session, opencode:app-o[0-9a-f]{2} \[opencode-ses_ui\], edited ui\/glass\.swift/);
+    });
+
+    test('an ACP-hosted session leaves idle delivery to its ACP host and steers mid-turn messages into the running turn', async () => {
+      const oc = startService(['/w/acp']);
+      await oc.take('ready');
+      await oc.run({ op: 'prompt', sessionID: 'ses_acp', directory: '/w/acp' });
+      const dir = path.join(sb.home, 'peers', 'opencode-ses_acp');
+      fs.writeFileSync(path.join(dir, 'hosted.json'), JSON.stringify({ pid: process.pid, parent: 'claude:sdk' }));
+
+      const claudeAgent = spawnAgent();
+      runHook(sb, 'claude', claudeAgent.pid, 'session-start', { session_id: 's', cwd: '/w/sdk' });
+
+      // While idle, the plugin leaves the inbox untouched so the ACP host's startInboxPump drives session/prompt.
+      runHook(sb, 'claude', claudeAgent.pid, 'send-message', { tool_input: { to: 'opencode-ses_acp', message: 'mid-turn steer' } });
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(oc.lines.some((l) => 'prompt' in l), false, 'idle ACP-hosted inbox is left for the ACP host');
+      assert.equal(fs.readdirSync(path.join(dir, 'inbox')).length, 1);
+
+      // Once the turn is busy, the plugin steers the message in and writes delivery-transcript.jsonl for confirmDelivery.
+      await oc.run({ op: 'event', event: { type: 'session.execution.started', data: { sessionID: 'ses_acp' } } });
+      const { prompt } = await oc.take('prompt');
+      assert.equal(prompt.sessionID, 'ses_acp');
+      assert.equal(prompt.delivery, 'steer');
+      assert.match(prompt.text, /mid-turn steer/);
+      const transcript = fs.readFileSync(path.join(dir, 'delivery-transcript.jsonl'), 'utf8');
+      assert.match(transcript, /mid-turn steer/);
     });
   });
 
@@ -1501,7 +1527,7 @@ describe('telepathy plugin', () => {
     test('Grok lists wait_for_messages and is told which product uses it', async () => {
       const client = await connect('grok', spawnAgent().pid);
       const { tools } = await client.listTools();
-      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'start_agent', 'stop_agent', 'wait_for_messages']);
+      assert.deepEqual(tools.map((t) => t.name).sort(), ['answer_permission', 'list_peers', 'read_messages', 'send_message', 'set_permission_mode', 'start_agent', 'stop_agent', 'wait_for_messages']);
       const caps = client.getServerCapabilities();
       assert.equal(caps?.resources?.subscribe, true);
       assert.ok(caps?.logging);
