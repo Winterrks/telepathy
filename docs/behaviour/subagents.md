@@ -33,7 +33,9 @@ start_agent(harness: "codex", description: "Review auth changes", prompt: "Revie
   `~/.telepathy/worktrees`. At stop, an unchanged worktree is removed with its branch; a changed one is kept.
 - **Lifetime:** until `stop_agent`, or until the session that started it ends: within 15 seconds for a Claude Code
   session, like its own subagents, and 10 minutes for other agents. A restart of the session's MCP server (a plugin
-  reload) is not the session ending.
+  reload) is not the session ending, and neither is a moment the session is missing from telepathy's registry while
+  Claude Code's own process still runs. When the harness exits on its own (a crash, a sign-out), the parent gets a
+  report saying so. A `send_message` to an agent that has stopped says when and why it stopped, with its transcript.
 - **Harnesses:** every one with an ACP mode (see `telepathy run --list`). Claude Code and Codex need their ACP adapters.
   A harness that needs a sign-in it cannot do itself (`kimi login`, `grok login`) fails to start with that reason.
 
@@ -83,7 +85,8 @@ start_agent(harness: "opencode", description: "Build bridge API", prompt: "Add t
 ```
 
 - **The report** is the task's result: Claude gets it when the agent's turn ends, and starts on it if it was idle. A
-  turn that fails with an error and no final message settles the task as `failed`.
+  turn that fails with an error settles the task as `failed`, and so does one whose whole final message is the
+  harness's own plan or usage notice (Cursor's "Upgrade your plan to continue").
 - **Follow-ups:** `send_message` to an idle agent returns a task the same way (`opencode:build-bridge-api#2`), whose
   result is its next report. A `send_message` while a task already follows the running turn steers that turn without
   opening a second competing task. Calling Claude's built-in `SendMessage` on an agent started with `start_agent` is

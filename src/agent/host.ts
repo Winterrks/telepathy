@@ -11,14 +11,14 @@ import { isOnline, knownDevices } from '../bridge/state.ts';
 import { formatAsUserTurn, type Message, newMessageId, type Party } from '../core/messages.ts';
 import { ensureDir, envDurationMs, peerDir, readJson, writeJsonAtomic } from '../core/paths.ts';
 import { isPeerAlive, notePeerExit, readPeer } from '../core/peers.ts';
-import { procStart } from '../core/proc.ts';
+import { isSameProcess, procStart } from '../core/proc.ts';
 import { removeCleanWorktree } from './worktree.ts';
 import { writeStatus } from '../core/status.ts';
 import { claimPluginSession, clearHosted, registerHostedPeer, startInboxPump, writeHeadlessRecord, writeHosted } from '../headless/peer.ts';
 import { applySettings } from './configure.ts';
 import { allowedBy, readPolicy, requestInfo, suggestPrefixes } from './policy.ts';
 import { createReviewer, type Reviewer } from './reviewer.ts';
-import { forgetLostTasks, offerEvent, takeBack, type TaskEvent, taskFollow, taskPickupMs } from './task.ts';
+import { forgetLostTasks, limitNotice, offerEvent, takeBack, type TaskEvent, taskFollow, taskPickupMs } from './task.ts';
 import {
   type AgentSpec,
   type AgentState,
@@ -67,11 +67,29 @@ const unreachableMs = () => envDurationMs('TELEPATHY_AGENT_UNREACHABLE_MS', 10 *
 
 /** True while the parent session runs, false once it is gone, undefined when its device can't be reached to tell. */
 function parentPresent(spec: AgentSpec): boolean | undefined {
-  if (!spec.remote) return isPeerAlive(readPeer(spec.parent.id));
+  if (!spec.remote) {
+    if (isPeerAlive(readPeer(spec.parent.id))) return true;
+    // The registry can miss a session for a moment (a hook rewriting its files, a re-login); its process can't.
+    const own = spec.parentProcess;
+    return !!own && isSameProcess(own.pid, own.procStart);
+  }
   const { device: id, parentId } = spec.remote;
   const device = knownDevices().find((d) => d.id === id);
   if (!device || !isOnline(device)) return undefined;
   return device.peers.some((peer) => peer.id === parentId);
+}
+
+/**
+ * codex-acp carries its own copy of Codex, which can be older than the codex CLI: a config.toml the CLI reads can
+ * stop that copy at start (an `[agents]` table it doesn't know). Say so, rather than only Codex's parse error.
+ */
+export function explainStartError(harness: Agent, bin: string, message: string): string {
+  if (harness !== 'codex' || !/error loading config/i.test(message)) return message;
+  return (
+    `${message.replace(/\.?\s*$/, '')}. ${path.basename(bin)} runs its own copy of Codex, which can be older than your codex CLI and ` +
+    "not read a setting the CLI does. Update it (`npm install -g @zed-industries/codex-acp`); if it is already the latest, that " +
+    'setting has to come out of ~/.codex/config.toml (or its value change) until codex-acp catches up. telepathy does not edit that file.'
+  );
 }
 
 /** The process `start_agent` spawns: one harness session in ACP mode, until it is stopped or its parent is gone. */
@@ -206,13 +224,17 @@ export async function runAgent(dir: string): Promise<number> {
     segment = '';
     segmentOpen = false;
     write(`\n\n— turn ended${result.error ? `: ${result.error}` : result.stopReason ? `: ${result.stopReason}` : ''}\n`);
+    const refused = !result.error && limitNotice(final);
     const why = result.error
       ? `The turn failed: ${result.error}.`
-      : result.stopReason && result.stopReason !== 'end_turn'
+      : refused
+        ? `The turn failed: that message is ${agentLabel(spec.harness)}'s own (a plan or usage limit), not the agent's work.`
+        : result.stopReason && result.stopReason !== 'end_turn'
         ? `The turn stopped: ${result.stopReason}.`
         : '';
     const body = [final || '(The turn ended without a final message.)', why].filter(Boolean).join('\n\n');
-    const failed = !!result.error && !final;
+    // A turn that errored failed, whatever text came before the error.
+    const failed = !!result.error || refused;
     if (stopRequested) return;
     void offerToTask({ kind: 'result', body, ...(failed ? { failed: true } : {}) }).then((taken) => {
       if (taken) write(`\n\n> Reported to ${spec.parent.address} as its task's result.\n`);
@@ -355,7 +377,7 @@ export async function runAgent(dir: string): Promise<number> {
     });
   } catch (err) {
     out.end();
-    return fail((err as Error).message);
+    return fail(explainStartError(spec.harness, bin, (err as Error).message));
   }
 
   try {
@@ -435,6 +457,7 @@ export async function runAgent(dir: string): Promise<number> {
   // on another device is looked for in that device's listing; while the device is out of reach, nobody can tell,
   // so the agent waits longer before it stops.
   let goneSince: number | undefined;
+  let stopReason: string | undefined;
   const orphan = orphanMs(spec.parent.agent);
   const unreachable = Math.max(orphan, unreachableMs());
   const watch = setInterval(() => {
@@ -446,23 +469,31 @@ export async function runAgent(dir: string): Promise<number> {
     goneSince ??= Date.now();
     const limit = present === undefined ? unreachable : orphan;
     if (Date.now() - goneSince > limit) {
-      write(
+      stopReason =
         present === undefined
-          ? `\n\n— stopped: the device ${spec.parent.address} is on has been out of reach for ${span(limit)}\n`
-          : `\n\n— stopped: ${spec.parent.address} has been gone for ${span(orphan)}\n`,
-      );
+          ? `the device ${spec.parent.address} is on has been out of reach for ${span(limit)}`
+          : `${spec.parent.address} has been gone for ${span(orphan)}`;
+      write(`\n\n— stopped: ${stopReason}\n`);
       stopRequested = true;
       session.close();
     }
   }, Math.min(5000, Math.max(250, orphan / 3)));
   const shutdown = () => {
+    stopReason ??= 'it was stopped (stop_agent, or a signal)';
     stopRequested = true;
     session.close();
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
 
-  await session.exited;
+  const code = await session.exited;
+  if (!stopRequested) {
+    // The harness ended on its own (a crash, a sign-out): the parent hears it instead of finding the agent gone.
+    stopReason = `its ${agentLabel(spec.harness)} process exited${code ? ` with code ${code}` : ''}`;
+    write(`\n\n— stopped: ${stopReason}\n`);
+    const body = `${self?.address ?? spec.slug} stopped: ${stopReason}. Its transcript: ${transcriptFile(dir)}. Start a new agent to go on.`;
+    if (!(await offerToTask({ kind: 'result', body, failed: true }))) await tellParent(body, 'agent-result');
+  }
   stopping = true;
   reviewer?.close();
   clearInterval(watch);
@@ -477,6 +508,8 @@ export async function runAgent(dir: string): Promise<number> {
   log.end();
   // Last, so whoever waits for `stopped` reads a finished transcript.
   state.status = 'stopped';
+  if (stopReason) state.stopReason = stopReason;
+  state.stoppedAt = new Date().toISOString();
   save();
   return 0;
 }

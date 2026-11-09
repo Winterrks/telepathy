@@ -1,6 +1,6 @@
 # The telepathy command
 
-`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.14.0. Requires Node 20 or newer.
+`telepathy` is a separate program from the plugin. It is published as **telepathy-cli** (the npm name `telepathy` is already taken). The plugin in this repository stays the private package OpenCode installs from git, still version 0.14.1. Requires Node 20 or newer.
 
 Install it and set up every agent CLI it finds:
 

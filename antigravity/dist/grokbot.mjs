@@ -2,9 +2,9 @@ import { createRequire as __umCreateRequire } from 'node:module'; const require 
 
 // src/grokbot/cli.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs18 from "node:fs";
+import fs19 from "node:fs";
 import os9 from "node:os";
-import path19 from "node:path";
+import path20 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -350,7 +350,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.14.0" : "0.0.0-dev";
+var VERSION = true ? "0.14.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -1156,9 +1156,9 @@ function observeLaunchedCodex() {
 function observeResumedCodex(proc, threadId, cwd) {
   const id = sessionPeerId("codex", proc.pid, threadId);
   const existing = readSession(id);
-  const hostAlive = !!existing && isSameProcess(existing.pid, existing.procStart);
+  const hostAlive2 = !!existing && isSameProcess(existing.pid, existing.procStart);
   const home = proc.codexHome ?? existing?.codexHome ?? defaultCodexHome();
-  if (!existing?.sessionId || !hostAlive || proc.codexHome && existing.codexHome !== proc.codexHome) {
+  if (!existing?.sessionId || !hostAlive2 || proc.codexHome && existing.codexHome !== proc.codexHome) {
     registerSession("codex", proc.pid, {
       sessionId: threadId,
       cwd: cwd ?? existing?.cwd,
@@ -2315,15 +2315,52 @@ function statusText(info, now = Date.now()) {
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
+import fs14 from "node:fs";
+import path15 from "node:path";
+
+// src/agent/spec.ts
 import fs13 from "node:fs";
 import path14 from "node:path";
+var agentsDir = () => path14.join(stateDir(), "agents");
+var specFile = (dir) => path14.join(dir, "spec.json");
+var stateFile = (dir) => path14.join(dir, "state.json");
+var transcriptFile = (dir) => path14.join(dir, "transcript.md");
+var readSpec = (dir) => readJson(specFile(dir));
+var readState = (dir) => readJson(stateFile(dir));
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names;
+  try {
+    names = fs13.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const dir = path14.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+function stoppedChildNote(parentId, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const entry = listAgents().filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q)).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return void 0;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : "";
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : "";
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
+}
+
+// src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -2343,7 +2380,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs13.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs14.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
 function bodyProblem(body) {
   if (!body.trim()) return "Message is empty.";
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -2358,7 +2395,12 @@ async function sendMessage(self, to, body, extra = {}) {
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self, remote, body, extra);
-    return await deliverLocal(partyOf(self), to, body, self, extra);
+    const sent = await deliverLocal(partyOf(self), to, body, self, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -2379,7 +2421,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path14.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path15.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -2441,7 +2483,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs13.existsSync(path14.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs14.existsSync(path15.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -2646,15 +2688,15 @@ function open(key, aad, sealed) {
 
 // src/bridge/state.ts
 import crypto5 from "node:crypto";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import os7 from "node:os";
-import path15 from "node:path";
-var bridgeDir = () => path15.join(stateDir(), "bridge");
-var deviceFile = () => path15.join(bridgeDir(), "device.json");
-var trustedFile = () => path15.join(bridgeDir(), "trusted.json");
-var remoteFile = () => path15.join(bridgeDir(), "remote.json");
-var daemonFile = () => path15.join(bridgeDir(), "daemon.json");
-var eventsFile = () => path15.join(bridgeDir(), "events.jsonl");
+import path16 from "node:path";
+var bridgeDir = () => path16.join(stateDir(), "bridge");
+var deviceFile = () => path16.join(bridgeDir(), "device.json");
+var trustedFile = () => path16.join(bridgeDir(), "trusted.json");
+var remoteFile = () => path16.join(bridgeDir(), "remote.json");
+var daemonFile = () => path16.join(bridgeDir(), "daemon.json");
+var eventsFile = () => path16.join(bridgeDir(), "events.jsonl");
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -2679,10 +2721,10 @@ function trustedDevices() {
   return readJson(trustedFile()) ?? {};
 }
 function writeSecret(file, value) {
-  ensureDir(path15.dirname(file));
+  ensureDir(path16.dirname(file));
   writeJsonAtomic(file, value);
   try {
-    fs14.chmodSync(file, 384);
+    fs15.chmodSync(file, 384);
   } catch {
   }
 }
@@ -2702,11 +2744,11 @@ function safeName(value, fallback = "device", max = 48) {
 function logEvent(event) {
   try {
     ensureDir(bridgeDir());
-    fs14.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
-    const size = fs14.statSync(eventsFile()).size;
+    fs15.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs15.statSync(eventsFile()).size;
     if (size > 512 * 1024) {
-      const lines = fs14.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
-      fs14.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+      const lines = fs15.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs15.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
     }
   } catch {
   }
@@ -2715,32 +2757,32 @@ var preview = (body) => safeName(body, "", 160);
 
 // src/bridge/client.ts
 var UNREACHABLE = "TELEPATHY_UNREACHABLE";
-var requestAad = (path20, from, to) => `req ${path20} ${from}->${to}`;
-var responseAad = (path20, from, to, nonce) => `res ${path20} ${from}->${to} ${nonce}`;
+var requestAad = (path21, from, to) => `req ${path21} ${from}->${to}`;
+var responseAad = (path21, from, to, nonce) => `res ${path21} ${from}->${to} ${nonce}`;
 var baseUrl = (addr) => `http://${addr}`;
 var REVERSE_ROUTES = ["/v1/peers", "/v1/send", "/v1/agents"];
-async function call(target, path20, body, timeoutMs, signal) {
+async function call(target, path21, body, timeoutMs, signal) {
   const self = deviceIdentity();
   const trusted = trustedDevices();
   const key = Object.hasOwn(trusted, target.id) ? trusted[target.id].key : void 0;
   if (!key && target.trust !== "tailscale") throw new Error("this device is not paired with it");
   const wire = { device: self.id, name: self.name };
-  if (key) wire.sealed = seal(key, requestAad(path20, self.id, target.id), body);
+  if (key) wire.sealed = seal(key, requestAad(path21, self.id, target.id), body);
   else wire.body = body;
-  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path20);
+  const reverse = target.reach === "reverse" && REVERSE_ROUTES.includes(path21);
   const timeout = AbortSignal.timeout(timeoutMs);
-  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path20}`, {
+  const res = await fetch(reverse ? `${baseUrl(`127.0.0.1:${localBridgePort()}`)}/v1/outbox` : `${baseUrl(target.addr)}${path21}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     // The outbox answers a little before this call gives up, so a late answer is an error, not a lost reply.
-    body: JSON.stringify(reverse ? { device: target.id, route: path20, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
+    body: JSON.stringify(reverse ? { device: target.id, route: path21, wire, timeoutMs: Math.max(1e3, timeoutMs - 500) } : wire),
     signal: signal ? AbortSignal.any([timeout, signal]) : timeout
   });
   const reply = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
   if (reply.error) throw Object.assign(new Error(reply.error), reverse && reply.unreachable ? { cause: { code: UNREACHABLE } } : {});
   if (key) {
     if (!reply.sealed || !wire.sealed) throw new Error("the answer was not sealed");
-    return open(key, responseAad(path20, self.id, target.id, wire.sealed.n), reply.sealed);
+    return open(key, responseAad(path21, self.id, target.id, wire.sealed.n), reply.sealed);
   }
   return reply.body;
 }
@@ -2944,11 +2986,11 @@ function formatPeerList(self, peers, remote = remoteListings()) {
 }
 
 // src/headless/peer.ts
-import fs15 from "node:fs";
-import path16 from "node:path";
-var headlessDir = () => path16.join(stateDir(), "headless");
-var headlessRecordPath = (agent, slug) => path16.join(headlessDir(), `${agent}-${slug}.json`);
-var headlessLogPath = (agent, slug) => path16.join(headlessDir(), `${agent}-${slug}.log`);
+import fs16 from "node:fs";
+import path17 from "node:path";
+var headlessDir = () => path17.join(stateDir(), "headless");
+var headlessRecordPath = (agent, slug) => path17.join(headlessDir(), `${agent}-${slug}.json`);
+var headlessLogPath = (agent, slug) => path17.join(headlessDir(), `${agent}-${slug}.log`);
 function readHeadlessRecord(agent, slug) {
   return readJson(headlessRecordPath(agent, slug));
 }
@@ -2956,7 +2998,7 @@ function writeHeadlessRecord(record) {
   writeJsonAtomic(headlessRecordPath(record.agent, record.slug), record);
 }
 function writeHosted(peerId2, parent) {
-  writeJsonAtomic(path16.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path17.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid),
     ...parent ? { parent } : {}
@@ -2964,7 +3006,7 @@ function writeHosted(peerId2, parent) {
 }
 function clearHosted(peerId2) {
   try {
-    fs15.rmSync(path16.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs16.rmSync(path17.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -2981,10 +3023,10 @@ function registerHostedPeer(agent, cwd, name) {
 }
 
 // src/grokbot/config.ts
-import fs16 from "node:fs";
-import path17 from "node:path";
-var grokbotDir = () => path17.join(stateDir(), "grokbot");
-var configPath = (slug) => path17.join(grokbotDir(), `${slug}.json`);
+import fs17 from "node:fs";
+import path18 from "node:path";
+var grokbotDir = () => path18.join(stateDir(), "grokbot");
+var configPath = (slug) => path18.join(grokbotDir(), `${slug}.json`);
 function urlProblem(raw) {
   let url;
   try {
@@ -3006,7 +3048,7 @@ function keyProblem(key) {
 function readConfig(slug) {
   const file = configPath(slug);
   try {
-    if ((fs16.statSync(file).mode & 63) !== 0) return void 0;
+    if ((fs17.statSync(file).mode & 63) !== 0) return void 0;
   } catch {
     return void 0;
   }
@@ -3023,14 +3065,14 @@ function writeConfig(name, url, key) {
 }
 function removeConfig(slug) {
   const file = configPath(slug);
-  if (!fs16.existsSync(file)) return false;
-  fs16.rmSync(file, { force: true });
+  if (!fs17.existsSync(file)) return false;
+  fs17.rmSync(file, { force: true });
   return true;
 }
 function listConfigs() {
   let names = [];
   try {
-    names = fs16.readdirSync(grokbotDir());
+    names = fs17.readdirSync(grokbotDir());
   } catch {
     return [];
   }
@@ -3039,14 +3081,14 @@ function listConfigs() {
 function looseConfigs() {
   let names = [];
   try {
-    names = fs16.readdirSync(grokbotDir());
+    names = fs17.readdirSync(grokbotDir());
   } catch {
     return [];
   }
   return names.filter((name) => {
     if (!name.endsWith(".json")) return false;
     try {
-      return (fs16.statSync(path17.join(grokbotDir(), name)).mode & 63) !== 0;
+      return (fs17.statSync(path18.join(grokbotDir(), name)).mode & 63) !== 0;
     } catch {
       return false;
     }
@@ -3054,9 +3096,9 @@ function looseConfigs() {
 }
 
 // src/grokbot/host.ts
-import fs17 from "node:fs";
+import fs18 from "node:fs";
 import os8 from "node:os";
-import path18 from "node:path";
+import path19 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/cli/harnesses.ts
@@ -3277,22 +3319,22 @@ async function postContext(config, context) {
 }
 var scrub2 = (text, key) => (key.length >= 4 ? text.split(key).join("[key]") : text).slice(0, 300);
 function grokbotArgv() {
-  const here = path18.dirname(fileURLToPath(import.meta.url));
-  for (const file of [path18.join(here, "grokbot.mjs"), path18.join(here, "..", "grokbot-main.ts")]) {
-    if (fs17.existsSync(file)) return [process.execPath, ...process.execArgv, file];
+  const here = path19.dirname(fileURLToPath(import.meta.url));
+  for (const file of [path19.join(here, "grokbot.mjs"), path19.join(here, "..", "grokbot-main.ts")]) {
+    if (fs18.existsSync(file)) return [process.execPath, ...process.execArgv, file];
   }
   return [process.execPath, ...process.execArgv, process.argv[1] ?? "", "grokbot"];
 }
 var shellQuote = (value) => `'${value.replace(/'/g, `'\\''`)}'`;
 function takeLock(slug) {
-  const file = path18.join(ensureDir(grokbotDir()), `${slug}.lock`);
+  const file = path19.join(ensureDir(grokbotDir()), `${slug}.lock`);
   for (let tries = 0; tries < 2; tries++) {
     try {
-      fs17.writeFileSync(file, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
+      fs18.writeFileSync(file, JSON.stringify({ pid: process.pid, procStart: procStart(process.pid) }), { flag: "wx", mode: 384 });
       return () => {
         try {
-          const held = JSON.parse(fs17.readFileSync(file, "utf8"));
-          if (held.pid === process.pid) fs17.rmSync(file, { force: true });
+          const held = JSON.parse(fs18.readFileSync(file, "utf8"));
+          if (held.pid === process.pid) fs18.rmSync(file, { force: true });
         } catch {
         }
       };
@@ -3300,12 +3342,12 @@ function takeLock(slug) {
       if (err.code !== "EEXIST") return void 0;
       let held = {};
       try {
-        held = JSON.parse(fs17.readFileSync(file, "utf8"));
+        held = JSON.parse(fs18.readFileSync(file, "utf8"));
       } catch {
         return void 0;
       }
       if (typeof held.pid === "number" && isSameProcess(held.pid, held.procStart)) return void 0;
-      fs17.rmSync(file, { force: true });
+      fs18.rmSync(file, { force: true });
     }
   }
   return void 0;
@@ -3327,8 +3369,8 @@ function contextFor(config, messages, cli = cliCommand()) {
   return [note, ...turns].join("\n\n");
 }
 function appendTranscript(peerId2, text) {
-  const file = path18.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
-  fs17.appendFileSync(file, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
+  const file = path19.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  fs18.appendFileSync(file, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 async function runGrokbotHost(slug) {
   const initial = readConfig(slug);
@@ -3345,10 +3387,10 @@ async function runGrokbotHost(slug) {
     return 1;
   }
   const logFile = headlessLogPath("grok", slug);
-  ensureDir(path18.dirname(logFile));
+  ensureDir(path19.dirname(logFile));
   const log = (line) => {
     try {
-      fs17.appendFileSync(logFile, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+      fs18.appendFileSync(logFile, `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `, { mode: 384 });
     } catch {
     }
@@ -3382,8 +3424,8 @@ async function runGrokbotHost(slug) {
         stop();
         return;
       }
-      const pendingFile = (msg) => path18.join(inboxDir(hosted.peerId), `${msg.id}.json`);
-      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs17.existsSync(pendingFile(msg)));
+      const pendingFile = (msg) => path19.join(inboxDir(hosted.peerId), `${msg.id}.json`);
+      const waiting = pendingMessages(hosted.peerId).filter((msg) => !done.has(msg.id) && fs18.existsSync(pendingFile(msg)));
       if (!waiting.length) return;
       const times = waiting.map((msg) => Date.parse(msg.sentAt)).filter(Number.isFinite);
       const now = Date.now();
@@ -3396,7 +3438,7 @@ async function runGrokbotHost(slug) {
         batch.push(msg);
         size += cost;
       }
-      const live = batch.filter((msg) => fs17.existsSync(pendingFile(msg)));
+      const live = batch.filter((msg) => fs18.existsSync(pendingFile(msg)));
       if (!live.length) return;
       const context = contextFor(config, live, cli);
       const result = await postContext(config, context);
@@ -3409,9 +3451,9 @@ async function runGrokbotHost(slug) {
       failures = 0;
       for (const msg of live) {
         done.add(msg.id);
-        if (fs17.existsSync(path18.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
+        if (fs18.existsSync(path19.join(withdrawnDir(hosted.peerId), `${msg.id}.json`))) continue;
         appendTranscript(hosted.peerId, formatAsUserTurn(msg));
-        if (fs17.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
+        if (fs18.existsSync(pendingFile(msg))) archiveSettled(hosted.peerId, msg.id);
       }
       log(`delivered ${live.map((m) => m.id).join(",")} in one run${result.runId ? ` ${result.runId}` : ""} (HTTP ${result.status}, ${result.ms}ms)`);
     } catch (err) {
@@ -3506,12 +3548,12 @@ async function startHost(slug) {
   const pid = hostRunning(slug);
   if (pid) return { ok: true, text: `grok:${slug} is already running (pid ${pid}).` };
   const logFile = headlessLogPath("grok", slug);
-  fs18.mkdirSync(path19.dirname(logFile), { recursive: true, mode: 448 });
-  const out = fs18.openSync(logFile, "a", 384);
+  fs19.mkdirSync(path20.dirname(logFile), { recursive: true, mode: 448 });
+  const out = fs19.openSync(logFile, "a", 384);
   const [cmd, ...args] = grokbotArgv();
   const home = os9.homedir();
   const child = spawn3(cmd, [...args, "host", slug], {
-    cwd: fs18.existsSync(home) ? home : stateDir(),
+    cwd: fs19.existsSync(home) ? home : stateDir(),
     detached: true,
     stdio: ["ignore", out, out],
     env: process.env
@@ -3519,7 +3561,7 @@ async function startHost(slug) {
   let spawnError;
   child.on("error", (err) => spawnError = err.message);
   child.unref();
-  fs18.closeSync(out);
+  fs19.closeSync(out);
   const deadline = Date.now() + 1e4;
   while (Date.now() < deadline) {
     const record = readHeadlessRecord("grok", slug);

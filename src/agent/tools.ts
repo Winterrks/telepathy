@@ -146,9 +146,15 @@ export interface AgentParent {
   /** Its folder, where the agent works unless the call names another. */
   cwd?: string;
   remote?: AgentSpec['remote'];
+  process?: AgentSpec['parentProcess'];
 }
 
-export const parentOf = (self: Peer): AgentParent => ({ party: partyOf(self), cwd: self.cwd });
+export const parentOf = (self: Peer): AgentParent => ({
+  party: partyOf(self),
+  cwd: self.cwd,
+  // Claude Code's peer pid is the session's own process; other harnesses may share a daemon across sessions.
+  ...(self.agent === 'claude' && self.pid > 1 ? { process: { pid: self.pid, ...(self.procStart ? { procStart: self.procStart } : {}) } } : {}),
+});
 
 export type Launched =
   | { ok: true; dir: string; spec: AgentSpec; address: string; child: ChildProcess; spawnError: () => string | undefined }
@@ -211,6 +217,7 @@ export function launchAgent(parent: AgentParent, args: StartArgs): Launched {
     isolation: args.isolation,
     worktree,
     parent: parent.party,
+    ...(parent.process && !parent.remote ? { parentProcess: parent.process } : {}),
     ...(parent.remote ? { remote: parent.remote } : {}),
     createdAt: new Date().toISOString(),
   };

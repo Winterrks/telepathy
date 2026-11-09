@@ -599,7 +599,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.14.0" : "0.0.0-dev";
+    VERSION = true ? "0.14.1" : "0.0.0-dev";
   }
 });
 
@@ -3084,15 +3084,67 @@ var init_claude_socket = __esm({
   }
 });
 
-// src/core/status.ts
+// src/agent/spec.ts
+import fs16 from "node:fs";
 import path17 from "node:path";
+function writeSpec(dir, spec) {
+  ensureDir(dir);
+  writeJsonAtomic(specFile(dir), spec);
+}
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names;
+  try {
+    names = fs16.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const dir = path17.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+function stoppedChildNote(parentId, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const entry = listAgents().filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q)).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return void 0;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : "";
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : "";
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
+}
+var agentsDir, agentDir, specFile, stateFile, transcriptFile, permissionsDir, readSpec, readState, PERMISSION_ID, permissionRequestFile, permissionAnswerFile;
+var init_spec = __esm({
+  "src/agent/spec.ts"() {
+    "use strict";
+    init_paths();
+    init_proc();
+    agentsDir = () => path17.join(stateDir(), "agents");
+    agentDir = (harness, slug) => path17.join(agentsDir(), `${harness}-${slug}`);
+    specFile = (dir) => path17.join(dir, "spec.json");
+    stateFile = (dir) => path17.join(dir, "state.json");
+    transcriptFile = (dir) => path17.join(dir, "transcript.md");
+    permissionsDir = (dir) => path17.join(dir, "permissions");
+    readSpec = (dir) => readJson(specFile(dir));
+    readState = (dir) => readJson(stateFile(dir));
+    PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
+    permissionRequestFile = (dir, id) => path17.join(permissionsDir(dir), `${id}.json`);
+    permissionAnswerFile = (dir, id) => path17.join(permissionsDir(dir), `${id}.answer.json`);
+  }
+});
+
+// src/core/status.ts
+import path18 from "node:path";
 function recorded(id) {
   const record2 = readJson(statusFile(id));
   const at = record2 ? Date.parse(record2.at) : Number.NaN;
   return record2 && typeof record2.status === "string" && !Number.isNaN(at) ? { status: record2.status, at } : void 0;
 }
 function claudeStatus(pid) {
-  const record2 = readJson(path17.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record2 = readJson(path18.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record2?.status !== "string" || !CLAUDE_STATUSES.includes(record2.status)) return void 0;
   let status = record2.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -3188,7 +3240,7 @@ var init_status = __esm({
     init_proc();
     OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
     statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-    statusFile = (id) => path17.join(peerDir(id), "status.json");
+    statusFile = (id) => path18.join(peerDir(id), "status.json");
     CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
     TELEPATHY_PROCESS = /(?:^|[\s/])(?:monitor|server|hook)\.mjs\b/;
     STALE_MS = 15 * 6e4;
@@ -3310,9 +3362,9 @@ var init_crypto = __esm({
 
 // src/bridge/state.ts
 import crypto5 from "node:crypto";
-import fs16 from "node:fs";
+import fs17 from "node:fs";
 import os8 from "node:os";
-import path18 from "node:path";
+import path19 from "node:path";
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -3336,10 +3388,10 @@ function trustedDevices() {
   return readJson(trustedFile()) ?? {};
 }
 function writeSecret(file2, value) {
-  ensureDir(path18.dirname(file2));
+  ensureDir(path19.dirname(file2));
   writeJsonAtomic(file2, value);
   try {
-    fs16.chmodSync(file2, 384);
+    fs17.chmodSync(file2, 384);
   } catch {
   }
 }
@@ -3358,11 +3410,11 @@ function safeName(value, fallback = "device", max = 48) {
 function logEvent(event) {
   try {
     ensureDir(bridgeDir());
-    fs16.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
-    const size = fs16.statSync(eventsFile()).size;
+    fs17.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs17.statSync(eventsFile()).size;
     if (size > 512 * 1024) {
-      const lines = fs16.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
-      fs16.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+      const lines = fs17.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs17.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
     }
   } catch {
   }
@@ -3373,12 +3425,12 @@ var init_state = __esm({
     "use strict";
     init_paths();
     init_peers();
-    bridgeDir = () => path18.join(stateDir(), "bridge");
-    deviceFile = () => path18.join(bridgeDir(), "device.json");
-    trustedFile = () => path18.join(bridgeDir(), "trusted.json");
-    remoteFile = () => path18.join(bridgeDir(), "remote.json");
-    daemonFile = () => path18.join(bridgeDir(), "daemon.json");
-    eventsFile = () => path18.join(bridgeDir(), "events.jsonl");
+    bridgeDir = () => path19.join(stateDir(), "bridge");
+    deviceFile = () => path19.join(bridgeDir(), "device.json");
+    trustedFile = () => path19.join(bridgeDir(), "trusted.json");
+    remoteFile = () => path19.join(bridgeDir(), "remote.json");
+    daemonFile = () => path19.join(bridgeDir(), "daemon.json");
+    eventsFile = () => path19.join(bridgeDir(), "events.jsonl");
     onlineWindowMs = () => envDurationMs("TELEPATHY_BRIDGE_ONLINE_MS", 15e3);
     isOnline = (device, now = Date.now()) => now - Date.parse(device.lastSeen) < onlineWindowMs();
     preview = (body) => safeName(body, "", 160);
@@ -3566,8 +3618,8 @@ var init_remote = __esm({
 
 // src/core/deliver.ts
 import crypto6 from "node:crypto";
-import fs17 from "node:fs";
-import path19 from "node:path";
+import fs18 from "node:fs";
+import path20 from "node:path";
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
@@ -3604,7 +3656,12 @@ async function sendMessage(self2, to, body, extra = {}) {
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self2, remote, body, extra);
-    return await deliverLocal(partyOf(self2), to, body, self2, extra);
+    const sent = await deliverLocal(partyOf(self2), to, body, self2, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self2.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -3625,7 +3682,7 @@ async function deliverLocal(from, to, body, self2, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self2?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path19.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path20.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -3687,7 +3744,7 @@ async function deliverLocal(from, to, body, self2, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs17.existsSync(path19.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs18.existsSync(path20.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -3871,6 +3928,7 @@ var init_deliver = __esm({
   "src/core/deliver.ts"() {
     "use strict";
     init_agents();
+    init_spec();
     init_claude_socket();
     init_codex_queue();
     init_remote();
@@ -3883,8 +3941,8 @@ var init_deliver = __esm({
     DUPLICATE_WINDOW_MS = 2 * 6e4;
     RATE_WINDOW_MS = 10 * 6e4;
     RATE_MAX_PER_RECIPIENT = 20;
-    sentLogFile = (selfId) => path19.join(peerDir(selfId), "sent-log.json");
-    stillPending = (peerId2, messageId) => fs17.existsSync(path19.join(inboxDir(peerId2), `${messageId}.json`));
+    sentLogFile = (selfId) => path20.join(peerDir(selfId), "sent-log.json");
+    stillPending = (peerId2, messageId) => fs18.existsSync(path20.join(inboxDir(peerId2), `${messageId}.json`));
     waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
   }
 });
@@ -33535,8 +33593,8 @@ function removeCleanWorktree(spec) {
 
 // src/agent/policy.ts
 init_paths();
-import path20 from "node:path";
-var policyFile = (dir) => path20.join(dir, "policy.json");
+import path21 from "node:path";
+var policyFile = (dir) => path21.join(dir, "policy.json");
 function readPolicy(dir) {
   const stored2 = readJson(policyFile(dir));
   return {
@@ -33571,45 +33629,7 @@ function normalizeEntries(entries) {
 
 // src/agent/tools.ts
 init_sandbox_launch();
-
-// src/agent/spec.ts
-init_paths();
-init_proc();
-import fs18 from "node:fs";
-import path21 from "node:path";
-var agentsDir = () => path21.join(stateDir(), "agents");
-var agentDir = (harness, slug) => path21.join(agentsDir(), `${harness}-${slug}`);
-var specFile = (dir) => path21.join(dir, "spec.json");
-var stateFile = (dir) => path21.join(dir, "state.json");
-var transcriptFile = (dir) => path21.join(dir, "transcript.md");
-var permissionsDir = (dir) => path21.join(dir, "permissions");
-function writeSpec(dir, spec) {
-  ensureDir(dir);
-  writeJsonAtomic(specFile(dir), spec);
-}
-var readSpec = (dir) => readJson(specFile(dir));
-var readState = (dir) => readJson(stateFile(dir));
-function hostAlive(state) {
-  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
-}
-function listAgents() {
-  let names;
-  try {
-    names = fs18.readdirSync(agentsDir());
-  } catch {
-    return [];
-  }
-  return names.flatMap((name) => {
-    const dir = path21.join(agentsDir(), name);
-    const spec = readSpec(dir);
-    return spec ? [{ dir, spec, state: readState(dir) }] : [];
-  });
-}
-var PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
-var permissionRequestFile = (dir, id) => path21.join(permissionsDir(dir), `${id}.json`);
-var permissionAnswerFile = (dir, id) => path21.join(permissionsDir(dir), `${id}.answer.json`);
-
-// src/agent/tools.ts
+init_spec();
 var startableHarnesses = () => harnesses().filter((h) => h.acp).map((h) => h.agent);
 var startWaitMs = () => envDurationMs("TELEPATHY_AGENT_START_MS", 9e4);
 function hostCommand(dir) {
@@ -33681,7 +33701,12 @@ function makeWorktree(cwd, harness, slug) {
   const inside = path22.relative(fs19.realpathSync(repo), fs19.realpathSync(cwd));
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path22.join(tree, inside) : tree };
 }
-var parentOf = (self2) => ({ party: partyOf(self2), cwd: self2.cwd });
+var parentOf = (self2) => ({
+  party: partyOf(self2),
+  cwd: self2.cwd,
+  // Claude Code's peer pid is the session's own process; other harnesses may share a daemon across sessions.
+  ...self2.agent === "claude" && self2.pid > 1 ? { process: { pid: self2.pid, ...self2.procStart ? { procStart: self2.procStart } : {} } } : {}
+});
 function launchAgent(parent, args) {
   const fail = (text) => ({ ok: false, text });
   const harness = canonicalRunAgent(args.harness);
@@ -33732,6 +33757,7 @@ function launchAgent(parent, args) {
     isolation: args.isolation,
     worktree,
     parent: parent.party,
+    ...parent.process && !parent.remote ? { parentProcess: parent.process } : {},
     ...parent.remote ? { remote: parent.remote } : {},
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
@@ -34305,6 +34331,7 @@ init_paths();
 init_remote();
 import fs23 from "node:fs";
 import path25 from "node:path";
+init_spec();
 var TASKS_EXTENSION = "io.modelcontextprotocol/tasks";
 var POLL_MS = 2e3;
 var LEASE_MS = 3e4;
@@ -35223,9 +35250,7 @@ async function updateAll(options = {}) {
       '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
     );
   }
-  const codexBefore = before.find((i) => i.agent === "codex");
-  const codexAfter = after.find((i) => i.agent === "codex");
-  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`

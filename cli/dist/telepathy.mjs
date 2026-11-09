@@ -827,7 +827,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.14.0" : "0.0.0-dev";
+    VERSION = true ? "0.14.1" : "0.0.0-dev";
   }
 });
 
@@ -1304,9 +1304,7 @@ async function updateAll(options = {}) {
       '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
     );
   }
-  const codexBefore = before.find((i) => i.agent === "codex");
-  const codexAfter = after.find((i) => i.agent === "codex");
-  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`
@@ -5246,10 +5244,67 @@ var init_peer = __esm({
   }
 });
 
-// src/core/claude-socket.ts
+// src/agent/spec.ts
 import fs24 from "node:fs";
-import net from "node:net";
 import path28 from "node:path";
+function writeSpec(dir, spec) {
+  ensureDir(dir);
+  writeJsonAtomic(specFile(dir), spec);
+}
+function writeState(dir, state) {
+  ensureDir(dir);
+  writeJsonAtomic(stateFile(dir), state);
+}
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names2;
+  try {
+    names2 = fs24.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names2.flatMap((name) => {
+    const dir = path28.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+function stoppedChildNote(parentId, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const entry = listAgents().filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q)).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return void 0;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : "";
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : "";
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
+}
+var agentsDir, agentDir, specFile, stateFile, transcriptFile, permissionsDir, readSpec, readState, permissionWaitMs, PERMISSION_ID, permissionRequestFile, permissionAnswerFile;
+var init_spec = __esm({
+  "src/agent/spec.ts"() {
+    "use strict";
+    init_paths();
+    init_proc();
+    agentsDir = () => path28.join(stateDir(), "agents");
+    agentDir = (harness, slug) => path28.join(agentsDir(), `${harness}-${slug}`);
+    specFile = (dir) => path28.join(dir, "spec.json");
+    stateFile = (dir) => path28.join(dir, "state.json");
+    transcriptFile = (dir) => path28.join(dir, "transcript.md");
+    permissionsDir = (dir) => path28.join(dir, "permissions");
+    readSpec = (dir) => readJson(specFile(dir));
+    readState = (dir) => readJson(stateFile(dir));
+    permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
+    PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
+    permissionRequestFile = (dir, id) => path28.join(permissionsDir(dir), `${id}.json`);
+    permissionAnswerFile = (dir, id) => path28.join(permissionsDir(dir), `${id}.answer.json`);
+  }
+});
+
+// src/core/claude-socket.ts
+import fs25 from "node:fs";
+import net from "node:net";
+import path29 from "node:path";
 function socketFromEnv(env) {
   const socketPath = env.CLAUDE_CODE_MESSAGING_SOCKET;
   if (!socketPath) return void 0;
@@ -5290,7 +5345,7 @@ function writeArmed(id) {
 }
 function clearArmed(id) {
   try {
-    if (readJson(listenerFile(id))?.pid === process.pid) fs24.rmSync(listenerFile(id), { force: true });
+    if (readJson(listenerFile(id))?.pid === process.pid) fs25.rmSync(listenerFile(id), { force: true });
   } catch {
   }
 }
@@ -5302,29 +5357,29 @@ function readInbound(file2) {
 function managedSettingsDir() {
   if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
   if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
-  if (process.platform === "win32") return path28.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  if (process.platform === "win32") return path29.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
   return "/etc/claude-code";
 }
 function managedInbound() {
   const dir = managedSettingsDir();
-  let found = readInbound(path28.join(dir, "managed-settings.json"));
+  let found = readInbound(path29.join(dir, "managed-settings.json"));
   let names2 = [];
   try {
-    names2 = fs24.readdirSync(path28.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+    names2 = fs25.readdirSync(path29.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
   } catch {
   }
   for (const name of names2) {
-    const value = readInbound(path28.join(dir, "managed-settings.d", name));
+    const value = readInbound(path29.join(dir, "managed-settings.d", name));
     if (value) found = value;
   }
   return found;
 }
 function crossSessionInbound(peer) {
   const managed = managedInbound();
-  const user = readInbound(path28.join(claudeConfigDir(), "settings.json"));
+  const user = readInbound(path29.join(claudeConfigDir(), "settings.json"));
   const higher = managed ?? user;
-  const project = peer?.cwd ? readInbound(path28.join(peer.cwd, ".claude", "settings.json")) : void 0;
-  const local = peer?.cwd ? readInbound(path28.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  const project = peer?.cwd ? readInbound(path29.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path29.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
   let effective = higher;
   for (const value of [project, local]) {
     if (!value) continue;
@@ -5505,7 +5560,7 @@ function startClaudeSocketWatcher(id, ownerPid) {
     try {
       ensureDir(inboxDir(id));
       if (watcher) return;
-      watcher = fs24.watch(inboxDir(id), () => void enqueue(id));
+      watcher = fs25.watch(inboxDir(id), () => void enqueue(id));
       watcher.on("error", () => {
         watcher?.close();
         watcher = void 0;
@@ -5540,8 +5595,8 @@ var init_claude_socket = __esm({
     init_proc();
     SOCKET_LINE_MAX = 1024 * 1024;
     INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
-    socketFile = (id) => path28.join(peerDir(id), "socket.json");
-    listenerFile = (id) => path28.join(peerDir(id), "socket-listener.json");
+    socketFile = (id) => path29.join(peerDir(id), "socket.json");
+    listenerFile = (id) => path29.join(peerDir(id), "socket-listener.json");
     classify = (line) => {
       let type = "";
       try {
@@ -5716,9 +5771,9 @@ var init_crypto = __esm({
 
 // src/bridge/state.ts
 import crypto5 from "node:crypto";
-import fs25 from "node:fs";
+import fs26 from "node:fs";
 import os14 from "node:os";
-import path29 from "node:path";
+import path30 from "node:path";
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -5763,10 +5818,10 @@ function setManualHosts(hosts2) {
   writeJsonAtomic(hostsFile(), [...new Set(hosts2)]);
 }
 function writeSecret(file2, value) {
-  ensureDir(path29.dirname(file2));
+  ensureDir(path30.dirname(file2));
   writeJsonAtomic(file2, value);
   try {
-    fs25.chmodSync(file2, 384);
+    fs26.chmodSync(file2, 384);
   } catch {
   }
 }
@@ -5794,18 +5849,18 @@ function uniqueSlug(name, id, taken) {
 function logEvent(event) {
   try {
     ensureDir(bridgeDir());
-    fs25.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
-    const size = fs25.statSync(eventsFile()).size;
+    fs26.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs26.statSync(eventsFile()).size;
     if (size > 512 * 1024) {
-      const lines = fs25.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
-      fs25.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+      const lines = fs26.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs26.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
     }
   } catch {
   }
 }
 function recentEvents(limit) {
   try {
-    return fs25.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-limit).map((line) => JSON.parse(line));
+    return fs26.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-limit).map((line) => JSON.parse(line));
   } catch {
     return [];
   }
@@ -5816,14 +5871,14 @@ var init_state = __esm({
     "use strict";
     init_paths();
     init_peers();
-    bridgeDir = () => path29.join(stateDir(), "bridge");
-    deviceFile = () => path29.join(bridgeDir(), "device.json");
-    trustedFile = () => path29.join(bridgeDir(), "trusted.json");
-    hostsFile = () => path29.join(bridgeDir(), "hosts.json");
-    remoteFile = () => path29.join(bridgeDir(), "remote.json");
-    daemonFile = () => path29.join(bridgeDir(), "daemon.json");
-    eventsFile = () => path29.join(bridgeDir(), "events.jsonl");
-    pairingDir = () => path29.join(bridgeDir(), "pairing");
+    bridgeDir = () => path30.join(stateDir(), "bridge");
+    deviceFile = () => path30.join(bridgeDir(), "device.json");
+    trustedFile = () => path30.join(bridgeDir(), "trusted.json");
+    hostsFile = () => path30.join(bridgeDir(), "hosts.json");
+    remoteFile = () => path30.join(bridgeDir(), "remote.json");
+    daemonFile = () => path30.join(bridgeDir(), "daemon.json");
+    eventsFile = () => path30.join(bridgeDir(), "events.jsonl");
+    pairingDir = () => path30.join(bridgeDir(), "pairing");
     PROTOCOL = 1;
     onlineWindowMs = () => envDurationMs("TELEPATHY_BRIDGE_ONLINE_MS", 15e3);
     isOnline = (device, now2 = Date.now()) => now2 - Date.parse(device.lastSeen) < onlineWindowMs();
@@ -6042,8 +6097,8 @@ var init_remote = __esm({
 
 // src/core/deliver.ts
 import crypto6 from "node:crypto";
-import fs26 from "node:fs";
-import path30 from "node:path";
+import fs27 from "node:fs";
+import path31 from "node:path";
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
@@ -6080,7 +6135,12 @@ async function sendMessage(self2, to, body, extra = {}) {
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self2, remote, body, extra);
-    return await deliverLocal(partyOf(self2), to, body, self2, extra);
+    const sent = await deliverLocal(partyOf(self2), to, body, self2, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self2.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -6101,7 +6161,7 @@ async function deliverLocal(from, to, body, self2, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self2?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path30.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path31.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -6163,7 +6223,7 @@ async function deliverLocal(from, to, body, self2, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs26.existsSync(path30.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs27.existsSync(path31.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -6347,6 +6407,7 @@ var init_deliver = __esm({
   "src/core/deliver.ts"() {
     "use strict";
     init_agents();
+    init_spec();
     init_claude_socket();
     init_codex_queue();
     init_remote();
@@ -6359,14 +6420,14 @@ var init_deliver = __esm({
     DUPLICATE_WINDOW_MS = 2 * 6e4;
     RATE_WINDOW_MS = 10 * 6e4;
     RATE_MAX_PER_RECIPIENT = 20;
-    sentLogFile = (selfId) => path30.join(peerDir(selfId), "sent-log.json");
-    stillPending = (peerId2, messageId) => fs26.existsSync(path30.join(inboxDir(peerId2), `${messageId}.json`));
+    sentLogFile = (selfId) => path31.join(peerDir(selfId), "sent-log.json");
+    stillPending = (peerId2, messageId) => fs27.existsSync(path31.join(inboxDir(peerId2), `${messageId}.json`));
     waitingNote = (ref, verb) => `Message ${verb} ${ref}, but it's waiting on a permission prompt for its user, so it gets to your message only after its user answers. Tell your user if it's urgent; don't resend.`;
   }
 });
 
 // src/agent/policy.ts
-import path31 from "node:path";
+import path32 from "node:path";
 function readPolicy(dir) {
   const stored2 = readJson(policyFile(dir));
   return {
@@ -6567,7 +6628,7 @@ var init_policy = __esm({
   "src/agent/policy.ts"() {
     "use strict";
     init_paths();
-    policyFile = (dir) => path31.join(dir, "policy.json");
+    policyFile = (dir) => path32.join(dir, "policy.json");
     KINDS = {
       edit: ["edit", "delete", "move"],
       read: ["read"],
@@ -6577,8 +6638,8 @@ var init_policy = __esm({
     wordsOf = (entry) => simpleCommands(entry)?.[0] ?? [];
     harmless = (words) => words[0] === "cd" && words.length <= 2;
     inside = (file2, root) => {
-      const rel = path31.relative(path31.resolve(root), path31.resolve(root, file2));
-      return rel === "" || !rel.startsWith("..") && !path31.isAbsolute(rel);
+      const rel = path32.relative(path32.resolve(root), path32.resolve(root, file2));
+      return rel === "" || !rel.startsWith("..") && !path32.isAbsolute(rel);
     };
     FAMILIES = /* @__PURE__ */ new Set([
       "git",
@@ -6643,18 +6704,18 @@ var init_policy = __esm({
 
 // src/agent/task.ts
 import crypto7 from "node:crypto";
-import fs27 from "node:fs";
-import path32 from "node:path";
+import fs28 from "node:fs";
+import path33 from "node:path";
 function offerEvent(dir, event) {
   ensureDir(eventsDir(dir));
-  if (lastSeq < 0) lastSeq = fs27.readdirSync(eventsDir(dir)).length;
-  const file2 = path32.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
+  if (lastSeq < 0) lastSeq = fs28.readdirSync(eventsDir(dir)).length;
+  const file2 = path33.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
   writeJsonAtomic(file2, { ...event, at: (/* @__PURE__ */ new Date()).toISOString() });
   return file2;
 }
 function takeBack(file2) {
   try {
-    fs27.renameSync(file2, file2.replace(/\.json$/, ".sent"));
+    fs28.renameSync(file2, file2.replace(/\.json$/, ".sent"));
     return true;
   } catch {
     return false;
@@ -6663,15 +6724,15 @@ function takeBack(file2) {
 function claimEvent(dir) {
   let names2;
   try {
-    names2 = fs27.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
+    names2 = fs28.readdirSync(eventsDir(dir)).filter((name) => PENDING.test(name)).sort();
   } catch {
     return void 0;
   }
   for (const name of names2) {
-    const from = path32.join(eventsDir(dir), name);
+    const from = path33.join(eventsDir(dir), name);
     const to = from.replace(/\.json$/, ".taken");
     try {
-      fs27.renameSync(from, to);
+      fs28.renameSync(from, to);
     } catch {
       continue;
     }
@@ -6683,9 +6744,9 @@ function claimEvent(dir) {
 function openTask(dir, taskId, procStart2) {
   ensureDir(openDir(dir));
   forgetLostTasks(dir);
-  const file2 = path32.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
+  const file2 = path33.join(openDir(dir), `${process.pid}-${++openSeq}.json`);
   writeJsonAtomic(file2, { taskId, pid: process.pid, procStart: procStart2 });
-  return () => fs27.rmSync(file2, { force: true });
+  return () => fs28.rmSync(file2, { force: true });
 }
 function leaseTask(dir, taskId, procStart2, ms) {
   ensureDir(openDir(dir));
@@ -6694,12 +6755,12 @@ function leaseTask(dir, taskId, procStart2, ms) {
 function markers(dir) {
   let names2;
   try {
-    names2 = fs27.readdirSync(openDir(dir));
+    names2 = fs28.readdirSync(openDir(dir));
   } catch {
     return [];
   }
   return names2.flatMap((name) => {
-    const file2 = path32.join(openDir(dir), name);
+    const file2 = path33.join(openDir(dir), name);
     const marker = readJson(file2);
     if (!marker?.pid) return [];
     const lapsed = marker.until !== void 0 && marker.until < Date.now();
@@ -6711,7 +6772,12 @@ function taskFollow(dir) {
   return all.some((m) => m.live) ? "open" : all.length ? "lost" : "none";
 }
 function forgetLostTasks(dir) {
-  for (const marker of markers(dir)) if (!marker.live) fs27.rmSync(marker.file, { force: true });
+  for (const marker of markers(dir)) if (!marker.live) fs28.rmSync(marker.file, { force: true });
+}
+function limitNotice(text) {
+  const t = text.trim();
+  if (!t || t.length > 300) return false;
+  return /^(?:upgrade your plan to continue|you(?:'ve| have) (?:hit|reached) your (?:usage )?limit|(?:free )?usage limit (?:reached|exceeded)|rate limit exceeded|out of credits|insufficient credits|(?:this request )?would exceed your available credits)\b/i.test(t);
 }
 var taskHarnesses, installedTaskHarnesses, taskDir, eventsDir, openDir, PENDING, taskPickupMs, lastSeq, openSeq, leaseFile, endLease, taskOpen;
 var init_task = __esm({
@@ -6726,64 +6792,16 @@ var init_task = __esm({
       const acp = harnesses().find((h) => h.agent === agent)?.acp;
       return !!acp && !!resolvedAcpBin(acp);
     });
-    taskDir = (dir) => path32.join(dir, "task");
-    eventsDir = (dir) => path32.join(taskDir(dir), "events");
-    openDir = (dir) => path32.join(taskDir(dir), "open");
+    taskDir = (dir) => path33.join(dir, "task");
+    eventsDir = (dir) => path33.join(taskDir(dir), "events");
+    openDir = (dir) => path33.join(taskDir(dir), "open");
     PENDING = /^\d{6}\.json$/;
     taskPickupMs = () => envDurationMs("TELEPATHY_TASK_PICKUP_MS", 3e4);
     lastSeq = -1;
     openSeq = 0;
-    leaseFile = (dir, taskId) => path32.join(openDir(dir), `remote-${crypto7.createHash("sha256").update(taskId).digest("hex").slice(0, 16)}.json`);
-    endLease = (dir, taskId) => fs27.rmSync(leaseFile(dir, taskId), { force: true });
+    leaseFile = (dir, taskId) => path33.join(openDir(dir), `remote-${crypto7.createHash("sha256").update(taskId).digest("hex").slice(0, 16)}.json`);
+    endLease = (dir, taskId) => fs28.rmSync(leaseFile(dir, taskId), { force: true });
     taskOpen = (dir) => markers(dir).some((m) => m.live);
-  }
-});
-
-// src/agent/spec.ts
-import fs28 from "node:fs";
-import path33 from "node:path";
-function writeSpec(dir, spec) {
-  ensureDir(dir);
-  writeJsonAtomic(specFile(dir), spec);
-}
-function writeState(dir, state) {
-  ensureDir(dir);
-  writeJsonAtomic(stateFile(dir), state);
-}
-function hostAlive(state) {
-  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
-}
-function listAgents() {
-  let names2;
-  try {
-    names2 = fs28.readdirSync(agentsDir());
-  } catch {
-    return [];
-  }
-  return names2.flatMap((name) => {
-    const dir = path33.join(agentsDir(), name);
-    const spec = readSpec(dir);
-    return spec ? [{ dir, spec, state: readState(dir) }] : [];
-  });
-}
-var agentsDir, agentDir, specFile, stateFile, transcriptFile, permissionsDir, readSpec, readState, permissionWaitMs, PERMISSION_ID, permissionRequestFile, permissionAnswerFile;
-var init_spec = __esm({
-  "src/agent/spec.ts"() {
-    "use strict";
-    init_paths();
-    init_proc();
-    agentsDir = () => path33.join(stateDir(), "agents");
-    agentDir = (harness, slug) => path33.join(agentsDir(), `${harness}-${slug}`);
-    specFile = (dir) => path33.join(dir, "spec.json");
-    stateFile = (dir) => path33.join(dir, "state.json");
-    transcriptFile = (dir) => path33.join(dir, "transcript.md");
-    permissionsDir = (dir) => path33.join(dir, "permissions");
-    readSpec = (dir) => readJson(specFile(dir));
-    readState = (dir) => readJson(stateFile(dir));
-    permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
-    PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
-    permissionRequestFile = (dir, id) => path33.join(permissionsDir(dir), `${id}.json`);
-    permissionAnswerFile = (dir, id) => path33.join(permissionsDir(dir), `${id}.answer.json`);
   }
 });
 
@@ -6933,6 +6951,7 @@ function launchAgent(parent, args) {
     isolation: args.isolation,
     worktree,
     parent: parent.party,
+    ...parent.process && !parent.remote ? { parentProcess: parent.process } : {},
     ...parent.remote ? { remote: parent.remote } : {},
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
@@ -7090,7 +7109,12 @@ var init_tools = __esm({
     startableHarnesses = () => harnesses().filter((h) => h.acp).map((h) => h.agent);
     startWaitMs = () => envDurationMs("TELEPATHY_AGENT_START_MS", 9e4);
     failed = (text) => ({ text, isError: true });
-    parentOf = (self2) => ({ party: partyOf(self2), cwd: self2.cwd });
+    parentOf = (self2) => ({
+      party: partyOf(self2),
+      cwd: self2.cwd,
+      // Claude Code's peer pid is the session's own process; other harnesses may share a daemon across sessions.
+      ...self2.agent === "claude" && self2.pid > 1 ? { process: { pid: self2.pid, ...self2.procStart ? { procStart: self2.procStart } : {} } } : {}
+    });
     allowSentence = (policy) => policy.allow.length ? `Allowed without asking: ${policy.allow.join(", ")}.` : "";
     keptNote = (entry, state) => state?.worktreeKept && entry.spec.worktree ? ` Its worktree ${entry.spec.worktree.path} (branch ${entry.spec.worktree.branch}) has changes and was kept.` : "";
     agentAddress = (entry) => readState(entry.dir)?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
@@ -10498,17 +10522,26 @@ var init_reviewer = __esm({
 // src/agent/host.ts
 var host_exports = {};
 __export(host_exports, {
+  explainStartError: () => explainStartError,
   runAgent: () => runAgent
 });
 import crypto8 from "node:crypto";
 import fs38 from "node:fs";
 import path41 from "node:path";
 function parentPresent(spec) {
-  if (!spec.remote) return isPeerAlive(readPeer(spec.parent.id));
+  if (!spec.remote) {
+    if (isPeerAlive(readPeer(spec.parent.id))) return true;
+    const own2 = spec.parentProcess;
+    return !!own2 && isSameProcess(own2.pid, own2.procStart);
+  }
   const { device: id, parentId } = spec.remote;
   const device = knownDevices().find((d) => d.id === id);
   if (!device || !isOnline(device)) return void 0;
   return device.peers.some((peer) => peer.id === parentId);
+}
+function explainStartError(harness, bin, message) {
+  if (harness !== "codex" || !/error loading config/i.test(message)) return message;
+  return `${message.replace(/\.?\s*$/, "")}. ${path41.basename(bin)} runs its own copy of Codex, which can be older than your codex CLI and not read a setting the CLI does. Update it (\`npm install -g @zed-industries/codex-acp\`); if it is already the latest, that setting has to come out of ~/.codex/config.toml (or its value change) until codex-acp catches up. telepathy does not edit that file.`;
 }
 async function runAgent(dir) {
   const spec = readSpec(dir);
@@ -10629,9 +10662,10 @@ ${rawFinal}`;
 
 \u2014 turn ended${result.error ? `: ${result.error}` : result.stopReason ? `: ${result.stopReason}` : ""}
 `);
-    const why = result.error ? `The turn failed: ${result.error}.` : result.stopReason && result.stopReason !== "end_turn" ? `The turn stopped: ${result.stopReason}.` : "";
+    const refused = !result.error && limitNotice(final);
+    const why = result.error ? `The turn failed: ${result.error}.` : refused ? `The turn failed: that message is ${agentLabel(spec.harness)}'s own (a plan or usage limit), not the agent's work.` : result.stopReason && result.stopReason !== "end_turn" ? `The turn stopped: ${result.stopReason}.` : "";
     const body = [final || "(The turn ended without a final message.)", why].filter(Boolean).join("\n\n");
-    const failed3 = !!result.error && !final;
+    const failed3 = !!result.error || refused;
     if (stopRequested) return;
     void offerToTask({ kind: "result", body, ...failed3 ? { failed: true } : {} }).then((taken) => {
       if (taken) write(`
@@ -10776,7 +10810,7 @@ Started by ${spec.parent.address} [${spec.parent.id}] at ${(/* @__PURE__ */ new 
     });
   } catch (err) {
     out.end();
-    return fail(err.message);
+    return fail(explainStartError(spec.harness, bin, err.message));
   }
   try {
     const applied = await applySettings(session.request, session.sessionId, session.created, { model: spec.model, effort: spec.effort });
@@ -10850,6 +10884,7 @@ ${text}`))
 ${taskText}`);
   void submit(taskText);
   let goneSince;
+  let stopReason;
   const orphan = orphanMs(spec.parent.agent);
   const unreachable = Math.max(orphan, unreachableMs());
   const watch2 = setInterval(() => {
@@ -10861,26 +10896,32 @@ ${taskText}`);
     goneSince ??= Date.now();
     const limit = present === void 0 ? unreachable : orphan;
     if (Date.now() - goneSince > limit) {
-      write(
-        present === void 0 ? `
+      stopReason = present === void 0 ? `the device ${spec.parent.address} is on has been out of reach for ${span(limit)}` : `${spec.parent.address} has been gone for ${span(orphan)}`;
+      write(`
 
-\u2014 stopped: the device ${spec.parent.address} is on has been out of reach for ${span(limit)}
-` : `
-
-\u2014 stopped: ${spec.parent.address} has been gone for ${span(orphan)}
-`
-      );
+\u2014 stopped: ${stopReason}
+`);
       stopRequested = true;
       session.close();
     }
   }, Math.min(5e3, Math.max(250, orphan / 3)));
   const shutdown = () => {
+    stopReason ??= "it was stopped (stop_agent, or a signal)";
     stopRequested = true;
     session.close();
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  await session.exited;
+  const code = await session.exited;
+  if (!stopRequested) {
+    stopReason = `its ${agentLabel(spec.harness)} process exited${code ? ` with code ${code}` : ""}`;
+    write(`
+
+\u2014 stopped: ${stopReason}
+`);
+    const body = `${self2?.address ?? spec.slug} stopped: ${stopReason}. Its transcript: ${transcriptFile(dir)}. Start a new agent to go on.`;
+    if (!await offerToTask({ kind: "result", body, failed: true })) await tellParent(body, "agent-result");
+  }
   stopping = true;
   reviewer?.close();
   clearInterval(watch2);
@@ -10897,6 +10938,8 @@ ${taskText}`);
   await new Promise((resolve) => out.end(() => resolve()));
   log.end();
   state.status = "stopped";
+  if (stopReason) state.stopReason = stopReason;
+  state.stoppedAt = (/* @__PURE__ */ new Date()).toISOString();
   save();
   return 0;
 }

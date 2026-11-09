@@ -8,6 +8,8 @@ import { agentAuthMethod } from '../src/acp/host.ts';
 import { autoMode, cheapestModel, readOnlyMode, pickModel } from '../src/agent/configure.ts';
 import { allowedBy, requestInfo, simpleCommands, suggestPrefixes } from '../src/agent/policy.ts';
 import { parseVerdict } from '../src/agent/reviewer.ts';
+import { explainStartError } from '../src/agent/host.ts';
+import { limitNotice } from '../src/agent/task.ts';
 import { sendMessage } from '../src/core/deliver.ts';
 import { claimSessionOwner, isDeliveryOwner, isPeerAlive, readPeer, sessionOwners } from '../src/core/peers.ts';
 import { connectServer, fakeAgent, killAndWait, makeSandbox, ROOT, runHook, type Sandbox, toolText, waitFor } from './helpers.ts';
@@ -99,6 +101,24 @@ describe('permission policy', () => {
     assert.equal(readOnlyMode(['agent', 'plan', 'ask'].map((value) => ({ value }))), 'ask');
     assert.equal(readOnlyMode(['build', 'plan'].map((value) => ({ value }))), 'plan');
     assert.equal(readOnlyMode(['default', 'auto'].map((value) => ({ value }))), undefined);
+  });
+});
+
+describe('reports that are not the agent\'s work', () => {
+  test("a harness's plan or usage limit, as the whole final message, is a failed turn", () => {
+    for (const text of ['Upgrade your plan to continue', 'Free usage limit reached.', 'Rate limit exceeded: free-models-per-day', 'This request would exceed your available credits']) {
+      assert.equal(limitNotice(text), true, text);
+    }
+    for (const text of ['', 'Done. I fixed the usage limit check in billing.ts.', `Upgrade your plan to continue ${'x'.repeat(400)}`]) {
+      assert.equal(limitNotice(text), false, text);
+    }
+  });
+
+  test('a Codex config the adapter cannot read says why', () => {
+    const said = explainStartError('codex', '/opt/homebrew/bin/codex-acp', 'agent exited: Error: error loading config: config.toml:557:1: invalid type');
+    assert.match(said, /codex-acp runs its own copy of Codex/);
+    assert.match(said, /does not edit that file/);
+    assert.equal(explainStartError('opencode', 'opencode', 'error loading config'), 'error loading config');
   });
 });
 
@@ -198,6 +218,22 @@ describe('start_agent', () => {
       assert.equal(stopped, `Stopped opencode:check-auth-tests. Transcript: ${transcript}.`);
       assert.match(fs.readFileSync(transcript, 'utf8'), /— stopped at /);
       assert.doesNotMatch(toolText(await client.callTool({ name: 'list_peers', arguments: {} })), /opencode:check-auth-tests/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  test('a harness that exits on its own is reported to the parent, and a later send says why it is gone', async () => {
+    const client = await connectServer(sb, 'qwen', parent.pid, ROOT, undefined, env({ FAKE_ACP_EXIT_ON_PROMPT: '3' }));
+    try {
+      const started = toolText(await client.callTool({ name: 'start_agent', arguments: { harness: 'opencode', description: 'Crash early', prompt: 'Do it.' } }));
+      assert.match(started, /^Started opencode:crash-early /);
+      const report = await waitFor(() => results().find((m) => m.kind === 'agent-result' && m.from.address === 'opencode:crash-early'), 20_000);
+      assert.match(report.body, /^opencode:crash-early stopped: its OpenCode process exited with code 3\. Its transcript: /);
+      await waitFor(() => JSON.parse(fs.readFileSync(path.join(sb.home, 'agents', 'opencode-crash-early', 'state.json'), 'utf8')).status === 'stopped', 20_000);
+      const sent = await client.callTool({ name: 'send_message', arguments: { to: 'opencode:crash-early', message: 'Still there?' } });
+      assert.equal(sent.isError, true);
+      assert.match(toolText(sent), /^opencode:crash-early is an agent this session started, and it stopped at \S+: its OpenCode process exited with code 3\. Its transcript: .+ Start a new agent/);
     } finally {
       await client.close();
     }

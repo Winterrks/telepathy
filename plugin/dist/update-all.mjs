@@ -704,7 +704,7 @@ function heldNote(cmd, file) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.14.0" : "0.0.0-dev";
+var VERSION = true ? "0.14.1" : "0.0.0-dev";
 
 // src/core/codex-hooks.ts
 var timeoutMs = () => {
@@ -1133,9 +1133,7 @@ async function updateAll(options = {}) {
       '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
     );
   }
-  const codexBefore = before.find((i) => i.agent === "codex");
-  const codexAfter = after.find((i) => i.agent === "codex");
-  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`

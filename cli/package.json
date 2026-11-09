@@ -1,6 +1,6 @@
 {
   "name": "telepathy-cli",
-  "version": "0.14.0",
+  "version": "0.14.1",
   "description": "CLI for telepathy. Install it into the coding agents on this machine, keep those copies current, run or host a session that can message the others, and join your other devices with the bridge.",
   "type": "module",
   "bin": {

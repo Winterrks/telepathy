@@ -269,9 +269,9 @@ export async function updateAll(options: UpdateAllOptions = {}): Promise<number>
         'the folder their hooks run from.',
     );
   }
-  const codexBefore = before.find((i) => i.agent === 'codex');
-  const codexAfter = after.find((i) => i.agent === 'codex');
-  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  // Codex may have updated its own copy first (it refreshes marketplace plugins), which leaves the hooks changed
+  // with nothing here to update: approve them whenever Codex has telepathy, not only when this run changed it.
+  if (after.some((i) => i.agent === 'codex')) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`\nNot updated: ${failures.join(', ')}. Run their own update command to see why.`);

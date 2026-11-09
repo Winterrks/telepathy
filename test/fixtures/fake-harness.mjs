@@ -304,6 +304,8 @@ if (args[0] === '--version') {
         send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: process.env.FAKE_ACP_SESSION_ID || 'sess-acp' } });
       }
     } else if (msg.method === 'session/prompt') {
+      // FAKE_ACP_EXIT_ON_PROMPT: the harness dies on its own (a crash, a sign-out) with that exit code.
+      if (process.env.FAKE_ACP_EXIT_ON_PROMPT) process.exit(Number(process.env.FAKE_ACP_EXIT_ON_PROMPT));
       if (process.env.FAKE_ACP_AUTH_LATE === '1') {
         process.stderr.write('authentication required\n');
         return;

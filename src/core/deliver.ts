@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { agentSpec } from './agents.ts';
+import { stoppedChildNote } from '../agent/spec.ts';
 import { claudeSocketArmed, crossSessionInbound, flushClaudeSocket, readClaudeSocket, type SocketOutcome } from './claude-socket.ts';
 import { queueIntoCodex } from './codex-queue.ts';
 import { remoteTarget, sendRemote } from '../bridge/remote.ts';
@@ -112,7 +113,12 @@ export async function sendMessage(
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self, remote, body, extra);
-    return await deliverLocal(partyOf(self), to, body, self, extra);
+    const sent = await deliverLocal(partyOf(self), to, body, self, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }

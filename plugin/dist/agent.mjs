@@ -510,7 +510,7 @@ function isAgentProcess(agent, comm, args, kernelName = () => void 0) {
 }
 
 // src/core/version.ts
-var VERSION = true ? "0.14.0" : "0.0.0-dev";
+var VERSION = true ? "0.14.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -3424,15 +3424,30 @@ function acpArgs(acp, bin) {
 // src/core/deliver.ts
 import crypto5 from "node:crypto";
 import fs16 from "node:fs";
-import path18 from "node:path";
+import path19 from "node:path";
+
+// src/agent/spec.ts
+import path15 from "node:path";
+var specFile = (dir) => path15.join(dir, "spec.json");
+var stateFile = (dir) => path15.join(dir, "state.json");
+var transcriptFile = (dir) => path15.join(dir, "transcript.md");
+var permissionsDir = (dir) => path15.join(dir, "permissions");
+var readSpec = (dir) => readJson(specFile(dir));
+function writeState(dir, state) {
+  ensureDir(dir);
+  writeJsonAtomic(stateFile(dir), state);
+}
+var permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
+var permissionRequestFile = (dir, id) => path15.join(permissionsDir(dir), `${id}.json`);
+var permissionAnswerFile = (dir, id) => path15.join(permissionsDir(dir), `${id}.answer.json`);
 
 // src/core/claude-socket.ts
 import fs14 from "node:fs";
-import path15 from "node:path";
+import path16 from "node:path";
 var SOCKET_LINE_MAX = 1024 * 1024;
 var INBOUND_RANK = { accept: 0, hold: 1, refuse: 2 };
-var socketFile = (id) => path15.join(peerDir(id), "socket.json");
-var listenerFile = (id) => path15.join(peerDir(id), "socket-listener.json");
+var socketFile = (id) => path16.join(peerDir(id), "socket.json");
+var listenerFile = (id) => path16.join(peerDir(id), "socket-listener.json");
 function readClaudeSocket(id) {
   const record = readJson(socketFile(id));
   if (!record?.path) return void 0;
@@ -3454,29 +3469,29 @@ function readInbound(file) {
 function managedSettingsDir() {
   if (process.env.TELEPATHY_MANAGED_SETTINGS_DIR) return process.env.TELEPATHY_MANAGED_SETTINGS_DIR;
   if (process.platform === "darwin") return "/Library/Application Support/ClaudeCode";
-  if (process.platform === "win32") return path15.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
+  if (process.platform === "win32") return path16.join(process.env.ProgramFiles || "C:\\Program Files", "ClaudeCode");
   return "/etc/claude-code";
 }
 function managedInbound() {
   const dir = managedSettingsDir();
-  let found = readInbound(path15.join(dir, "managed-settings.json"));
+  let found = readInbound(path16.join(dir, "managed-settings.json"));
   let names = [];
   try {
-    names = fs14.readdirSync(path15.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
+    names = fs14.readdirSync(path16.join(dir, "managed-settings.d")).filter((name) => name.endsWith(".json") && !name.startsWith(".")).sort();
   } catch {
   }
   for (const name of names) {
-    const value = readInbound(path15.join(dir, "managed-settings.d", name));
+    const value = readInbound(path16.join(dir, "managed-settings.d", name));
     if (value) found = value;
   }
   return found;
 }
 function crossSessionInbound(peer) {
   const managed = managedInbound();
-  const user = readInbound(path15.join(claudeConfigDir(), "settings.json"));
+  const user = readInbound(path16.join(claudeConfigDir(), "settings.json"));
   const higher = managed ?? user;
-  const project = peer?.cwd ? readInbound(path15.join(peer.cwd, ".claude", "settings.json")) : void 0;
-  const local = peer?.cwd ? readInbound(path15.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
+  const project = peer?.cwd ? readInbound(path16.join(peer.cwd, ".claude", "settings.json")) : void 0;
+  const local = peer?.cwd ? readInbound(path16.join(peer.cwd, ".claude", "settings.local.json")) : void 0;
   let effective = higher;
   for (const value of [project, local]) {
     if (!value) continue;
@@ -3491,10 +3506,10 @@ async function flushClaudeSocket(id) {
 }
 
 // src/core/status.ts
-import path16 from "node:path";
+import path17 from "node:path";
 var OWN_SOURCE = ["claude", "codex", "opencode", "kilo"];
 var statusFromHooks = (agent) => !OWN_SOURCE.includes(agent);
-var statusFile = (id) => path16.join(peerDir(id), "status.json");
+var statusFile = (id) => path17.join(peerDir(id), "status.json");
 function writeStatus(id, status, now2 = Date.now()) {
   writeJsonAtomic(statusFile(id), { status, at: new Date(now2).toISOString() });
 }
@@ -3505,7 +3520,7 @@ function recorded(id) {
 }
 var CLAUDE_STATUSES = ["busy", "shell", "idle", "waiting"];
 function claudeStatus(pid) {
-  const record = readJson(path16.join(claudeConfigDir(), "sessions", `${pid}.json`));
+  const record = readJson(path17.join(claudeConfigDir(), "sessions", `${pid}.json`));
   if (typeof record?.status !== "string" || !CLAUDE_STATUSES.includes(record.status)) return void 0;
   let status = record.status;
   if (status === "shell" && shellIsTelepathyMonitorOnly(descendantCommands(pid))) status = "idle";
@@ -3605,13 +3620,13 @@ function open(key, aad, sealed) {
 import crypto4 from "node:crypto";
 import fs15 from "node:fs";
 import os8 from "node:os";
-import path17 from "node:path";
-var bridgeDir = () => path17.join(stateDir(), "bridge");
-var deviceFile = () => path17.join(bridgeDir(), "device.json");
-var trustedFile = () => path17.join(bridgeDir(), "trusted.json");
-var remoteFile = () => path17.join(bridgeDir(), "remote.json");
-var daemonFile = () => path17.join(bridgeDir(), "daemon.json");
-var eventsFile = () => path17.join(bridgeDir(), "events.jsonl");
+import path18 from "node:path";
+var bridgeDir = () => path18.join(stateDir(), "bridge");
+var deviceFile = () => path18.join(bridgeDir(), "device.json");
+var trustedFile = () => path18.join(bridgeDir(), "trusted.json");
+var remoteFile = () => path18.join(bridgeDir(), "remote.json");
+var daemonFile = () => path18.join(bridgeDir(), "daemon.json");
+var eventsFile = () => path18.join(bridgeDir(), "events.jsonl");
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -3636,7 +3651,7 @@ function trustedDevices() {
   return readJson(trustedFile()) ?? {};
 }
 function writeSecret(file, value) {
-  ensureDir(path17.dirname(file));
+  ensureDir(path18.dirname(file));
   writeJsonAtomic(file, value);
   try {
     fs15.chmodSync(file, 384);
@@ -3794,7 +3809,7 @@ var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path18.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path19.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now2 = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now2 - e.at < RATE_WINDOW_MS);
@@ -3814,7 +3829,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto5.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now2 });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs16.existsSync(path18.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs16.existsSync(path19.join(inboxDir(peerId2), `${messageId}.json`));
 async function deliverLocal(from, to, body, self, extra = {}) {
   const peers = listPeers().filter((p) => p.id !== self?.id);
   let resolved = resolvePeer(to, peers);
@@ -3831,7 +3846,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path18.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path19.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -3893,7 +3908,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs16.existsSync(path18.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs16.existsSync(path19.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -4094,14 +4109,14 @@ function removeCleanWorktree(spec) {
 
 // src/headless/peer.ts
 import fs17 from "node:fs";
-import path19 from "node:path";
-var headlessDir = () => path19.join(stateDir(), "headless");
-var headlessRecordPath = (agent, slug) => path19.join(headlessDir(), `${agent}-${slug}.json`);
+import path20 from "node:path";
+var headlessDir = () => path20.join(stateDir(), "headless");
+var headlessRecordPath = (agent, slug) => path20.join(headlessDir(), `${agent}-${slug}.json`);
 function writeHeadlessRecord(record) {
   writeJsonAtomic(headlessRecordPath(record.agent, record.slug), record);
 }
 function writeHosted(peerId2, parent) {
-  writeJsonAtomic(path19.join(peerDir(peerId2), "hosted.json"), {
+  writeJsonAtomic(path20.join(peerDir(peerId2), "hosted.json"), {
     pid: process.pid,
     procStart: procStart(process.pid),
     ...parent ? { parent } : {}
@@ -4109,7 +4124,7 @@ function writeHosted(peerId2, parent) {
 }
 function clearHosted(peerId2) {
   try {
-    fs17.rmSync(path19.join(peerDir(peerId2), "hosted.json"), { force: true });
+    fs17.rmSync(path20.join(peerDir(peerId2), "hosted.json"), { force: true });
   } catch {
   }
 }
@@ -4179,7 +4194,7 @@ function linkCopilotPlaceholders(spawnedPid, agentPid, sessionPeer) {
   }
 }
 function appendTranscript(peerId2, text) {
-  const file = path19.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
+  const file = path20.join(ensureDir(peerDir(peerId2)), "delivery-transcript.jsonl");
   fs17.appendFileSync(file, JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), text }) + "\n");
 }
 function startInboxPump(peerId2, inject) {
@@ -4196,8 +4211,8 @@ function startInboxPump(peerId2, inject) {
     try {
       for (const msg of pendingMessages(id)) {
         if (done.has(msg.id)) continue;
-        const file = path19.join(inboxDir(id), `${msg.id}.json`);
-        const withdrawnFile = path19.join(withdrawnDir(id), `${msg.id}.json`);
+        const file = path20.join(inboxDir(id), `${msg.id}.json`);
+        const withdrawnFile = path20.join(withdrawnDir(id), `${msg.id}.json`);
         const pending = () => fs17.existsSync(file);
         const withdrawn = () => fs17.existsSync(withdrawnFile);
         if (!pending()) {
@@ -4396,8 +4411,8 @@ async function applyReviewerSettings(request, sessionId, created, wantedModel) {
 }
 
 // src/agent/policy.ts
-import path20 from "node:path";
-var policyFile = (dir) => path20.join(dir, "policy.json");
+import path21 from "node:path";
+var policyFile = (dir) => path21.join(dir, "policy.json");
 function readPolicy(dir) {
   const stored = readJson(policyFile(dir));
   return {
@@ -4542,8 +4557,8 @@ function plain(words) {
 }
 var harmless = (words) => words[0] === "cd" && words.length <= 2;
 var inside = (file, root) => {
-  const rel = path20.relative(path20.resolve(root), path20.resolve(root, file));
-  return rel === "" || !rel.startsWith("..") && !path20.isAbsolute(rel);
+  const rel = path21.relative(path21.resolve(root), path21.resolve(root, file));
+  return rel === "" || !rel.startsWith("..") && !path21.isAbsolute(rel);
 };
 function allowedBy(policy, request, roots = []) {
   const entries = normalizeEntries(policy.allow);
@@ -4804,16 +4819,16 @@ function createReviewer(spec, launch, address, log) {
 
 // src/agent/task.ts
 import fs18 from "node:fs";
-import path21 from "node:path";
-var taskDir = (dir) => path21.join(dir, "task");
-var eventsDir = (dir) => path21.join(taskDir(dir), "events");
-var openDir = (dir) => path21.join(taskDir(dir), "open");
+import path22 from "node:path";
+var taskDir = (dir) => path22.join(dir, "task");
+var eventsDir = (dir) => path22.join(taskDir(dir), "events");
+var openDir = (dir) => path22.join(taskDir(dir), "open");
 var taskPickupMs = () => envDurationMs("TELEPATHY_TASK_PICKUP_MS", 3e4);
 var lastSeq = -1;
 function offerEvent(dir, event) {
   ensureDir(eventsDir(dir));
   if (lastSeq < 0) lastSeq = fs18.readdirSync(eventsDir(dir)).length;
-  const file = path21.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
+  const file = path22.join(eventsDir(dir), `${String(++lastSeq).padStart(6, "0")}.json`);
   writeJsonAtomic(file, { ...event, at: (/* @__PURE__ */ new Date()).toISOString() });
   return file;
 }
@@ -4833,7 +4848,7 @@ function markers(dir) {
     return [];
   }
   return names.flatMap((name) => {
-    const file = path21.join(openDir(dir), name);
+    const file = path22.join(openDir(dir), name);
     const marker = readJson(file);
     if (!marker?.pid) return [];
     const lapsed = marker.until !== void 0 && marker.until < Date.now();
@@ -4847,21 +4862,11 @@ function taskFollow(dir) {
 function forgetLostTasks(dir) {
   for (const marker of markers(dir)) if (!marker.live) fs18.rmSync(marker.file, { force: true });
 }
-
-// src/agent/spec.ts
-import path22 from "node:path";
-var specFile = (dir) => path22.join(dir, "spec.json");
-var stateFile = (dir) => path22.join(dir, "state.json");
-var transcriptFile = (dir) => path22.join(dir, "transcript.md");
-var permissionsDir = (dir) => path22.join(dir, "permissions");
-var readSpec = (dir) => readJson(specFile(dir));
-function writeState(dir, state) {
-  ensureDir(dir);
-  writeJsonAtomic(stateFile(dir), state);
+function limitNotice(text) {
+  const t = text.trim();
+  if (!t || t.length > 300) return false;
+  return /^(?:upgrade your plan to continue|you(?:'ve| have) (?:hit|reached) your (?:usage )?limit|(?:free )?usage limit (?:reached|exceeded)|rate limit exceeded|out of credits|insufficient credits|(?:this request )?would exceed your available credits)\b/i.test(t);
 }
-var permissionWaitMs = () => envDurationMs("TELEPATHY_AGENT_PERMISSION_MS", 10 * 6e4);
-var permissionRequestFile = (dir, id) => path22.join(permissionsDir(dir), `${id}.json`);
-var permissionAnswerFile = (dir, id) => path22.join(permissionsDir(dir), `${id}.answer.json`);
 
 // src/agent/host.ts
 var SESSION_MARKERS = [
@@ -4885,11 +4890,19 @@ var span = (ms) => {
 var now = () => (/* @__PURE__ */ new Date()).toLocaleTimeString();
 var unreachableMs = () => envDurationMs("TELEPATHY_AGENT_UNREACHABLE_MS", 10 * 6e4);
 function parentPresent(spec) {
-  if (!spec.remote) return isPeerAlive(readPeer(spec.parent.id));
+  if (!spec.remote) {
+    if (isPeerAlive(readPeer(spec.parent.id))) return true;
+    const own = spec.parentProcess;
+    return !!own && isSameProcess(own.pid, own.procStart);
+  }
   const { device: id, parentId } = spec.remote;
   const device = knownDevices().find((d) => d.id === id);
   if (!device || !isOnline(device)) return void 0;
   return device.peers.some((peer) => peer.id === parentId);
+}
+function explainStartError(harness, bin, message) {
+  if (harness !== "codex" || !/error loading config/i.test(message)) return message;
+  return `${message.replace(/\.?\s*$/, "")}. ${path23.basename(bin)} runs its own copy of Codex, which can be older than your codex CLI and not read a setting the CLI does. Update it (\`npm install -g @zed-industries/codex-acp\`); if it is already the latest, that setting has to come out of ~/.codex/config.toml (or its value change) until codex-acp catches up. telepathy does not edit that file.`;
 }
 var RESULT_RETRIES = 3;
 var resultRetryMs = () => envDurationMs("TELEPATHY_AGENT_RESULT_RETRY_MS", 6e4);
@@ -5012,9 +5025,10 @@ ${rawFinal}`;
 
 \u2014 turn ended${result.error ? `: ${result.error}` : result.stopReason ? `: ${result.stopReason}` : ""}
 `);
-    const why = result.error ? `The turn failed: ${result.error}.` : result.stopReason && result.stopReason !== "end_turn" ? `The turn stopped: ${result.stopReason}.` : "";
+    const refused = !result.error && limitNotice(final);
+    const why = result.error ? `The turn failed: ${result.error}.` : refused ? `The turn failed: that message is ${agentLabel(spec.harness)}'s own (a plan or usage limit), not the agent's work.` : result.stopReason && result.stopReason !== "end_turn" ? `The turn stopped: ${result.stopReason}.` : "";
     const body = [final || "(The turn ended without a final message.)", why].filter(Boolean).join("\n\n");
-    const failed = !!result.error && !final;
+    const failed = !!result.error || refused;
     if (stopRequested) return;
     void offerToTask({ kind: "result", body, ...failed ? { failed: true } : {} }).then((taken) => {
       if (taken) write(`
@@ -5159,7 +5173,7 @@ Started by ${spec.parent.address} [${spec.parent.id}] at ${(/* @__PURE__ */ new 
     });
   } catch (err) {
     out.end();
-    return fail(err.message);
+    return fail(explainStartError(spec.harness, bin, err.message));
   }
   try {
     const applied = await applySettings(session.request, session.sessionId, session.created, { model: spec.model, effort: spec.effort });
@@ -5233,6 +5247,7 @@ ${text}`))
 ${taskText}`);
   void submit(taskText);
   let goneSince;
+  let stopReason;
   const orphan = orphanMs(spec.parent.agent);
   const unreachable = Math.max(orphan, unreachableMs());
   const watch = setInterval(() => {
@@ -5244,26 +5259,32 @@ ${taskText}`);
     goneSince ??= Date.now();
     const limit = present === void 0 ? unreachable : orphan;
     if (Date.now() - goneSince > limit) {
-      write(
-        present === void 0 ? `
+      stopReason = present === void 0 ? `the device ${spec.parent.address} is on has been out of reach for ${span(limit)}` : `${spec.parent.address} has been gone for ${span(orphan)}`;
+      write(`
 
-\u2014 stopped: the device ${spec.parent.address} is on has been out of reach for ${span(limit)}
-` : `
-
-\u2014 stopped: ${spec.parent.address} has been gone for ${span(orphan)}
-`
-      );
+\u2014 stopped: ${stopReason}
+`);
       stopRequested = true;
       session.close();
     }
   }, Math.min(5e3, Math.max(250, orphan / 3)));
   const shutdown = () => {
+    stopReason ??= "it was stopped (stop_agent, or a signal)";
     stopRequested = true;
     session.close();
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
-  await session.exited;
+  const code = await session.exited;
+  if (!stopRequested) {
+    stopReason = `its ${agentLabel(spec.harness)} process exited${code ? ` with code ${code}` : ""}`;
+    write(`
+
+\u2014 stopped: ${stopReason}
+`);
+    const body = `${self?.address ?? spec.slug} stopped: ${stopReason}. Its transcript: ${transcriptFile(dir)}. Start a new agent to go on.`;
+    if (!await offerToTask({ kind: "result", body, failed: true })) await tellParent(body, "agent-result");
+  }
   stopping = true;
   reviewer?.close();
   clearInterval(watch);
@@ -5280,6 +5301,8 @@ ${taskText}`);
   await new Promise((resolve) => out.end(() => resolve()));
   log.end();
   state.status = "stopped";
+  if (stopReason) state.stopReason = stopReason;
+  state.stoppedAt = (/* @__PURE__ */ new Date()).toISOString();
   save();
   return 0;
 }

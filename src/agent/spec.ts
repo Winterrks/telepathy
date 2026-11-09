@@ -28,6 +28,8 @@ export interface AgentSpec {
    * `@<device>` on its id and address; `parentId` is the id that device knows the session by.
    */
   remote?: { device: string; parentId: string };
+  /** The parent's own process, for a parent on this device: while it runs, the parent is there, whatever the registry says. */
+  parentProcess?: { pid: number; procStart?: string };
   createdAt: string;
 }
 
@@ -51,6 +53,9 @@ export interface AgentState {
   settings?: string[];
   /** Things the parent should know: no auto mode, an effort the harness has no setting for. */
   notes?: string[];
+  /** Why it stopped, and when. */
+  stopReason?: string;
+  stoppedAt?: string;
   /** True when the worktree had changes at stop and was kept. */
   worktreeKept?: boolean;
   /** A turn is running: a call about it can open a task that follows that turn (src/agent/mcp-tasks.ts). */
@@ -102,6 +107,22 @@ export function listAgents(): AgentEntry[] {
     const spec = readSpec(dir);
     return spec ? [{ dir, spec, state: readState(dir) }] : [];
   });
+}
+
+/**
+ * A send to an agent this session started that has stopped since: why and when, so the caller doesn't just find it
+ * gone. Undefined when `name` is no stopped agent of `parentId`.
+ */
+export function stoppedChildNote(parentId: string, name: string): string | undefined {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, '').toLowerCase();
+  const entry = listAgents()
+    .filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q))
+    .sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return undefined;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : '';
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : '';
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
 }
 
 /** Agents `parentId` started whose host is still running. */

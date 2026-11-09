@@ -580,7 +580,7 @@ var VERSION;
 var init_version = __esm({
   "src/core/version.ts"() {
     "use strict";
-    VERSION = true ? "0.14.0" : "0.0.0-dev";
+    VERSION = true ? "0.14.1" : "0.0.0-dev";
   }
 });
 
@@ -799,14 +799,14 @@ var init_rpc = __esm({
 
 // src/core/gatekeeper.ts
 import { execFileSync as execFileSync4, spawn as spawn3 } from "node:child_process";
-import fs16 from "node:fs";
-import path18 from "node:path";
+import fs17 from "node:fs";
+import path19 from "node:path";
 function executablePath(cmd, env = process.env) {
-  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path18.delimiter).filter(Boolean).map((dir) => path18.join(dir, cmd));
+  const candidates = cmd.includes("/") ? [cmd] : (env.PATH ?? "").split(path19.delimiter).filter(Boolean).map((dir) => path19.join(dir, cmd));
   for (const file of candidates) {
     try {
-      fs16.accessSync(file, fs16.constants.X_OK);
-      if (fs16.statSync(file).isFile()) return fs16.realpathSync(file);
+      fs17.accessSync(file, fs17.constants.X_OK);
+      if (fs17.statSync(file).isFile()) return fs17.realpathSync(file);
     } catch {
     }
   }
@@ -971,8 +971,8 @@ var init_codex_hooks = __esm({
 
 // src/core/kimi-plugin.ts
 import { execFileSync as execFileSync5 } from "node:child_process";
-import fs17 from "node:fs";
-import path19 from "node:path";
+import fs18 from "node:fs";
+import path20 from "node:path";
 function parseSource(source) {
   let url;
   try {
@@ -1009,18 +1009,18 @@ async function resolveSha(owner, repo, ref) {
 }
 function readManifestVersion(root) {
   try {
-    const version = JSON.parse(fs17.readFileSync(path19.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
+    const version = JSON.parse(fs18.readFileSync(path20.join(root, ".kimi-plugin", "plugin.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
   }
 }
 function writeInstalled(plugins) {
-  const dir = path19.join(kimiHome(), "plugins");
-  fs17.mkdirSync(dir, { recursive: true });
-  const final = path19.join(dir, "installed.json");
-  fs17.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
-  fs17.renameSync(`${final}.tmp`, final);
+  const dir = path20.join(kimiHome(), "plugins");
+  fs18.mkdirSync(dir, { recursive: true });
+  const final = path20.join(dir, "installed.json");
+  fs18.writeFileSync(`${final}.tmp`, JSON.stringify({ version: 1, plugins }, null, 2), "utf8");
+  fs18.renameSync(`${final}.tmp`, final);
 }
 async function installKimiPlugin(options = {}) {
   const home2 = kimiHome();
@@ -1037,15 +1037,15 @@ async function installKimiPlugin(options = {}) {
   try {
     const ref = await resolveRef(owner, repo, parsed.ref);
     const sha = await resolveSha(owner, repo, ref);
-    const managed = path19.join(home2, "plugins", "managed", ID);
+    const managed = path20.join(home2, "plugins", "managed", ID);
     const current = existing ? readManifestVersion(existing.root) : void 0;
     if (existing && existing.github?.installedSha === sha && current) {
       return { ok: true, output: `already at ${ref.value} (${sha.slice(0, 12)})`, version: current, changed: false };
     }
     if (options.dryRun) return { ok: true, output: `would download ${owner}/${repo}@${ref.value} (${sha.slice(0, 12)}) into ${managed}` };
-    const parent = path19.dirname(managed);
-    fs17.mkdirSync(parent, { recursive: true });
-    const staging = fs17.mkdtempSync(path19.join(parent, `${ID}-`));
+    const parent = path20.dirname(managed);
+    fs18.mkdirSync(parent, { recursive: true });
+    const staging = fs18.mkdtempSync(path20.join(parent, `${ID}-`));
     const previous = `${staging}-previous`;
     const archive = `${staging}.tar.gz`;
     let moved = false;
@@ -1053,22 +1053,22 @@ async function installKimiPlugin(options = {}) {
     try {
       const res = await fetch(`${codeload()}/${owner}/${repo}/tar.gz/${sha}`, { signal: AbortSignal.timeout(12e4) });
       if (!res.ok) throw new Error(`download failed: HTTP ${res.status}`);
-      fs17.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
+      fs18.writeFileSync(archive, Buffer.from(await res.arrayBuffer()));
       execFileSync5("tar", ["-xzf", archive, "-C", staging, "--strip-components=1"], { stdio: "ignore" });
       const version = readManifestVersion(staging);
       if (!version) throw new Error("the download has no .kimi-plugin/plugin.json");
       try {
-        fs17.renameSync(managed, previous);
+        fs18.renameSync(managed, previous);
         moved = true;
       } catch (err) {
         if (err.code !== "ENOENT") throw err;
       }
-      fs17.renameSync(staging, managed);
+      fs18.renameSync(staging, managed);
       published = true;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const entry = {
         id: ID,
-        root: fs17.realpathSync(managed),
+        root: fs18.realpathSync(managed),
         source: "github",
         enabled: existing?.enabled ?? true,
         installedAt: existing?.installedAt ?? now,
@@ -1079,16 +1079,16 @@ async function installKimiPlugin(options = {}) {
       };
       const plugins = existing ? installed.plugins.map((plugin) => plugin?.id === ID ? entry : plugin) : [...installed.plugins, entry];
       writeInstalled(plugins);
-      if (moved) fs17.rmSync(previous, { recursive: true, force: true });
+      if (moved) fs18.rmSync(previous, { recursive: true, force: true });
       const from = current && current !== version ? `${current} \u2192 ` : "";
       return { ok: true, output: `${existing ? "updated" : "installed"} ${from}${version} (${ref.value}, ${sha.slice(0, 12)})`, version, changed: true };
     } catch (err) {
-      fs17.rmSync(published ? managed : staging, { recursive: true, force: true });
-      if (moved) fs17.renameSync(previous, managed);
+      fs18.rmSync(published ? managed : staging, { recursive: true, force: true });
+      if (moved) fs18.renameSync(previous, managed);
       throw err;
     } finally {
-      fs17.rmSync(archive, { force: true });
-      fs17.rmSync(staging, { recursive: true, force: true });
+      fs18.rmSync(archive, { force: true });
+      fs18.rmSync(staging, { recursive: true, force: true });
     }
   } catch (err) {
     return { ok: false, output: err.message };
@@ -1107,7 +1107,7 @@ var init_kimi_plugin = __esm({
 });
 
 // src/version-check.ts
-import path20 from "node:path";
+import path21 from "node:path";
 function cachedGithubVersion() {
   return readJson(cacheFile())?.version;
 }
@@ -1134,15 +1134,15 @@ var init_version_check = __esm({
     "use strict";
     init_paths();
     DEFAULT_URL = "https://raw.githubusercontent.com/Winterrks/telepathy/main/package.json";
-    cacheFile = () => path20.join(stateDir(), "github-version.json");
+    cacheFile = () => path21.join(stateDir(), "github-version.json");
   }
 });
 
 // src/update-all.ts
 import { spawn as spawn5 } from "node:child_process";
-import fs18 from "node:fs";
+import fs19 from "node:fs";
 import os9 from "node:os";
-import path21 from "node:path";
+import path22 from "node:path";
 function stepsFor(install) {
   const marketplace = install.marketplace ?? "telepathy";
   switch (install.agent) {
@@ -1202,35 +1202,35 @@ async function runHarnessCommand({ cmd, args }, cwd = os9.homedir()) {
   });
 }
 async function refreshPackageCache(install) {
-  const packages = path21.join(process.env.XDG_CACHE_HOME || path21.join(os9.homedir(), ".cache"), install.agent, "packages");
-  const relative = path21.relative(packages, install.dir).split(path21.sep);
-  const entry = path21.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
-  const aside = path21.join(path21.dirname(packages), `.telepathy-update-${Date.now()}`);
-  fs18.renameSync(entry, aside);
+  const packages = path22.join(process.env.XDG_CACHE_HOME || path22.join(os9.homedir(), ".cache"), install.agent, "packages");
+  const relative = path22.relative(packages, install.dir).split(path22.sep);
+  const entry = path22.join(packages, ...install.agent === "kilo" ? relative.slice(0, 2) : relative.slice(0, 1));
+  const aside = path22.join(path22.dirname(packages), `.telepathy-update-${Date.now()}`);
+  fs19.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: install.agent, args: ["debug", "config"] });
   const reinstalled = installsInScope().find((i) => i.agent === install.agent);
   if (reinstalled) {
-    fs18.rmSync(aside, { recursive: true, force: true });
+    fs19.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs18.rmSync(entry, { recursive: true, force: true });
-  fs18.renameSync(aside, entry);
+  fs19.rmSync(entry, { recursive: true, force: true });
+  fs19.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function refreshOpencodeNpm(install) {
-  const opencodeCache = path21.join(process.env.XDG_CACHE_HOME || path21.join(os9.homedir(), ".cache"), "opencode");
-  const npm = path21.join(opencodeCache, "npm");
-  const entry = path21.join(npm, path21.relative(npm, install.dir).split(path21.sep)[0] ?? "");
-  const aside = path21.join(opencodeCache, `.telepathy-update-${Date.now()}`);
-  fs18.renameSync(entry, aside);
+  const opencodeCache = path22.join(process.env.XDG_CACHE_HOME || path22.join(os9.homedir(), ".cache"), "opencode");
+  const npm = path22.join(opencodeCache, "npm");
+  const entry = path22.join(npm, path22.relative(npm, install.dir).split(path22.sep)[0] ?? "");
+  const aside = path22.join(opencodeCache, `.telepathy-update-${Date.now()}`);
+  fs19.renameSync(entry, aside);
   const result = await runHarnessCommand({ cmd: "opencode", args: ["plugin", "add", OPENCODE_SPEC] });
   const reinstalled = installsInScope().find((i) => i.agent === "opencode" && isOpencodeNpmInstall(i));
   if (reinstalled) {
-    fs18.rmSync(aside, { recursive: true, force: true });
+    fs19.rmSync(aside, { recursive: true, force: true });
     return { ok: true, output: result.output };
   }
-  fs18.rmSync(entry, { recursive: true, force: true });
-  fs18.renameSync(aside, entry);
+  fs19.rmSync(entry, { recursive: true, force: true });
+  fs19.renameSync(aside, entry);
   return { ok: false, output: `it didn't reinstall telepathy, so the old copy was kept. ${result.output}` };
 }
 async function updateInstall(install) {
@@ -1324,9 +1324,7 @@ async function updateAll(options = {}) {
       '\nSessions that are already running keep the version they started with: restart them to load the update. Running Codex sessions show "Hook failed" after tool calls until they restart, because the update replaces the folder their hooks run from.'
     );
   }
-  const codexBefore = before.find((i) => i.agent === "codex");
-  const codexAfter = after.find((i) => i.agent === "codex");
-  if (codexBefore && codexAfter && codexBefore.version !== codexAfter.version) await retrustChangedCodexHooks(say);
+  if (after.some((i) => i.agent === "codex")) await retrustChangedCodexHooks(say);
   const cliOk = await cliStep();
   if (failures.length || held.length) {
     if (failures.length) say(`
@@ -1368,8 +1366,8 @@ var init_update_all = __esm({
 
 // src/cli-self-update.ts
 import { execFileSync as execFileSync6 } from "node:child_process";
-import fs19 from "node:fs";
-import path22 from "node:path";
+import fs20 from "node:fs";
+import path23 from "node:path";
 function globalCliDir() {
   if (inTestSandbox()) return void 0;
   let root;
@@ -1378,9 +1376,9 @@ function globalCliDir() {
   } catch {
     return void 0;
   }
-  const dir = path22.join(root, PACKAGE);
+  const dir = path23.join(root, PACKAGE);
   try {
-    const name = JSON.parse(fs19.readFileSync(path22.join(dir, "package.json"), "utf8")).name;
+    const name = JSON.parse(fs20.readFileSync(path23.join(dir, "package.json"), "utf8")).name;
     return name === PACKAGE ? dir : void 0;
   } catch {
     return void 0;
@@ -1388,7 +1386,7 @@ function globalCliDir() {
 }
 function installedVersion(dir) {
   try {
-    const version = JSON.parse(fs19.readFileSync(path22.join(dir, "package.json"), "utf8")).version;
+    const version = JSON.parse(fs20.readFileSync(path23.join(dir, "package.json"), "utf8")).version;
     return typeof version === "string" ? version : void 0;
   } catch {
     return void 0;
@@ -1443,19 +1441,19 @@ __export(auto_update_exports, {
   setAutoUpdate: () => setAutoUpdate
 });
 import { spawn as spawn6 } from "node:child_process";
-import fs20 from "node:fs";
-import path23 from "node:path";
+import fs21 from "node:fs";
+import path24 from "node:path";
 import { fileURLToPath } from "node:url";
 function autoUpdateEnabled() {
   const env = configuredEnv("TELEPATHY_AUTO_UPDATE")?.toLowerCase();
   if (env === "0" || env === "off" || env === "false" || env === "no") return false;
   if (env === "1" || env === "on" || env === "true" || env === "yes") return true;
-  const cfg = readJson(path23.join(stateDir(), "config.json"));
+  const cfg = readJson(path24.join(stateDir(), "config.json"));
   if (typeof cfg?.autoUpdate === "boolean") return cfg.autoUpdate;
   return true;
 }
 function setAutoUpdate(on) {
-  const file = path23.join(stateDir(), "config.json");
+  const file = path24.join(stateDir(), "config.json");
   const cfg = readJson(file) ?? {};
   cfg.autoUpdate = on;
   writeJsonAtomic(file, cfg);
@@ -1470,7 +1468,7 @@ function recentlyChecked() {
 function logAutoUpdate(line) {
   try {
     ensureDir(stateDir());
-    fs20.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
+    fs21.appendFileSync(logFile(), `${(/* @__PURE__ */ new Date()).toISOString()} ${line}
 `);
   } catch {
   }
@@ -1478,10 +1476,10 @@ function logAutoUpdate(line) {
 function autoUpdateEntry() {
   const override = process.env.TELEPATHY_AUTO_UPDATE_ENTRY;
   if (override) return override;
-  const dir = path23.dirname(fileURLToPath(import.meta.url));
+  const dir = path24.dirname(fileURLToPath(import.meta.url));
   for (const name of ["hook.mjs", "hook.ts"]) {
-    const candidate = path23.join(dir, name);
-    if (fs20.existsSync(candidate)) return candidate;
+    const candidate = path24.join(dir, name);
+    if (fs21.existsSync(candidate)) return candidate;
   }
   return fileURLToPath(import.meta.url);
 }
@@ -1504,9 +1502,9 @@ function scheduleAutoUpdate(reason, options = {}) {
 function acquireLock() {
   ensureDir(stateDir());
   try {
-    const fd = fs20.openSync(lockFile(), "wx", 384);
-    fs20.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
-    fs20.closeSync(fd);
+    const fd = fs21.openSync(lockFile(), "wx", 384);
+    fs21.writeFileSync(fd, JSON.stringify({ pid: process.pid, at: (/* @__PURE__ */ new Date()).toISOString() }));
+    fs21.closeSync(fd);
     return true;
   } catch (err) {
     if (err.code !== "EEXIST") return false;
@@ -1515,7 +1513,7 @@ function acquireLock() {
     const alive = typeof info?.pid === "number" && isAlive(info.pid);
     if (alive && Number.isFinite(age) && age < 60 * 60 * 1e3) return false;
     try {
-      fs20.rmSync(lockFile(), { force: true });
+      fs21.rmSync(lockFile(), { force: true });
     } catch {
       return false;
     }
@@ -1524,7 +1522,7 @@ function acquireLock() {
 }
 function releaseLock() {
   const info = readJson(lockFile());
-  if (info?.pid === process.pid) fs20.rmSync(lockFile(), { force: true });
+  if (info?.pid === process.pid) fs21.rmSync(lockFile(), { force: true });
 }
 async function runAutoUpdate() {
   const force = process.env.TELEPATHY_AUTO_UPDATE_FORCE === "1";
@@ -1588,9 +1586,9 @@ var init_auto_update = __esm({
     await init_update_all();
     init_version_check();
     DAY_MS = 24 * 60 * 60 * 1e3;
-    stampFile = () => path23.join(stateDir(), "auto-update.json");
-    lockFile = () => path23.join(stateDir(), "auto-update.lock");
-    logFile = () => path23.join(stateDir(), "auto-update.log");
+    stampFile = () => path24.join(stateDir(), "auto-update.json");
+    lockFile = () => path24.join(stateDir(), "auto-update.lock");
+    logFile = () => path24.join(stateDir(), "auto-update.log");
   }
 });
 
@@ -3619,8 +3617,8 @@ async function flushClaudeSocket(id) {
 
 // src/core/edits.ts
 import { createHash as createHash2 } from "node:crypto";
-import fs15 from "node:fs";
-import path17 from "node:path";
+import fs16 from "node:fs";
+import path18 from "node:path";
 
 // src/core/listing.ts
 init_agents();
@@ -3735,8 +3733,47 @@ function statusText(info, now = Date.now()) {
 // src/core/deliver.ts
 init_agents();
 import crypto3 from "node:crypto";
+import fs14 from "node:fs";
+import path16 from "node:path";
+
+// src/agent/spec.ts
+init_paths();
+init_proc();
 import fs13 from "node:fs";
 import path15 from "node:path";
+var agentsDir = () => path15.join(stateDir(), "agents");
+var specFile = (dir) => path15.join(dir, "spec.json");
+var stateFile = (dir) => path15.join(dir, "state.json");
+var transcriptFile = (dir) => path15.join(dir, "transcript.md");
+var readSpec = (dir) => readJson(specFile(dir));
+var readState = (dir) => readJson(stateFile(dir));
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names;
+  try {
+    names = fs13.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const dir = path15.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+function stoppedChildNote(parentId, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const entry = listAgents().filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q)).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return void 0;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : "";
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : "";
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
+}
+
+// src/core/deliver.ts
 init_paths();
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
@@ -3744,7 +3781,7 @@ var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path16.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -3764,7 +3801,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs13.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs14.existsSync(path16.join(inboxDir(peerId2), `${messageId}.json`));
 function bodyProblem(body) {
   if (!body.trim()) return "Message is empty.";
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -3779,7 +3816,12 @@ async function sendMessage(self, to, body, extra = {}) {
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self, remote, body, extra);
-    return await deliverLocal(partyOf(self), to, body, self, extra);
+    const sent = await deliverLocal(partyOf(self), to, body, self, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -3800,7 +3842,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path15.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path16.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -3862,7 +3904,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs13.existsSync(path15.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs14.existsSync(path16.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -4072,15 +4114,15 @@ function open(key, aad, sealed) {
 // src/bridge/state.ts
 init_paths();
 import crypto5 from "node:crypto";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import os7 from "node:os";
-import path16 from "node:path";
-var bridgeDir = () => path16.join(stateDir(), "bridge");
-var deviceFile = () => path16.join(bridgeDir(), "device.json");
-var trustedFile = () => path16.join(bridgeDir(), "trusted.json");
-var remoteFile = () => path16.join(bridgeDir(), "remote.json");
-var daemonFile = () => path16.join(bridgeDir(), "daemon.json");
-var eventsFile = () => path16.join(bridgeDir(), "events.jsonl");
+import path17 from "node:path";
+var bridgeDir = () => path17.join(stateDir(), "bridge");
+var deviceFile = () => path17.join(bridgeDir(), "device.json");
+var trustedFile = () => path17.join(bridgeDir(), "trusted.json");
+var remoteFile = () => path17.join(bridgeDir(), "remote.json");
+var daemonFile = () => path17.join(bridgeDir(), "daemon.json");
+var eventsFile = () => path17.join(bridgeDir(), "events.jsonl");
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -4105,10 +4147,10 @@ function trustedDevices() {
   return readJson(trustedFile()) ?? {};
 }
 function writeSecret(file, value) {
-  ensureDir(path16.dirname(file));
+  ensureDir(path17.dirname(file));
   writeJsonAtomic(file, value);
   try {
-    fs14.chmodSync(file, 384);
+    fs15.chmodSync(file, 384);
   } catch {
   }
 }
@@ -4128,11 +4170,11 @@ function safeName(value, fallback = "device", max = 48) {
 function logEvent(event) {
   try {
     ensureDir(bridgeDir());
-    fs14.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
-    const size = fs14.statSync(eventsFile()).size;
+    fs15.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs15.statSync(eventsFile()).size;
     if (size > 512 * 1024) {
-      const lines = fs14.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
-      fs14.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+      const lines = fs15.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs15.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
     }
   } catch {
   }
@@ -4317,9 +4359,9 @@ function shellPaths(command, cwd) {
   for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
     const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
-    if (!path17.isAbsolute(word) && !cwd) continue;
-    const resolved = path17.resolve(cwd ?? "/", word);
-    if (resolved === cwd || !fs15.existsSync(resolved)) continue;
+    if (!path18.isAbsolute(word) && !cwd) continue;
+    const resolved = path18.resolve(cwd ?? "/", word);
+    if (resolved === cwd || !fs16.existsSync(resolved)) continue;
     found.push(resolved);
     if (found.length >= 8) break;
   }
@@ -4345,8 +4387,8 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
 function ignored(file) {
-  const parts = file.split(path17.sep);
-  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path17.sep);
+  const parts = file.split(path18.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file.startsWith(stateDir() + path18.sep);
 }
 function touchedFiles(toolName, toolInput2, cwd) {
   const none = { edited: [], read: [] };
@@ -4359,23 +4401,23 @@ function touchedFiles(toolName, toolInput2, cwd) {
   const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
   const files2 = [
     ...new Set(
-      raw.map((f) => f.trim()).filter((f) => path17.isAbsolute(f) || cwd).map((f) => path17.resolve(cwd ?? "/", f))
+      raw.map((f) => f.trim()).filter((f) => path18.isAbsolute(f) || cwd).map((f) => path18.resolve(cwd ?? "/", f))
     )
   ].filter((f) => !ignored(f));
   return { ...none, [kind]: files2 };
 }
 var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
-var editsDir = (id) => path17.join(peerDir(id), "edits");
+var editsDir = (id) => path18.join(peerDir(id), "edits");
 function recordEdits(selfId, files2, now = Date.now()) {
   for (const file of files2) {
-    writeJsonAtomic(path17.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
+    writeJsonAtomic(path18.join(editsDir(selfId), `${keyOf(file)}.json`), { file, at: new Date(now).toISOString() });
   }
 }
 function othersRecentEdits(selfId, now) {
   const found = [];
   let ids = [];
   try {
-    ids = fs15.readdirSync(peersDir());
+    ids = fs16.readdirSync(peersDir());
   } catch {
     return found;
   }
@@ -4383,12 +4425,12 @@ function othersRecentEdits(selfId, now) {
     if (id === selfId) continue;
     let files2 = [];
     try {
-      files2 = fs15.readdirSync(editsDir(id));
+      files2 = fs16.readdirSync(editsDir(id));
     } catch {
       continue;
     }
     for (const name of files2) {
-      const edit = readJson(path17.join(editsDir(id), name));
+      const edit = readJson(path18.join(editsDir(id), name));
       const at = edit ? Date.parse(edit.at) : Number.NaN;
       if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
     }
@@ -4402,7 +4444,7 @@ var SEND_HINT = {
 };
 var isDirectory = (p) => {
   try {
-    return fs15.statSync(p).isDirectory();
+    return fs16.statSync(p).isDirectory();
   } catch {
     return false;
   }
@@ -4411,29 +4453,29 @@ function overlapNote(self, files2, cwd, now = Date.now()) {
   if (!files2.length) return void 0;
   const recent = othersRecentEdits(self.id, now);
   if (!recent.length) return void 0;
-  const shownDir = path17.join(peerDir(self.id), "overlaps");
+  const shownDir = path18.join(peerDir(self.id), "overlaps");
   const alive = /* @__PURE__ */ new Map();
   const lines = [];
   for (const file of files2) {
-    const dir = isDirectory(file) ? file : path17.dirname(file);
+    const dir = isDirectory(file) ? file : path18.dirname(file);
     const byPeer = /* @__PURE__ */ new Map();
     for (const r of recent) {
       const same = r.edit.file === file;
-      if (!same && path17.dirname(r.edit.file) !== dir) continue;
+      if (!same && path18.dirname(r.edit.file) !== dir) continue;
       const best = byPeer.get(r.id);
       if (!best || same && best.edit.file !== file || same === (best.edit.file === file) && r.at > best.at) byPeer.set(r.id, r);
     }
     for (const [id, r] of byPeer) {
-      const marker = path17.join(shownDir, `${keyOf(`${id}
+      const marker = path18.join(shownDir, `${keyOf(`${id}
 ${dir}`)}.json`);
-      if (fs15.existsSync(marker)) continue;
+      if (fs16.existsSync(marker)) continue;
       if (!alive.has(id)) {
         const peer2 = readPeer(id);
         alive.set(id, isPeerAlive(peer2) ? peer2 : void 0);
       }
       const peer = alive.get(id);
       if (!peer) continue;
-      const shown = cwd && r.edit.file.startsWith(cwd + path17.sep) ? path17.relative(cwd, r.edit.file) : r.edit.file;
+      const shown = cwd && r.edit.file.startsWith(cwd + path18.sep) ? path18.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
         noteTag(
           "overlap",
@@ -4498,9 +4540,9 @@ function argvFlag(argv, name) {
 }
 
 // src/agent/task.ts
-import fs21 from "node:fs";
+import fs22 from "node:fs";
 import os10 from "node:os";
-import path24 from "node:path";
+import path25 from "node:path";
 
 // src/cli/harnesses.ts
 init_agents();
@@ -4678,13 +4720,13 @@ init_agents();
 init_paths();
 init_proc();
 var taskHarnesses = () => harnesses().filter((h) => h.acp && h.agent !== "claude").map((h) => h.agent);
-var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path24.join(os10.homedir(), ".claude");
+var claudeDir = () => process.env.CLAUDE_CONFIG_DIR || path25.join(os10.homedir(), ".claude");
 function claudeHasAgent(name, cwd) {
-  const files2 = [path24.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path24.join(cwd, ".claude", "agents", `${name}.md`)] : []];
-  if (files2.some((file) => fs21.existsSync(file))) return true;
+  const files2 = [path25.join(claudeDir(), "agents", `${name}.md`), ...cwd ? [path25.join(cwd, ".claude", "agents", `${name}.md`)] : []];
+  if (files2.some((file) => fs22.existsSync(file))) return true;
   const [plugin] = name.split(":");
   if (plugin === name) return false;
-  const installed = readJson(path24.join(claudeDir(), "plugins", "installed_plugins.json"));
+  const installed = readJson(path25.join(claudeDir(), "plugins", "installed_plugins.json"));
   return Object.keys(installed?.plugins ?? {}).some((key) => key.split("@")[0] === plugin);
 }
 function harnessAgentType(type, cwd) {
@@ -4713,35 +4755,6 @@ init_paths();
 
 // src/agent/tools.ts
 init_sandbox_launch();
-
-// src/agent/spec.ts
-init_paths();
-init_proc();
-import fs22 from "node:fs";
-import path25 from "node:path";
-var agentsDir = () => path25.join(stateDir(), "agents");
-var specFile = (dir) => path25.join(dir, "spec.json");
-var stateFile = (dir) => path25.join(dir, "state.json");
-var readSpec = (dir) => readJson(specFile(dir));
-var readState = (dir) => readJson(stateFile(dir));
-function hostAlive(state) {
-  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
-}
-function listAgents() {
-  let names;
-  try {
-    names = fs22.readdirSync(agentsDir());
-  } catch {
-    return [];
-  }
-  return names.flatMap((name) => {
-    const dir = path25.join(agentsDir(), name);
-    const spec = readSpec(dir);
-    return spec ? [{ dir, spec, state: readState(dir) }] : [];
-  });
-}
-
-// src/agent/tools.ts
 function findChild(self, name) {
   const q = name.trim().replace(/^["'`]|["'`]$/g, "").replace(/^.*\[([^\]]+)\]\s*$/, "$1").toLowerCase();
   const matches = listAgents().filter((entry) => {

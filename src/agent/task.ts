@@ -189,6 +189,16 @@ export function forgetLostTasks(dir: string): void {
   for (const marker of markers(dir)) if (!marker.live) fs.rmSync(marker.file, { force: true });
 }
 
+/**
+ * A final message that is the harness's own refusal, not the agent's work: Cursor ends a turn normally with just
+ * "Upgrade your plan to continue". Only a short message that is nothing but such a notice counts.
+ */
+export function limitNotice(text: string): boolean {
+  const t = text.trim();
+  if (!t || t.length > 300) return false;
+  return /^(?:upgrade your plan to continue|you(?:'ve| have) (?:hit|reached) your (?:usage )?limit|(?:free )?usage limit (?:reached|exceeded)|rate limit exceeded|out of credits|insufficient credits|(?:this request )?would exceed your available credits)\b/i.test(t);
+}
+
 /** A reply to a permission request, as a user would put it: allow or deny. */
 export function permissionWord(text: string): boolean | undefined {
   const word = text.trim().toLowerCase().replace(/^["'`]|["'`.!]$/g, '');

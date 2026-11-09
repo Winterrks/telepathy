@@ -19746,8 +19746,8 @@ function debugLog(component, line) {
 
 // src/core/edits.ts
 import { createHash as createHash2 } from "node:crypto";
-import fs15 from "node:fs";
-import path16 from "node:path";
+import fs16 from "node:fs";
+import path17 from "node:path";
 
 // src/core/agents.ts
 var AGENT_IDS = [
@@ -20036,7 +20036,7 @@ import os4 from "node:os";
 import path7 from "node:path";
 
 // src/core/version.ts
-var VERSION = true ? "0.14.0" : "0.0.0-dev";
+var VERSION = true ? "0.14.1" : "0.0.0-dev";
 
 // src/core/codex-launch.ts
 import { execFileSync as execFileSync2 } from "node:child_process";
@@ -22080,15 +22080,61 @@ function statusText(info, now = Date.now()) {
 
 // src/core/deliver.ts
 import crypto3 from "node:crypto";
+import fs14 from "node:fs";
+import path15 from "node:path";
+
+// src/agent/spec.ts
 import fs13 from "node:fs";
 import path14 from "node:path";
+var agentsDir = () => path14.join(stateDir(), "agents");
+var agentDir = (harness, slug) => path14.join(agentsDir(), `${harness}-${slug}`);
+var specFile = (dir) => path14.join(dir, "spec.json");
+var stateFile = (dir) => path14.join(dir, "state.json");
+var transcriptFile = (dir) => path14.join(dir, "transcript.md");
+var permissionsDir = (dir) => path14.join(dir, "permissions");
+function writeSpec(dir, spec) {
+  ensureDir(dir);
+  writeJsonAtomic(specFile(dir), spec);
+}
+var readSpec = (dir) => readJson(specFile(dir));
+var readState = (dir) => readJson(stateFile(dir));
+function hostAlive(state) {
+  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
+}
+function listAgents() {
+  let names;
+  try {
+    names = fs13.readdirSync(agentsDir());
+  } catch {
+    return [];
+  }
+  return names.flatMap((name) => {
+    const dir = path14.join(agentsDir(), name);
+    const spec = readSpec(dir);
+    return spec ? [{ dir, spec, state: readState(dir) }] : [];
+  });
+}
+function stoppedChildNote(parentId, name) {
+  const q = name.trim().replace(/^["'`]|["'`]$/g, "").toLowerCase();
+  const entry = listAgents().filter((e) => e.spec.parent.id === parentId && [e.spec.slug, `${e.spec.harness}:${e.spec.slug}`, e.state?.address, e.state?.peerId].some((k) => k?.toLowerCase() === q)).sort((a, b) => b.spec.createdAt.localeCompare(a.spec.createdAt))[0];
+  if (!entry || hostAlive(entry.state)) return void 0;
+  const address = entry.state?.address ?? `${entry.spec.harness}:${entry.spec.slug}`;
+  const when = entry.state?.stoppedAt ? ` at ${entry.state.stoppedAt}` : "";
+  const why = entry.state?.stopReason ? `: ${entry.state.stopReason}` : "";
+  return `${address} is an agent this session started, and it stopped${when}${why}. Its transcript: ${transcriptFile(entry.dir)}. Start a new agent with start_agent to go on.`;
+}
+var PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
+var permissionRequestFile = (dir, id) => path14.join(permissionsDir(dir), `${id}.json`);
+var permissionAnswerFile = (dir, id) => path14.join(permissionsDir(dir), `${id}.answer.json`);
+
+// src/core/deliver.ts
 var DUPLICATE_WINDOW_MS = 2 * 6e4;
 var RATE_WINDOW_MS = 10 * 6e4;
 var RATE_MAX_PER_RECIPIENT = 20;
 function socketWaitMs() {
   return envDurationMs("TELEPATHY_SOCKET_WAIT_MS", 1500);
 }
-var sentLogFile = (selfId) => path14.join(peerDir(selfId), "sent-log.json");
+var sentLogFile = (selfId) => path15.join(peerDir(selfId), "sent-log.json");
 function checkRate(selfId, toId, body) {
   const now = Date.now();
   const log = (readJson(sentLogFile(selfId)) ?? []).filter((e) => now - e.at < RATE_WINDOW_MS);
@@ -22108,7 +22154,7 @@ function recordSent(selfId, toId, body) {
   log.push({ to: toId, hash: crypto3.createHash("sha256").update(body).digest("hex").slice(0, 16), at: now });
   writeJsonAtomic(sentLogFile(selfId), log);
 }
-var stillPending = (peerId2, messageId) => fs13.existsSync(path14.join(inboxDir(peerId2), `${messageId}.json`));
+var stillPending = (peerId2, messageId) => fs14.existsSync(path15.join(inboxDir(peerId2), `${messageId}.json`));
 function bodyProblem(body) {
   if (!body.trim()) return "Message is empty.";
   if (body.length > MAX_MESSAGE_CHARS) {
@@ -22123,7 +22169,12 @@ async function sendMessage(self, to, body, extra = {}) {
     if (problem) return { ok: false, error: problem };
     const remote = remoteTarget(to);
     if (remote) return await sendRemote(self, remote, body, extra);
-    return await deliverLocal(partyOf(self), to, body, self, extra);
+    const sent = await deliverLocal(partyOf(self), to, body, self, extra);
+    if (!sent.ok) {
+      const stopped = stoppedChildNote(self.id, to);
+      if (stopped) return { ...sent, error: stopped };
+    }
+    return sent;
   } finally {
     if (ownsClock) endToolCall();
   }
@@ -22144,7 +22195,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   if (limited) return { ok: false, error: limited };
   const senderId = self?.id ?? from.id;
   if (senderId && !extra.kind && hostedParent(senderId) === recipient.address) {
-    writeJsonAtomic(path14.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
+    writeJsonAtomic(path15.join(peerDir(senderId), "parent-report.json"), { body, at: (/* @__PURE__ */ new Date()).toISOString() });
     const message2 = {
       id: newMessageId(),
       from,
@@ -22206,7 +22257,7 @@ async function deliverLocal(from, to, body, self, extra = {}) {
   };
 }
 async function routeDelivery(recipient, message) {
-  if (fs13.existsSync(path14.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
+  if (fs14.existsSync(path15.join(peerDir(recipient.id), "hosted.json"))) return routeInbox(recipient, message);
   if (recipient.agent === "codex") return routeCodex(recipient, message);
   return routeInbox(recipient, message);
 }
@@ -22411,15 +22462,15 @@ function open2(key, aad, sealed) {
 
 // src/bridge/state.ts
 import crypto5 from "node:crypto";
-import fs14 from "node:fs";
+import fs15 from "node:fs";
 import os7 from "node:os";
-import path15 from "node:path";
-var bridgeDir = () => path15.join(stateDir(), "bridge");
-var deviceFile = () => path15.join(bridgeDir(), "device.json");
-var trustedFile = () => path15.join(bridgeDir(), "trusted.json");
-var remoteFile = () => path15.join(bridgeDir(), "remote.json");
-var daemonFile = () => path15.join(bridgeDir(), "daemon.json");
-var eventsFile = () => path15.join(bridgeDir(), "events.jsonl");
+import path16 from "node:path";
+var bridgeDir = () => path16.join(stateDir(), "bridge");
+var deviceFile = () => path16.join(bridgeDir(), "device.json");
+var trustedFile = () => path16.join(bridgeDir(), "trusted.json");
+var remoteFile = () => path16.join(bridgeDir(), "remote.json");
+var daemonFile = () => path16.join(bridgeDir(), "daemon.json");
+var eventsFile = () => path16.join(bridgeDir(), "events.jsonl");
 function bridgePort() {
   const raw = Number(process.env.TELEPATHY_BRIDGE_PORT);
   return Number.isInteger(raw) && raw > 0 && raw < 65536 ? raw : 47380;
@@ -22444,10 +22495,10 @@ function trustedDevices() {
   return readJson(trustedFile()) ?? {};
 }
 function writeSecret(file2, value) {
-  ensureDir(path15.dirname(file2));
+  ensureDir(path16.dirname(file2));
   writeJsonAtomic(file2, value);
   try {
-    fs14.chmodSync(file2, 384);
+    fs15.chmodSync(file2, 384);
   } catch {
   }
 }
@@ -22467,11 +22518,11 @@ function safeName(value, fallback = "device", max = 48) {
 function logEvent(event) {
   try {
     ensureDir(bridgeDir());
-    fs14.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
-    const size = fs14.statSync(eventsFile()).size;
+    fs15.appendFileSync(eventsFile(), JSON.stringify({ at: (/* @__PURE__ */ new Date()).toISOString(), ...event }) + "\n", { mode: 384 });
+    const size = fs15.statSync(eventsFile()).size;
     if (size > 512 * 1024) {
-      const lines = fs14.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
-      fs14.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
+      const lines = fs15.readFileSync(eventsFile(), "utf8").trim().split("\n").slice(-500);
+      fs15.writeFileSync(eventsFile(), lines.join("\n") + "\n", { mode: 384 });
     }
   } catch {
   }
@@ -22720,9 +22771,9 @@ function shellPaths(command, cwd) {
   for (const m of command.slice(0, 2e3).matchAll(SHELL_WORD_RE)) {
     const word = (m[1] ?? m[2] ?? m[3] ?? "").trim();
     if (!word || word.startsWith("-") || word.includes("$") || word.includes("*") || word === "." || word === "..") continue;
-    if (!path16.isAbsolute(word) && !cwd) continue;
-    const resolved = path16.resolve(cwd ?? "/", word);
-    if (resolved === cwd || !fs15.existsSync(resolved)) continue;
+    if (!path17.isAbsolute(word) && !cwd) continue;
+    const resolved = path17.resolve(cwd ?? "/", word);
+    if (resolved === cwd || !fs16.existsSync(resolved)) continue;
     found.push(resolved);
     if (found.length >= 8) break;
   }
@@ -22748,8 +22799,8 @@ function asObject(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
 function ignored(file2) {
-  const parts = file2.split(path16.sep);
-  return parts.includes("node_modules") || parts.includes(".git") || file2.startsWith(stateDir() + path16.sep);
+  const parts = file2.split(path17.sep);
+  return parts.includes("node_modules") || parts.includes(".git") || file2.startsWith(stateDir() + path17.sep);
 }
 function touchedFiles(toolName, toolInput, cwd) {
   const none = { edited: [], read: [] };
@@ -22762,23 +22813,23 @@ function touchedFiles(toolName, toolInput, cwd) {
   const raw = named.length ? [named[0]] : kind === "edited" ? patchedFiles(input2) : SHELL_TOOL_RE.test(toolName) && command ? shellPaths(command, cwd) : [];
   const files = [
     ...new Set(
-      raw.map((f) => f.trim()).filter((f) => path16.isAbsolute(f) || cwd).map((f) => path16.resolve(cwd ?? "/", f))
+      raw.map((f) => f.trim()).filter((f) => path17.isAbsolute(f) || cwd).map((f) => path17.resolve(cwd ?? "/", f))
     )
   ].filter((f) => !ignored(f));
   return { ...none, [kind]: files };
 }
 var keyOf = (value) => createHash2("sha1").update(value).digest("hex").slice(0, 16);
-var editsDir = (id) => path16.join(peerDir(id), "edits");
+var editsDir = (id) => path17.join(peerDir(id), "edits");
 function recordEdits(selfId, files, now = Date.now()) {
   for (const file2 of files) {
-    writeJsonAtomic(path16.join(editsDir(selfId), `${keyOf(file2)}.json`), { file: file2, at: new Date(now).toISOString() });
+    writeJsonAtomic(path17.join(editsDir(selfId), `${keyOf(file2)}.json`), { file: file2, at: new Date(now).toISOString() });
   }
 }
 function othersRecentEdits(selfId, now) {
   const found = [];
   let ids = [];
   try {
-    ids = fs15.readdirSync(peersDir());
+    ids = fs16.readdirSync(peersDir());
   } catch {
     return found;
   }
@@ -22786,12 +22837,12 @@ function othersRecentEdits(selfId, now) {
     if (id === selfId) continue;
     let files = [];
     try {
-      files = fs15.readdirSync(editsDir(id));
+      files = fs16.readdirSync(editsDir(id));
     } catch {
       continue;
     }
     for (const name of files) {
-      const edit = readJson(path16.join(editsDir(id), name));
+      const edit = readJson(path17.join(editsDir(id), name));
       const at = edit ? Date.parse(edit.at) : Number.NaN;
       if (edit && typeof edit.file === "string" && now - at < EDIT_WINDOW_MS) found.push({ id, edit, at });
     }
@@ -22805,7 +22856,7 @@ var SEND_HINT = {
 };
 var isDirectory = (p) => {
   try {
-    return fs15.statSync(p).isDirectory();
+    return fs16.statSync(p).isDirectory();
   } catch {
     return false;
   }
@@ -22814,29 +22865,29 @@ function overlapNote(self, files, cwd, now = Date.now()) {
   if (!files.length) return void 0;
   const recent = othersRecentEdits(self.id, now);
   if (!recent.length) return void 0;
-  const shownDir = path16.join(peerDir(self.id), "overlaps");
+  const shownDir = path17.join(peerDir(self.id), "overlaps");
   const alive = /* @__PURE__ */ new Map();
   const lines = [];
   for (const file2 of files) {
-    const dir = isDirectory(file2) ? file2 : path16.dirname(file2);
+    const dir = isDirectory(file2) ? file2 : path17.dirname(file2);
     const byPeer = /* @__PURE__ */ new Map();
     for (const r of recent) {
       const same = r.edit.file === file2;
-      if (!same && path16.dirname(r.edit.file) !== dir) continue;
+      if (!same && path17.dirname(r.edit.file) !== dir) continue;
       const best = byPeer.get(r.id);
       if (!best || same && best.edit.file !== file2 || same === (best.edit.file === file2) && r.at > best.at) byPeer.set(r.id, r);
     }
     for (const [id, r] of byPeer) {
-      const marker = path16.join(shownDir, `${keyOf(`${id}
+      const marker = path17.join(shownDir, `${keyOf(`${id}
 ${dir}`)}.json`);
-      if (fs15.existsSync(marker)) continue;
+      if (fs16.existsSync(marker)) continue;
       if (!alive.has(id)) {
         const peer2 = readPeer(id);
         alive.set(id, isPeerAlive(peer2) ? peer2 : void 0);
       }
       const peer = alive.get(id);
       if (!peer) continue;
-      const shown = cwd && r.edit.file.startsWith(cwd + path16.sep) ? path16.relative(cwd, r.edit.file) : r.edit.file;
+      const shown = cwd && r.edit.file.startsWith(cwd + path17.sep) ? path17.relative(cwd, r.edit.file) : r.edit.file;
       lines.push(
         noteTag(
           "overlap",
@@ -23099,8 +23150,8 @@ function removeCleanWorktree(spec) {
 }
 
 // src/agent/policy.ts
-import path17 from "node:path";
-var policyFile = (dir) => path17.join(dir, "policy.json");
+import path18 from "node:path";
+var policyFile = (dir) => path18.join(dir, "policy.json");
 function readPolicy(dir) {
   const stored2 = readJson(policyFile(dir));
   return {
@@ -23132,41 +23183,6 @@ function normalizeEntry(entry) {
 function normalizeEntries(entries) {
   return [...new Set(entries.map(normalizeEntry).filter(Boolean))];
 }
-
-// src/agent/spec.ts
-import fs16 from "node:fs";
-import path18 from "node:path";
-var agentsDir = () => path18.join(stateDir(), "agents");
-var agentDir = (harness, slug) => path18.join(agentsDir(), `${harness}-${slug}`);
-var specFile = (dir) => path18.join(dir, "spec.json");
-var stateFile = (dir) => path18.join(dir, "state.json");
-var transcriptFile = (dir) => path18.join(dir, "transcript.md");
-var permissionsDir = (dir) => path18.join(dir, "permissions");
-function writeSpec(dir, spec) {
-  ensureDir(dir);
-  writeJsonAtomic(specFile(dir), spec);
-}
-var readSpec = (dir) => readJson(specFile(dir));
-var readState = (dir) => readJson(stateFile(dir));
-function hostAlive(state) {
-  return !!state && isAlive(state.pid) && (!state.procStart || isSameProcess(state.pid, state.procStart));
-}
-function listAgents() {
-  let names;
-  try {
-    names = fs16.readdirSync(agentsDir());
-  } catch {
-    return [];
-  }
-  return names.flatMap((name) => {
-    const dir = path18.join(agentsDir(), name);
-    const spec = readSpec(dir);
-    return spec ? [{ dir, spec, state: readState(dir) }] : [];
-  });
-}
-var PERMISSION_ID = /^p-[0-9a-z]+-[0-9a-f]{4,16}$/;
-var permissionRequestFile = (dir, id) => path18.join(permissionsDir(dir), `${id}.json`);
-var permissionAnswerFile = (dir, id) => path18.join(permissionsDir(dir), `${id}.answer.json`);
 
 // src/agent/tools.ts
 var startableHarnesses = () => harnesses().filter((h) => h.acp).map((h) => h.agent);
@@ -23240,7 +23256,12 @@ function makeWorktree(cwd, harness, slug) {
   const inside = path19.relative(fs17.realpathSync(repo), fs17.realpathSync(cwd));
   return { repo, path: tree, branch, base, cwd: inside && !inside.startsWith("..") ? path19.join(tree, inside) : tree };
 }
-var parentOf = (self) => ({ party: partyOf(self), cwd: self.cwd });
+var parentOf = (self) => ({
+  party: partyOf(self),
+  cwd: self.cwd,
+  // Claude Code's peer pid is the session's own process; other harnesses may share a daemon across sessions.
+  ...self.agent === "claude" && self.pid > 1 ? { process: { pid: self.pid, ...self.procStart ? { procStart: self.procStart } : {} } } : {}
+});
 function launchAgent(parent, args) {
   const fail = (text) => ({ ok: false, text });
   const harness = canonicalRunAgent(args.harness);
@@ -23291,6 +23312,7 @@ function launchAgent(parent, args) {
     isolation: args.isolation,
     worktree,
     parent: parent.party,
+    ...parent.process && !parent.remote ? { parentProcess: parent.process } : {},
     ...parent.remote ? { remote: parent.remote } : {},
     createdAt: (/* @__PURE__ */ new Date()).toISOString()
   };
